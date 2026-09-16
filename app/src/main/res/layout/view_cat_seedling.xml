@@ -25,6 +25,22 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <Switch
+            android:id="@+id/switchSeedlingCapsuleGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_seedling_capsule_glass" />
+
+        <TextView
+            android:id="@+id/seedlingCapsuleGlassDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_seedling_capsule_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <TextView
             android:id="@+id/seedlingExpandRatioLabel"
             android:layout_width="wrap_content"

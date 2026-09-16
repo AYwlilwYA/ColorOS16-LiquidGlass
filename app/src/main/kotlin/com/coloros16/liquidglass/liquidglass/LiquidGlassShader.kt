@@ -64,10 +64,13 @@ object LiquidGlassShader {
         uniform float uHighlight;        // 高光强度（加性，建议 0.3~0.6；定向亮边而非整体发白）
         uniform float uHighlightWidth;   // 高光带宽度 px（边缘内外各此宽，模拟 Kyant 描边+模糊）
         uniform float uHighlightFalloff; // 高光方向衰减指数（Kyant ControlCenter=2；越大越聚光）
+        uniform float uHighlightFloor;   // [2026-09-16 弧线高光修复] 方向因子保底：圆角弧线法线扫过 90°
+                                         // 必然与光源垂直（dot=0）→ 原实现该处高光归零。0=完全回退原行为
         uniform float uVibrancy;         // 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变）
         uniform float uLightAngle;       // 光角度（弧度；Kotlin 侧由角度转弧度）
         uniform vec2  uParallax;         // 视差（面板几何中心偏移，可接传感器）
         uniform float uDebugCoord;       // 调试：1 = 输出 coord/uViewport 位置色（坐标可视化）
+        uniform float uDebugHighlight;   // [临时诊断 高光] 逐像素可视化：0=关；1=hl 灰度；2=band 灰度；3=sdRaw 等值线；4=sdfGrad 方向色
         uniform vec4  uMaskRect;         // 掩码矩形（viewport 局部坐标：xy=左上, zw=宽高；默认全视口=无裁剪，侧滑按钮专用）
         uniform float uMaskCornerRadius; // 掩码圆角半径 px（按钮真实圆角 = notification_corner_radius dimen，未×1.5；0=直角裁剪）
         uniform float uMaskWeight;       // 掩码 CONIC 角权重（侧滑按钮 = (8×1.1)/(3×1.1+3)=1.3968；uMaskCornerRadius<=0 时忽略）
@@ -97,16 +100,25 @@ object LiquidGlassShader {
             return outside + inside;
         }
 
-        // 归一化 SDF 梯度：边缘/角部指向外侧，内部退化为方向场（高光用）
+        // 归一化 SDF 梯度：边缘/角部指向外，内部为方向场。**全定义域连续**（见下）。
+        // [2026-09-16 错位/分界线修复] 原实现是 if/else 硬切换：
+        //   边缘/角区 → normalize(max(cornerCoord,0))；内部 → 轴向 (1,0)/(0,1)。
+        // 两处硬分界（内部方块边界 + 对角线）都会**突变**，而该梯度经
+        // `gradCombined = sdfGrad + uDepth*径向` 归一化后**驱动折射方向** →
+        // 玻璃内容跨线错位/撕裂（用户真机实证：方形磁贴中间一个「叉」+ 中心区/折射区一条分界线）。
+        // 数学上圆角矩形 SDF 在内部的梯度本就是分段常量，**换任何分段公式都必然有分界** ——
+        // 正解是平滑过渡：按「进入内部的深度」在 径向 ↔ 边缘方向 之间 mix，全定义域连续。
         float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {
-            float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
-            if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {
-                // +1e-4 防 normalize(0) 产生 NaN
-                return sign(coord) * normalize(max(cornerCoord, 0.0) + float2(0.0001));
-            } else {
-                float gradX = step(cornerCoord.y, cornerCoord.x);
-                return sign(coord) * float2(gradX, 1.0 - gradX);
-            }
+            float2 a = abs(coord);
+            float2 cornerCoord = a - (halfSize - float2(radius));
+            // 边缘/角区方向（角区 = 角心径向；+1e-4 防 normalize(0) 产生 NaN）
+            float2 dirEdge = normalize(max(cornerCoord, 0.0) + float2(0.0001));
+            // 内部方向：平滑径向（无轴向跳变）
+            float2 dirInner = normalize(a + float2(0.0001));
+            // 深度：0 = 恰在边界，越负越深入内部；用半径的一半作过渡带宽，避免过渡区过窄
+            float depth = min(cornerCoord.x, cornerCoord.y);
+            float t = smoothstep(-max(radius, 1.0) * 0.5, 0.0, depth);
+            return sign(coord) * normalize(mix(dirInner, dirEdge, t));
         }
 
         // ---------- CONIC（三次贝塞尔）圆角 SDF（系统 BlurDrawableShaderCornerStringKt.sdBezierDistance 移植） ----------
@@ -174,15 +186,22 @@ object LiquidGlassShader {
             // 图内等效缩小 4 倍（视口 5px / 低分辨率图 1.25px），配合双线性插值——消除
             // 全分辨率欠采样（图标细节周期 2~10px << 原 tapStep 14px）产生的网格/莫尔纹伪影；
             // 低分辨率图模糊计算量也远小于全分辨率。最远 tap 在 ±spread(=uBlurRadius) 视口 px。
-            float tapStep = spread / 2.0;
+            // [doc/spec/68 模糊质感修复] 5×5 → **7×7**（σ_idx 1.5 → 2.25；tapStep spread/2 → spread/3）：
+            // 原 5×5 在 σ_idx=1.5 时只覆盖 ±2 tap = ±1.33σ，**核边缘权重仍有 0.41**（远未衰减到 0）
+            // → 实际接近「方框模糊」而非高斯（观感：平、脏、不像系统那层柔和的雾）；
+            // 且 tapStep = spread/2（模糊 32px 时 = 16 视口 px）过疏 → 网格/点阵伪影。
+            // 7×7 + tapStep=spread/3：**覆盖范围不变**（±3 × spread/3 = ±spread）但**采样密度提高 50%**；
+            // σ_phys 保持 2.25 × spread/3 = 0.75 × spread 不变 → 模糊强度不变、采样更密、核更接近高斯。
+            // 代价：采样 25 → 49 tap（模糊只作用于折射环带，非全屏）。
+            float tapStep = spread / 3.0;
             float4 sum = float4(0.0);
             float total = 0.0;
-            for (int y = -2; y <= 2; y++) {
-                float wy = gauss(float(y), 1.5);
+            for (int y = -3; y <= 3; y++) {
+                float wy = gauss(float(y), 2.25);
                 float4 row = float4(0.0);
                 float rowTotal = 0.0;
-                for (int x = -2; x <= 2; x++) {
-                    float wx = gauss(float(x), 1.5);
+                for (int x = -3; x <= 3; x++) {
+                    float wx = gauss(float(x), 2.25);
                     row += float4(uSourceLowRes.eval(srcCoord(coord + float2(float(x), float(y)) * tapStep, uSourceLowResRect))) * wx;
                     rowTotal += wx;
                 }
@@ -448,7 +467,17 @@ object LiquidGlassShader {
                 // sdBezierDistance（运动中圆弧省 CONIC 迭代，成本同 uCornerIsConic=0）。
                 // 注：gradRadius 两分支恒等（均 min(1.5×radius, halfSize)），无需随 blend 过渡。
                 float blend = clamp(uCornerConicBlend, 0.0, 1.0);
-                if (blend > 0.001) {
+                // [2026-09-16 圆角自动合并修复] 对齐系统语义：半径达到短边一半时退化为圆/胶囊
+                // （实证：QsViewOutlineProvider.getRoundParams:247-250 —— 半径 >= 高度一半即返回
+                //  null → 圆形；OplusQsSmoothRoundUtil 的 circleParams 同理）。原实现无此退化，
+                //  而 cc=1.5×radius 必然 > halfSize → sdBezierDistance 的角区判定
+                //  any(|p| <= b-cc) 因 b-cc 为负而恒 false → 整个元素被当角区送进按 [0,cc]² 定义的
+                //  贝塞尔、坐标系被压扁 → sdRaw 失真 → 建立其上的高光带/圆角裁剪全部错位
+                //  （用户实证：细高光带在转弯处消失；圆形磁贴与细横幅最明显）。
+                float minHalf = min(halfSize.x, halfSize.y);
+                if (radius >= minHalf) {
+                    sdRaw = sdRoundedRect(centeredCoord, halfSize, minHalf);
+                } else if (blend > 0.001) {
                     float sdConic = sdBezierDistance(centeredCoord, halfSize, cc, uCornerWeight);
                     sdRaw = mix(sdRaw, sdConic, blend);
                 }
@@ -479,7 +508,16 @@ object LiquidGlassShader {
                 // 采样点向元素【内侧】位移（负方向）= Kyant Lens.kt refractionAmount 取负的语义 → 透镜弯折
                 float2 refrVec = -d * n;
                 float2 refractedCoord = (coord - uMaskOffset) + refrVec;
-                if (uDispersion > 0.001) {
+                // [2026-09-16 整元素模糊（B 方案）] uBlurRadius>0 时环带也走模糊采样，折射位移作用在
+                // 模糊图上 → 玻璃整体呈磨砂。原实现环带恒读 uSource（全分辨率清晰图）不读 uBlurRadius，
+                // 而环带宽度 = 短边一半、常占满细长元素（实测 1312x248 元素 refrH=124 = 半高，
+                // 「内部」区退化为零）→ 整个玻璃一点磨砂都没有，与「背景已模糊、玻璃却清晰」的观感割裂。
+                // 色散让位：spectralDispersion 需 7 次全分辨率采样，与 25-tap 模糊叠加 = 175 tap，
+                // 对控制中心 20+ 元素不可接受；且糊图上的通道分离视觉上也难以分辨。需要色散时把
+                // 「模糊半径」调回 0 即恢复原「清晰透镜 + 边缘色散」观感。
+                if (uBlurRadius > 0.01) {
+                    glass = gaussianBlur(refractedCoord, uBlurRadius);
+                } else if (uDispersion > 0.001) {
                     // 光谱色散（仅环带；Kyant 同一强度公式：四角最强、轴上为 0）
                     float dispersionIntensity = uDispersion * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
                     glass = spectralDispersion(refractedCoord, refrVec * dispersionIntensity);
@@ -546,15 +584,49 @@ object LiquidGlassShader {
             //    [2026-08-23 修复] 原实现带中心在边界（abs(sdRaw)），而 shapeAlpha 在边界（sdRaw=0）=0，
             //    圆角边缘高光被裁掉（外半全裁 + 内半 0~-2 羽化削弱）。偏移内侧后高光带中心落在 alpha=1
             //    区域，完整可见、不超圆角；直边元素同样内侧亮边（不跨边界）。
-            float band = 1.0 - smoothstep(0.0, max(uHighlightWidth, 1.0), abs(-sdRaw - max(uHighlightWidth, 1.0) * 0.5));
+            // [2026-09-16 细高光被裁修复] 带中心原为 W/2，W 小时（<4）会落进 shapeAlpha 的
+            // 2px 羽化区（smoothstep(0,-2,sdRaw)）被削弱直至消失——真机反馈「高光带细时边缘
+            // 完全消失、转弯处最明显」。改为带中心保底内移到 2px（=羽化宽度），W>=4 时行为不变。
+            float hw = max(uHighlightWidth, 1.0);
+            float band = 1.0 - smoothstep(0.0, hw, abs(-sdRaw - max(hw * 0.5, 2.0)));
+            // [2026-09-16 圆角弧线高光修复·方案 C] `sdfGrad` 是**边缘法线**：直边法线固定（与光源夹角恒定
+            // → 高光恒定），而圆角弧线法线要**旋转 90°**，其中**必然经过与光源垂直的位置** → 原
+            // `pow(abs(dot),fo)` 在该处精确归零，弧线约 60% 跨度高光消失（真机实证：192×192 圆磁贴整圈
+            // 无高光；`light=43°`、`fo=2` 时弧线中段夹角 88° → hl=0.001）。此前三轮修复调的都是 band
+            // （带的位置/宽度），而实测 band 在弧线处恒为 1 —— **改错了地方**。
+            // 修法：给方向因子加保底 floor —— 弧线保留基础亮度，直边方向对比保留。floor=0 完全回退原行为。
             float2 lightDir = float2(cos(uLightAngle), sin(uLightAngle));
-            float hl = pow(abs(dot(sdfGrad, lightDir)), uHighlightFalloff);
+            float floorK = clamp(uHighlightFloor, 0.0, 1.0);
+            float dirDot = pow(abs(dot(sdfGrad, lightDir)), uHighlightFalloff);
+            float hl = floorK + (1.0 - floorK) * dirDot;
             glass.rgb += float3(hl * band * uHighlight);
+
+            // [临时诊断 高光] 逐像素可视化（需 uDebugHighlight>0.5）。
+            // R = hl（方向因子）、G = band（带包络）、B = sdfGrad.x 映射到 [0,1]（梯度方向）。
+            // 读图法：黄/橙=两者都强（直边）；纯绿=有带无方向（圆角弧线，即本 bug 现场）；
+            // 纯红=有方向无带；黑=都没有（元素内部）。
+            if (uDebugHighlight > 0.5) {
+                return half4(clamp(float3(hl, band, sdfGrad.x * 0.5 + 0.5), 0.0, 1.0), 1.0);
+            }
 
             // 7. 输出
             return half4(clamp(glass, 0.0, 1.0));
         }
     """.trimIndent()
+
+    /** [临时诊断 高光] 逐像素可视化模式（AGSL `uDebugHighlight`），**编译期常量**：
+     *  0=关（正常玻璃渲染）；1=输出 R=`hl`、G=`band`、B=`sdfGrad.x` 映射到 [0,1]。
+     *  ⚠️ **必须在所有 uniform 下发路径（含 [setSourceRectOnly]/[setViewportAndSourceRect] 增量路径）
+     *  都写** —— shader 缓存命中时走增量路径（只重设 srcRect/viewport），漏写则该 uniform 保持默认 0，
+     *  调试开关**静默失效**（2026-09-16 实测踩过，见 doc/spec/67 §五）。 */
+    const val HL_DEBUG_MODE = 0f
+
+    /** 最近一次下发的 `uHighlightFloor` 值。[setSourceRectOnly]/[setViewportAndSourceRect] 增量路径
+     *  **没有 params 入参**，靠它把值补发到 shader —— 否则 shader 缓存命中时该 uniform 停留在
+     *  GLSL 默认 0，弧线高光修复**静默失效**（2026-09-16 实测踩过：装机后用户反馈「高光没有效果」）。
+     *  所有元素共用同一份全局配置值，用静态字段安全。 */
+    @Volatile
+    private var lastHighlightFloor = 0.4f
 
     /** 掩码 CONIC 角权重默认值：(8×1.1)/(3×1.1+3) = 1.3968（侧滑按钮 MetaBall weight=1.1 经系统
      *  CornerParamsKt 变换 fMax=(8·w)/(3·w+3)；spec/12 实证）。 */
@@ -593,6 +665,9 @@ object LiquidGlassShader {
         val highlight: Float = 0.5f,     // 高光强度（加性≈Kyant 白色 0.5 Plus 混合）
         val highlightWidth: Float = 12f, // 高光带宽度 px
         val highlightFalloff: Float = 2f,// 高光方向衰减指数（Kyant ControlCenter=2）
+        /** [2026-09-16 弧线高光修复] 方向因子保底（AGSL uHighlightFloor）：0=原行为（弧线归零），
+         *  0.4=弧线保留基础高光不再断开。见 shader 内步骤 4 说明。 */
+        val highlightFloor: Float = 0.4f,
         val vibrancy: Float = 1.5f,      // 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变）
         val lightAngleDegrees: Float = 45f,
         val parallaxX: Float = 0f,
@@ -692,6 +767,9 @@ object LiquidGlassShader {
         shader.setFloatUniform("uLightAngle", (params.lightAngleDegrees * PI / 180.0).toFloat())
         shader.setFloatUniform("uParallax", params.parallaxX, params.parallaxY)
         shader.setFloatUniform("uDebugCoord", debugCoord)
+        shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
+        lastHighlightFloor = params.highlightFloor
+        shader.setFloatUniform("uHighlightFloor", params.highlightFloor)
         // 掩码（侧滑按钮裁剪）：默认全视口 → sdMask<=0 恒成立 → step=1 → 无裁剪（不影响其他控件）
         val mr = maskRect ?: RectF(0f, 0f, max(params.viewportWidth, 1f), max(params.viewportHeight, 1f))
         shader.setFloatUniform("uMaskRect", mr.left, mr.top, mr.width(), mr.height())
@@ -725,6 +803,9 @@ object LiquidGlassShader {
     ) {
         shader.setFloatUniform("uSourceRect", sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height())
         shader.setFloatUniform("uSourceLowResRect", lowResSourceRect.left, lowResSourceRect.top, lowResSourceRect.width(), lowResSourceRect.height())
+        // 调试开关 / 弧线高光保底必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
+        shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
+        shader.setFloatUniform("uHighlightFloor", lastHighlightFloor)
     }
 
     /**
@@ -755,6 +836,9 @@ object LiquidGlassShader {
         shader.setFloatUniform("uSourceRect", sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height())
         shader.setFloatUniform("uSourceLowResRect", lowResSourceRect.left, lowResSourceRect.top, lowResSourceRect.width(), lowResSourceRect.height())
         shader.setFloatUniform("uViewport", max(viewport.width(), 1f), max(viewport.height(), 1f))
+        // 调试开关 / 弧线高光保底必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
+        shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
+        shader.setFloatUniform("uHighlightFloor", lastHighlightFloor)
         // [2026-08-13 滑动延迟修复] 全视口掩码（maskRect=null，非 swipe/无扩张元素的默认）实际值
         // = viewport（见 setUniforms `maskRect ?: 全视口`）；viewport 随拖动变化时掩码必须同步，
         // 否则 shader 侧 `glass *= smoothstep(0,-2,sdMask)` 会把旧掩码外（新增填充区）的玻璃裁掉。

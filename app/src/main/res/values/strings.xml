@@ -10,6 +10,9 @@
 
     <!-- 液态玻璃材质 -->
     <string name="settings_section_material">液态玻璃参数</string>
+    <string name="settings_blur_radius">模糊半径（px）</string>
+    <string name="settings_blur_radius_value">%1$d px</string>
+    <string name="settings_blur_radius_desc">玻璃内部轻模糊，0 = 清晰透镜。过大可能出现采样条带。</string>
     <string name="settings_vibrancy">鲜艳度（Vibrancy）</string>
     <string name="settings_vibrancy_value">%1$.2fx</string>
     <string name="settings_vibrancy_desc">颜色鲜艳度，1.0 不变，越大越饱和。</string>
@@ -31,6 +34,9 @@
     <string name="settings_highlight_width">高光宽度（px）</string>
     <string name="settings_highlight_width_value">%1$d px</string>
     <string name="settings_highlight_width_desc">高光带宽度，越大越宽。</string>
+    <string name="settings_highlight_floor">弧线高光保底</string>
+    <string name="settings_highlight_floor_value">%1$d%%</string>
+    <string name="settings_highlight_floor_desc">圆角弧线处的高光保底。0 = 只保留方向性（弧线因法线与光源垂直而偏暗）；1 = 整圈均匀一条亮线（相当于直接描一条边）。</string>
     <string name="settings_light_angle">光角度（Light Angle）</string>
     <string name="settings_light_angle_value">%1$d°</string>
     <string name="settings_light_angle_desc">高光光源方向角度。</string>
@@ -77,6 +83,8 @@
     <string name="settings_cc_blur_strength_desc">调整系统控制中心背景模糊力度，100=系统原值，0=不模糊。开启时阻止界面缩小。</string>
     <string name="settings_keep_system_cc_blur">保留系统控制中心模糊（默认开）</string>
     <string name="settings_keep_system_cc_blur_desc">开启保留系统背景模糊（力度可调、阻止缩小）；关闭则背景透明露壁纸。</string>
+    <string name="settings_remove_panel_mix_color">移除面板材质底色（默认开）</string>
+    <string name="settings_remove_panel_mix_color_desc">去掉系统面板背景那层灰底（它不随模糊力度缩放，力度滑杆管不到）；模糊本身照常保留。</string>
 
     <!-- 文字与可读性 -->
     <string name="settings_text_contrast">文字背景反转取色（默认开）</string>
@@ -102,8 +110,10 @@
     <string name="settings_text_force_white_desc">玻璃区域内/横幅中性色文字恒白（与遮罩独立：可只要白字不要压暗，也可单独关解决闪动）。</string>
 
     <!-- 流体云 -->
-    <string name="settings_seedling_card_glass">流体云展开卡片液态玻璃（默认关）</string>
-    <string name="settings_seedling_card_glass_desc">灵动岛展开大卡片液态玻璃化，缩小胶囊不处理。横幅玻璃共用此开关。</string>
+    <string name="settings_seedling_card_glass">流体云液态玻璃（默认关）</string>
+    <string name="settings_seedling_card_glass_desc">灵动岛（流体云）液态玻璃化总开关。横幅玻璃共用此开关。</string>
+    <string name="settings_seedling_capsule_glass">小胶囊（小岛）也玻璃化（默认开）</string>
+    <string name="settings_seedling_capsule_glass_desc">缩小状态的小胶囊一并加玻璃，用全圆角胶囊形状；关闭则只处理展开大卡片。</string>
     <string name="settings_seedling_expand_ratio">展开大卡片判定高度系数</string>
     <string name="settings_seedling_expand_ratio_value">%1$.2f</string>
     <string name="settings_seedling_expand_ratio_desc">子卡片高度 ≥ 状态栏高 × 系数判定为展开大卡，默认 0.6。</string>
@@ -195,6 +205,25 @@
     <string name="settings_anim_damping_value">%1$d（实际 %2$.2f）</string>
     <string name="settings_anim_stiffness_value">%1$d</string>
     <string name="settings_anim_fade_value">%1$d ms</string>
+
+    <!-- [spec/64] 一键预设 + 同步打开 -->
+    <string name="settings_anim_preset_title">一键预设</string>
+    <string name="settings_anim_preset_desc">三档均为临界阻尼（ζ=1.0，不过冲），仅速度不同。点击后本组全部参数立即套用（需先开启上方开关）。</string>
+    <string name="settings_anim_preset_default">恢复默认</string>
+    <string name="settings_anim_preset_soft">柔和 0.50s</string>
+    <string name="settings_anim_preset_mid">适中 0.42s</string>
+    <string name="settings_anim_preset_crisp">利落 0.35s</string>
+    <string name="settings_anim_preset_applied">已套用预设：%1$s</string>
+    <string name="settings_anim_sync_open">同步打开</string>
+    <string name="settings_anim_sync_open_desc">把「打开动画」的全部参数整组复制到打断动画。</string>
+    <string name="settings_anim_sync_done">已同步「打开动画」的参数</string>
+    <string name="settings_anim_sync_not_ready">框架服务未就绪，请稍后重试</string>
+
+    <!-- 桌面 Dock 栏液态玻璃（doc/spec/66，2026-09-16） -->
+    <string name="cat_desktop">桌面</string>
+    <string name="cat_desktop_desc">桌面元素的液态玻璃</string>
+    <string name="settings_dock_glass">Dock 栏液态玻璃</string>
+    <string name="settings_dock_glass_desc">给桌面底部常驻图标条加液态玻璃背景。系统在直板机上原本不对 Dock 绘制任何背景，开启后由模块接管。改动即时生效，无需重启桌面。</string>
 
     <!-- iOS 动态倾斜 / 透视（doc/spec/65，2026-09-16，实验性） -->
     <string name="cat_tilt">倾斜与透视</string>

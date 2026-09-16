@@ -338,5 +338,21 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <Switch
+            android:id="@+id/switchRemovePanelMixColor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_remove_panel_mix_color" />
+
+        <TextView
+            android:id="@+id/removePanelMixColorDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_remove_panel_mix_color_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
     </LinearLayout>
 </ScrollView>

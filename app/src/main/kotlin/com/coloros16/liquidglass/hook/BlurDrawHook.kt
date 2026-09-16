@@ -107,7 +107,17 @@ object BlurDrawHook {
     // [spec/61 2026-08-23] 系统控制中心模糊力度调整 + 阻止缩小（CLASS_BLUR_CONFIG 已有，见任务 D 常量区）
     private const val CLASS_NOTIFI_QS_PLATFORM_BLUR_KT = "com.oplusos.systemui.common.util.NotifiAndQsPlatformBlurExKt"
     private const val METHOD_APPLY_PANEL_MIRROR_SCALE = "applyPanelMirrorScale"
-    private const val METHOD_APPLY_BLUR_CONFIG = "applyBlurConfig"
+    /** [2026-09-16] PlatformStatic 分支的唯一执行体（ViewBlurProxy.java:314）——力度改写挂这里。
+     *  `applyBlurConfig()`(:271)/`setBlurAmount()`(:484)/`setBlurType()`(:550)/drawable 创建回调(:161)
+     *  四条路径全部汇聚到本方法，覆盖面大于只挂 applyBlurConfig()。 */
+    private const val METHOD_APPLY_CONFIG_TO_PLATFORM_BLUR = "applyConfigToPlatformBlur"
+    // [2026-09-16 面板材质底色] 面板背景 MixColor 材质底色（那层"灰"）的来源方法与替换目标。
+    //   ScrimControllerExImp.getPanelPlatformMixConfig(:351) → panelPlatformMixConfig(context, useMotionBlur)
+    //   → BlurMixSingle(MixColor(5, R.color.notification_and_qs_panel_mixed_color_top_layer,
+    //                            R.color.notification_and_qs_panel_mixed_color_bottom_layer))
+    //   改为返回 BlurMixConfig.None → PlatformBlurDrawable.applyBlurConfig(:72-78) 只设模糊不设材质色。
+    private const val CLASS_BLUR_MIX_CONFIG = "com.oplusos.systemui.common.blurability.BlurMixConfig"
+    private const val CLASS_BLUR_MIX_CONFIG_NONE = "com.oplusos.systemui.common.blurability.BlurMixConfig\$None"
     private const val METHOD_DRAW = "draw"
     private const val METHOD_GET_VIEW_BLUR_PROXY = "getViewBlurProxy"
     private const val METHOD_GET_VIEW = "getView"
@@ -347,6 +357,10 @@ object BlurDrawHook {
      *  CardBackgroundView(extends View, id seedling_card_bg)。背景 = viewRootManager.getBackgroundBlurDrawable()
      *  （BackgroundBlurDrawable，blurRadius 540，Oplus 材质 blend #ff585858 / mix #b3262626，圆角 20dp）。 */
     private const val CLASS_CARD_BACKGROUND_VIEW = "com.oplus.systemui.plugins.seedling.card.ui.view.CardBackgroundView"
+    /** [2026-09-16 小岛玻璃化] 流体云小胶囊本体（插件 View，独立 classloader → 用字符串类名比较）。
+     *  见 CapsuleView.java：可见胶囊宽度由 `capsuleDrawableWidth` 决定（背景/前景 Drawable 的 bounds），
+     *  **不是** View 自身宽度；外层的 CapsuleContainer 只是"外框"（宽度 = 子宽 + padding，胶囊居中摆放）。 */
+    private const val CLASS_CAPSULE_VIEW = "com.oplus.systemui.plugins.seedling.capsule.ui.view.CapsuleView"
 
     // ---- [spec/44 流体云展开卡片玻璃化 2026-08-13] Seedling 宿主容器 hook ----
     // 流体云（灵动岛）= Seedling（种子卡片）体系，UI 由 SeedlingPlugin 插件 APK 渲染，**不走
@@ -506,6 +520,13 @@ object BlurDrawHook {
         val cornerRadius: Float = 0f,
         /** [2026-08-13] 本体角 CONIC↔圆弧渐变权重（uniform 变化检测；恒 1 = 角恒 CONIC） */
         val cornerConicBlend: Float = 1f,
+        /** [2026-09-16 doc/spec/67] **材质参数指纹**（`LiquidGlassShader.Params.hashCode()`，data class
+         *  自动生成，覆盖全部材质字段）。
+         *  ⚠️ 此前材质参数**完全不在变化检测内**（[applyComputedGeometry] 只比对 frame/source/viewport/
+         *  srcRect/corner/mask/maskAlpha）→ 改**任何材质滑杆**（高光强度/宽度/falloff/弧线保底/鲜艳度/
+         *  光角/视差…）都不会即时生效，必须等几何变化（拖动、尺寸变、快照换新）才被顺带应用。
+         *  用户实测「弧线高光保底没用、拖了没反应」即此因。纳入后配置改动约 1s（材质缓存周期）内生效。 */
+        val materialHash: Int = 0,
         /** [spec/35 黑遮罩 / spec/41 作用范围修正] 该元素遮罩不透明度（uniform 变化检测；
          *  SystemUI 下拉所有元素统一值，配置变化 → 走全量重设重设 uMaskAlpha） */
         val maskAlpha: Float = 0f,
@@ -1212,6 +1233,14 @@ object BlurDrawHook {
      *  [2026-08-15 语义变更] 背景透明为用户硬需求，默认开；install 读取时按 Prefs.DEFAULT 兜底）。 */
     @Volatile
     private var seedlingForceTransparentBg = false
+    /** [2026-09-16 用户需求变更] 小胶囊（小岛）是否也玻璃化
+     *  （Prefs.KEY_SEEDLING_CAPSULE_GLASS，默认 true）。 */
+    @Volatile
+    private var seedlingCapsuleGlassEnabled = true
+    /** [2026-09-16] 上次渲染的小岛尺寸（仅用于尺寸变化去重，避免重复 register） */
+    private var lastIslandW = -1
+    private var lastIslandH = -1
+
     /** dispatchDraw hook 是否已挂（install 幂等） */
     private var seedlingDispatchDrawMounted = false
     /** 液态玻璃 canvas 绘制单例 Paint（避免每帧 new Paint） */
@@ -1241,8 +1270,13 @@ object BlurDrawHook {
     // ---- [spec/61 2026-08-23] 流体云展开大卡 attach 强制启动持续抓屏 + 系统控制中心模糊力度 ----
     /** CardBackgroundView attach hook 是否已挂（install 幂等） */
     private var cardBgAttachMounted = false
-    /** PlatformBlurDrawable.getHostViewName 字段（Function0，invoke() 返回 hostViewName，面板背景判定） */
-    private var mPbdGetHostViewName: Field? = null
+    /** [2026-09-16 修复力度累积衰减] 面板背景 BlurConfig 的「系统原始模糊半径」缓存。
+     *  key = System.identityHashCode(BlurConfig)，value = 首次见到的 blurRadius（= 系统原值）。
+     *  **力度改写必须以原值为基准**：本 hook 每次调用都会重写 blurConfig.blurRadius，若拿「当前值」
+     *  当基准，每调用一次就再乘一次比例 → strength<100 时半径指数衰减（几次调用归零，真机表现
+     *  「要么透明、要么 100% 模糊，中间档位无效」）。改为原值基准后改写幂等，力度回 100 可精确复位。
+     *  BlurConfig 由 ScrimControllerExImp.refreshBehindDrawable 重建 → 新 identityHashCode → 自动重记基准。 */
+    private val ccBlurBaseRadius = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     /** BlurConfig.blurRadius public 字段（模糊力度调整反射写） */
     private var mBlurConfigBlurRadiusField: Field? = null
     /** [spec/61 修正] ViewBlurProxy.view 字段（面板背景 ScrimView 判定） */
@@ -1259,6 +1293,16 @@ object BlurDrawHook {
     private var cachedKeepCcBlur = Prefs.DEFAULT_KEEP_SYSTEM_CC_BLUR
     @Volatile
     private var cachedKeepCcBlurTimeMs = 0L
+    /** [2026-09-16 面板材质底色] 移除面板材质底色开关缓存（默认 true） */
+    @Volatile
+    private var cachedRemoveMixColor = Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR
+    @Volatile
+    private var cachedRemoveMixColorTimeMs = 0L
+    /** [2026-09-16 面板材质底色] BlurConfig.get/setPlatformMixConfig（替换为 None 用） */
+    private var mBlurConfigGetPlatformMixConfig: Method? = null
+    private var mBlurConfigSetPlatformMixConfig: Method? = null
+    /** [2026-09-16 面板材质底色] BlurMixConfig.None.INSTANCE 单例（**只读不写**，避免污染系统其它使用点） */
+    private var mBlurMixNoneSingleton: Any? = null
     // ---- [2026-08-15 轻打扰折叠横幅玻璃化 方案 B] Simple Banner 宿主 hook 字段 ----
     /** Simple Banner glass hook 是否已挂（install 幂等） */
     private var simpleBannerGlassMounted = false
@@ -1491,6 +1535,11 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Prefs.DEFAULT_SEEDLING_CARD_FORCE_TRANSPARENT_BG
         }
+        seedlingCapsuleGlassEnabled = try {
+            Prefs.read(api).getBoolean(Prefs.KEY_SEEDLING_CAPSULE_GLASS, Prefs.DEFAULT_SEEDLING_CAPSULE_GLASS)
+        } catch (t: Throwable) {
+            Prefs.DEFAULT_SEEDLING_CAPSULE_GLASS
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             Log.w(TAG, "Hook B skipped: SDK=${Build.VERSION.SDK_INT} < Q")
             return
@@ -1525,13 +1574,17 @@ object BlurDrawHook {
         // [spec/19 修复 2026-08-13] 纯白根因：系统 excludeRules = headsUpWindow.isHeadsUpView(view) 阻止
         // PlatformBlurHelper 创建 PlatformBlurDrawable。scoped 放行（仅强制玻璃化的 bgView 返回 false）。
         mountHeadsUpContainerIsHeadsUpView(api, classLoader)
-        // [spec/44 流体云展开卡片玻璃化] hook Seedling 宿主容器 dispatchDraw 注入玻璃（SeedlingPlugin
-        // 插件渲染，不走 posteffect；大卡片形态玻璃化，缩小胶囊不处理）
-        // [2026-08-15 暂停 CapsulePluginContainer 玻璃化] 真机实证：流体云展开大卡片 = NotificationShade
-        // 通知面板 RecyclerView 里的音乐通知卡（[64,192][1376,794] 窄居中卡），不在 CapsulePluginContainer
-        // View 树（状态栏容器）——此 hook 只会把状态栏区域玻璃化（用户反馈"把状态栏部分给流体画了"）。
-        // 展开卡片应走现有通知卡玻璃化管线（recordNotificationCardRegion），本 hook 注释停用。
-        // mountSeedlingCardContainer(api, classLoader)
+        // [spec/44 流体云玻璃化] hook Seedling 宿主容器 dispatchDraw 注入玻璃（SeedlingPlugin 插件渲染，
+        // 不走 posteffect）。
+        // [2026-09-16 恢复] 原 2026-08-15 停用，理由是"展开大卡片不在本容器"——那条**仍然成立**
+        // （展开大卡走 [mountCardBackgroundGlass] 的 CardBackgroundView.onDraw）。但用户新需求是
+        // **小胶囊（小岛）玻璃化**，而小岛确实在本容器内。真机系统日志实证：
+        //   `CapsulePluginContainerController-->location: HOME, screenWidth: 1440, capsuleWith: 432,
+        //    statusBarHeight: 160, rect: Rect(504, 0 - 936, 160)`，容器 1440x160。
+        // 两条路径互不干扰：大卡片走 onDraw（CardBackgroundView），小岛走 dispatchDraw（容器子 View）。
+        // 注意容器宽 = 全屏宽，若子 View 尺寸异常（撑满容器）会把状态栏画满——渲染分支带尺寸日志，
+        // 真机异常时按日志收紧判定。
+        mountSeedlingCardContainer(api, classLoader)
         // [spec/44b 2026-08-15 OplusCustomRow 宿主侧方向 · 已停用] 真机实证上错位置：展开流体云大卡的
         // 真实 View 是 SystemUIPlugin.apk 的 CardContainer → CardView → CardBackgroundView（反编译实锤）；
         // OplusCustomRow 是锁屏流体云宿主（锁屏走 com.oplus.seedling.pluginapp 不同包），本 hook 命中
@@ -3654,16 +3707,18 @@ object BlurDrawHook {
                             val isContainer = containerCls?.isInstance(thisView)
                                 ?: (thisView.javaClass.name == CLASS_CAPSULE_PLUGIN_CONTAINER)
                             if (isContainer) {
-                                if (moduleLogEnabled) dumpParents(thisView)
+                                // [2026-09-16] 原每帧 dumpParents(thisView) 诊断已移除（逐帧刷屏）；
+                                // 需要时用 dumpParents 单独排查
                                 val canvas = try {
                                     chain.getArg(0) as? Canvas
                                 } catch (t: Throwable) {
                                     null
                                 }
-                                // [2026-08-15 修复需求] 绘制顺序：先 chain.proceed() 画子 View
-                                // （系统正常绘制），再画玻璃覆盖在子 View 之上。此前玻璃画在子 View 之下，
-                                // 被插件不透明卡片遮挡 = 真机视觉未生效（spec/44 根因 1 实锤）。
-                                val result = chain.proceed()
+                                // [2026-09-16 用户需求变更] 绘制顺序改回「**玻璃在子 View 之下**」：
+                                // 先画玻璃，再 proceed 画子 View（岛）。岛是半透明深色底 → 玻璃透过它可见，
+                                // 形成「岛原版颜色叠在玻璃之上」的层次（用户明确要求，且岛原版背景不再置空）。
+                                // [对比 2026-08-15] 那次改成画在子 View 之上，是因为置空了岛背景后
+                                // 插件不透明绘制把玻璃挡没了；现在**保留岛原版背景**并接受玻璃在下。
                                 if (canvas != null) {
                                     try {
                                         renderSeedlingCardGlass(canvas, thisView)
@@ -3671,6 +3726,7 @@ object BlurDrawHook {
                                         Log.e(TAG, "seedling-card: dispatchDraw glass failed", t)
                                     }
                                 }
+                                val result = chain.proceed()
                                 // 拦截体内已 proceed，return 防 fall-through 到外层 chain.proceed() 重复画子 View
                                 return@intercept result
                             }
@@ -3688,8 +3744,20 @@ object BlurDrawHook {
     }
 
     /**
-     * [spec/44] 容器 dispatchDraw 拦截体：遍历子 View，对展开大卡片（高度显著超过容器/状态栏高度）
-     * 注册 region 并画液态玻璃。缩小胶囊（≈状态栏高度）不处理（用户需求：只大卡片玻璃化）。
+     * [2026-09-16 小岛玻璃化] 容器 dispatchDraw 拦截体：找容器内的**小胶囊（小岛）**并画液态玻璃。
+     *
+     * **本 hook 只负责小岛**；展开大卡片走 [mountCardBackgroundGlass]（`CardBackgroundView.onDraw`），
+     * 两条路径互不干扰（真机实证：展开大卡在 NotificationShade，不在本容器）。
+     *
+     * 目标是 **`CapsuleView`**（胶囊本体，[collectCapsuleViews] 递归按类名找），不取外层的
+     * `CapsuleContainer`——那只是"外框"，会把玻璃画大（用户反馈「玻璃比岛大、超出边缘」）。
+     * 尺寸用 `CapsuleView` 的 `measuredWidth/Height`（真机 402x120；其 `getWidth()` 恒 0，
+     * 插件未调 `setLeftTopRightBottom`），位置按**容器几何居中**算（CapsuleView 自身的
+     * `getLocationOnScreen()` 是陈旧值，实测返回屏幕中心）。
+     *
+     * 由 `seedlingCapsuleGlassEnabled`（Prefs.KEY_SEEDLING_CAPSULE_GLASS，默认 true）控制；
+     * 圆角用全圆 `min(w,h)/2`（真机 160 高 → 80，与系统路径实测 corner=80 一致）。
+     * 绘制层次见 [mountSeedlingCardContainer]（玻璃在子 View 之下）。
      */
     private fun renderSeedlingCardGlass(canvas: Canvas, container: View) {
         val containerView = container as? android.view.ViewGroup ?: return
@@ -3698,55 +3766,128 @@ object BlurDrawHook {
             if (moduleLogEnabled) Log.i(TAG, "seedling-card: skip container height=$containerHeight ${container.javaClass.name}")
             return
         }
-        // [2026-08-15 修复] 容器 AT_MOST 钳制子 View 高度 = 容器高（真机 160=160）。ratio clamp ≤0.9
-        // 保证阈值 < 容器高：用户曾调 ratio≈1.01 → 阈值 161.6 > 容器 160 恒不命中。分界在胶囊与展开卡片之间。
-        val threshold = containerHeight * seedlingCardExpandHeightRatio.coerceIn(0.1f, 0.9f)
         if (moduleLogEnabled) {
-            Log.i(TAG, "seedling-card: dispatch container=${container.javaClass.name} h=$containerHeight childCount=${containerView.childCount} threshold=$threshold")
+            Log.i(TAG, "seedling-card: dispatch container=${container.javaClass.name} " +
+                "w=${containerView.width} h=$containerHeight childCount=${containerView.childCount}")
         }
-        for (i in 0 until containerView.childCount) {
-            val child = containerView.getChildAt(i)
-            if (child.visibility != View.VISIBLE) {
-                if (moduleLogEnabled) Log.i(TAG, "seedling-card: child[$i] ${child.javaClass.name} invisible skip")
+        if (!seedlingCapsuleGlassEnabled) {
+            if (moduleLogEnabled) Log.i(TAG, "seedling-card: island glass off, skip")
+            return
+        }
+        // [2026-09-16] 目标 = **CapsuleView（胶囊本体）**，不是 CapsuleContainer（外框）：
+        // `CapsuleContainer.onMeasure`(:445-449) 宽度 = 子宽 + padding，`CapsuleContainer.q()`(:506-516)
+        // 把 CapsuleView **居中**摆放 —— 拿外框当本体玻璃必然画大、超出胶囊（用户反馈「玻璃比岛大」）。
+        val capsules = ArrayList<View>(4)
+        collectCapsuleViews(containerView, capsules)
+        if (capsules.isEmpty()) {
+            // [2026-09-16 用户需求] 胶囊 ↔ 展开大卡片互转期间插件会把 CapsuleView 从容器移除
+            // （真机实证），此时**玻璃不显示**——用户明确要求「动画期间干脆不显示」，不做补绘。
+            lastIslandW = -1
+            lastIslandH = -1
+            return
+        }
+        val containerLoc = IntArray(2)
+        try {
+            containerView.getLocationOnScreen(containerLoc)
+        } catch (t: Throwable) {
+            return
+        }
+        for (capsule in capsules) {
+            // 不可见的不画（插件动画期间会短暂置 INVISIBLE）。
+            if (capsule.visibility != View.VISIBLE) {
+                logThrottled("seedling-invis", Log.WARN, 500L) {
+                    "seedling-card: skip invisible CapsuleView vis=${capsule.visibility}"
+                }
                 continue
             }
-            val w = child.width
-            val h = child.height
-            if (w <= 0 || h <= 0) {
-                if (moduleLogEnabled) Log.i(TAG, "seedling-card: child[$i] ${child.javaClass.name} zero-size w=$w h=$h skip")
+            // CapsuleView 由 setLeftTopRightBottom 摆放，getWidth() 偶为 0（布局未完成）→ 退回 measured
+            val cvW = if (capsule.width > 0) capsule.width else capsule.measuredWidth
+            val cvH = if (capsule.height > 0) capsule.height else capsule.measuredHeight
+            if (cvW <= 0 || cvH <= 0) {
+                logThrottled("seedling-zero", Log.WARN, 500L) {
+                    "seedling-card: ABORT zero size cv=${capsule.width}x${capsule.height} " +
+                        "measured=${capsule.measuredWidth}x${capsule.measuredHeight} vis=${capsule.visibility}"
+                }
                 continue
             }
-            // 只处理展开大卡片（高度显著超过阈值）；缩小胶囊（迷你胶囊）跳过
-            if (h < threshold) {
-                if (moduleLogEnabled) Log.i(TAG, "seedling-card: child[$i] ${child.javaClass.name} h=$h<threshold=$threshold skip (capsule)")
+            // ★ 可见胶囊宽度 = `CapsuleView.capsuleDrawableWidth`：背景/前景 Drawable 的 bounds 被限制在
+            //   这个宽度内并**水平居中**（CapsuleView.setCapsuleDrawableWidth:249-255），
+            //   高度取 CapsuleView 全高（bounds 用的就是 getMeasuredHeight()）。
+            //   该字段由动画逐帧更新 → 玻璃尺寸天然跟随小岛动效。
+            // 可见宽度直接用 CapsuleView 自身宽度。**不要读 Drawable bounds**：
+            // 真机实测 background 被本函数置空后读不到，foreground 的 bounds 是 3x3（无关小图），
+            // 拿它当宽度会让玻璃宽度在 402 与 3 之间跳 → 动画期间玻璃几乎不可见（实测）。
+            // 402 为用户确认「平齐」的尺寸。
+            val drawW = cvW
+            // ★ **不能用 CapsuleView.getLocationOnScreen()**：真机实测返回 (720,80) = 屏幕中心
+            //   （玻璃画在岛中心，用户反馈"岛偏了"）。原因在插件里——`CapsuleContainer.q()`
+            //   计算居中位置时 CapsuleView 尚未测量（measuredWidth=0 → (1440-0)/2=720），
+            //   之后测量完成但位置**不再更新** → 该值陈旧。
+            //   改为按容器几何直接算居中：系统布局中胶囊水平/垂直居中于容器
+            //   （CapsuleContainer 自身也居中于 CapsulePluginContainer，真机 432@504 = (1440-432)/2）。
+            val left = containerLoc[0] + (containerView.width - drawW) / 2f
+            val top = containerLoc[1] + (containerHeight - cvH) / 2f
+            val region = RectF(left, top, left + drawW, top + cvH)
+            if (region.width() <= 0f || region.height() <= 0f) {
+                logThrottled("seedling-badregion", Log.WARN, 500L) {
+                    "seedling-card: ABORT bad region=$region draw=${drawW}x$cvH"
+                }
                 continue
             }
-            if (moduleLogEnabled) {
-                Log.i(TAG, "seedling-card: child[$i] ${child.javaClass.name} EXPANDED h=$h w=$w")
-                dumpViewTree(child, 0, 3)
-            }
-            val id = System.identityHashCode(child)
-            val loc = IntArray(2)
+            // [2026-09-16 用户需求] **去掉岛的原版渲染**：置空背景/前景 Drawable（内容 View 不受影响，
+            // 图标/文字照常绘制），配合「玻璃画在子 View 之下」→ 小岛呈现为「纯液态玻璃 + 内容」。
+            // 幂等（已是 null 则跳过）；失败静默（保持原渲染，不崩）。
             try {
-                child.getLocationOnScreen(loc)
+                if (capsule.background != null) capsule.background = null
+                if (capsule.foreground != null) capsule.foreground = null
             } catch (t: Throwable) {
-                continue
             }
-            val screenRegion = RectF(
-                loc[0].toFloat(), loc[1].toFloat(),
-                (loc[0] + w).toFloat(), (loc[1] + h).toFloat(),
+            // 胶囊全圆角：min(可见宽, 高)/2
+            val cornerOverride = Math.min(drawW, cvH) / 2f
+            val id = System.identityHashCode(capsule)
+            registerSeedlingCardRegion(
+                id, region, Rect(0, 0, drawW, cvH), capsule,
+                cornerRadiusOverride = cornerOverride,
             )
-            // [2026-08-15 用户需求] 卡片背景"跟随上面内容取色" → 改成透明让玻璃透出：
-            // 展开大卡片子 View 一律强制置空 background（onDraw 自绘背景不受影响）。
-            // 背景透明改为无条件（seedlingForceTransparentBg 配置保留但不再作为前置条件）。
-            try {
-                if (child.background != null) child.background = null
-            } catch (t: Throwable) {
-            }
-            registerSeedlingCardRegion(id, screenRegion, Rect(0, 0, w, h), child)
-            drawSeedlingGlassOnCanvas(canvas, child, id, w, h, screenRegion)
+            // canvas 原点是本容器左上角 → 偏移取胶囊可见区相对容器的位置
+            val offX = left - containerLoc[0]
+            val offY = top - containerLoc[1]
+            drawSeedlingGlassOnCanvas(
+                canvas, capsule, id, drawW, cvH, region,
+                offsetX = offX, offsetY = offY,
+            )
         }
     }
+
+    /**
+     * [2026-09-16 小岛玻璃化] 递归收集容器内所有 `CapsuleView`（胶囊本体）。
+     *
+     * View 层级（真机 dump + 插件反编译实证）：
+     * ```
+     * CapsulePluginContainer            w=1440 h=160   ← 本 hook 的容器
+     *  └─ CapsuleContainerRoot          w=1440 h=160   ← 撑满状态栏
+     *      └─ CapsuleContainer          w=432  h=160   ← 外框（onMeasure 宽 = 子宽 + padding）
+     *          └─ CapsuleView           ← ★ 胶囊本体（CapsuleContainer.q() 把它居中摆放）
+     *              └─ FrameLayout ...   ← 内容
+     * ```
+     * 插件 View 在独立 classloader → 用**字符串类名**比较（同 [mountCardBackgroundGlass]）。
+     * 命中即停止下钻（CapsuleView 内部是内容 View，不是胶囊本体）。
+     */
+    private fun collectCapsuleViews(parent: View, out: MutableList<View>, depth: Int = 0) {
+        if (depth > 8) return
+        if (parent.javaClass.name == CLASS_CAPSULE_VIEW) {
+            out.add(parent)
+            return
+        }
+        val group = parent as? android.view.ViewGroup ?: return
+        for (i in 0 until group.childCount) {
+            // [2026-09-16] **不在此过滤 visibility**：插件动画期间会反复切 CapsuleView 的 visibility
+            // （CapsuleView.c(hide) → setVisibility(hide ? INVISIBLE : VISIBLE)），过滤掉就分不清
+            // 「树里根本没有」和「有但当前不可见」——两者处理方式不同。visibility 判定下移到渲染循环。
+            collectCapsuleViews(group.getChildAt(i), out, depth + 1)
+        }
+    }
+
 
     /** [seedling 诊断 2026-08-15] 递归打印 View 树（类名/尺寸/屏幕位置），定位展开大卡片真实 View。 */
     private fun dumpViewTree(v: View, depth: Int, maxDepth: Int) {
@@ -3853,8 +3994,16 @@ object BlurDrawHook {
         offsetY: Float = host.top.toFloat(),
     ) {
         if (w <= 0 || h <= 0) return
-        val entry = screenRegionMap[id] ?: return
-        val renderSource = resolveRenderSource(id, screenRegion) ?: return
+        val entry = screenRegionMap[id] ?: run {
+            logThrottled("seedling-nomap", Log.WARN, 500L) { "seedling-card: ABORT no region map id=$id" }
+            return
+        }
+        val renderSource = resolveRenderSource(id, screenRegion) ?: run {
+            logThrottled("seedling-nosrc", Log.WARN, 500L) {
+                "seedling-card: ABORT no render source id=$id region=$screenRegion"
+            }
+            return
+        }
         val srcRect = renderSource.srcRect
         val source = renderSource.source
         val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
@@ -4394,23 +4543,41 @@ object BlurDrawHook {
         return v
     }
 
+    /** [2026-09-16 面板材质底色] 移除面板 MixColor 材质底色开关（默认 true）。改动 ≤1s 生效。 */
+    private fun removePanelMixColorEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedRemoveMixColorTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedRemoveMixColor
+        val a = api ?: return Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR
+        val v = try {
+            Prefs.read(a).getBoolean(Prefs.KEY_REMOVE_PANEL_MIX_COLOR, Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read remove_panel_mix_color failed, default true", t)
+            Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR
+        }
+        cachedRemoveMixColor = v
+        cachedRemoveMixColorTimeMs = now
+        return v
+    }
+
     /**
      * [spec/61 2026-08-23] 系统控制中心模糊力度调整 + 阻止界面缩小。
      *
-     * 反编译实锤（16.1）：
-     * - 面板背景 BlurConfig 构造：`ScrimControllerExImp.refreshBehindDrawable`（:1022）
-     *   `new BlurConfig(panelBlurRadius(context), 0, ...)`；panelBlurRadius = 资源
-     *   `R.integer.blur_radius_platform_config`（NotifiAndQsPlatformBlurExKt:45）。
-     * - 模糊力度应用：`PlatformBlurDrawable.applyBlurConfig(BlurConfig, float)` → `blurParam.setBlurRadius((int)(blurConfig.getBlurRadius() * f))`（:111/:128）。
+     * 反编译实锤（2026-09-16 用 decompiled_new 重新核对，行号以新版为准）：
+     * - 面板背景 BlurConfig 构造：`ScrimControllerExImp.refreshBehindDrawable`（:922-946）
+     *   `new BlurConfig(NotifiAndQsPlatformBlurExKt.panelBlurRadius(context), 0, ...)`
+     *   → 包成 `AutoBlurDrawable` + `ViewBlurProxy` 设给 scrimBehind。panelBlurRadius =
+     *   `R.integer.blur_radius_platform`（NotifiAndQsPlatformBlurExKt:20-22，实测值 800）。
+     * - 模糊力度应用：`ViewBlurProxy.applyConfigToPlatformBlur()`（:314-333）→
+     *   `PlatformBlurDrawable.applyBlurConfig(this.blurConfig, this.blurAmount)`
+     *   → `setBlurRadius((int)(blurConfig.getBlurRadius() * blurAmount))`。
      * - 界面缩小来源：`NotifiAndQsPlatformBlurExKt.applyPanelMirrorScale(boolean z, float f, ViewBlurProxy)`
-     *   （:21-23）→ `setMirrorScale(z ? MathUtils.lerp(1.0f, 0.9f, f) : 1.0f)`——面板展开时 mirrorScale
-     *   从 1.0 lerp 到 0.9（缩小 10%）；**仅被 ScrimViewExImp 调用**（:114/:217）= 面板背景专用。
-     *   → `PlatformBlurDrawable.applyBlurConfig` 里 `setZoomScale(mirrorScale)`（:110/:127）生效。
+     *   （:15-18）→ `setMirrorScale(z ? MathUtils.lerp(1.0f, 0.9f, f) : 1.0f)`——面板展开时 mirrorScale
+     *   从 1.0 lerp 到 0.9（缩小 10%）；**全库唯一调用点 = ScrimViewExImp.setScaleAmount:195**，面板背景专用。
      *
      * hook 方案：
      * ① 阻止缩小：applyPanelMirrorScale hookBefore 把 arg0(z) 强制 false → setMirrorScale 恒 1.0。
-     * ② 调力度：applyBlurConfig hookBefore 判定面板背景（getHostViewName Function0 含 "ScrimView"）→
-     *    反射改 BlurConfig.blurRadius（public 字段）为 `原值 × 力度%/100`。
+     * ② 调力度：applyConfigToPlatformBlur hookBefore 判定面板背景（this.view 是 ScrimView）→
+     *    反射改 BlurConfig.blurRadius（public 字段）为 `系统原值 × 力度%/100`（原值见 [ccBlurBaseRadius]）。
      */
     private fun mountCcBlurHooks(api: XposedInterface, classLoader: ClassLoader) {
         // 解析 BlurConfig.blurRadius public 字段（力度修改对象字段）
@@ -4429,9 +4596,92 @@ object BlurDrawHook {
             Log.w(TAG, "cc-blur: resolve ViewBlurProxy view/blurConfig fields failed", t)
         }
         mountApplyPanelMirrorScale(api, classLoader)
-        // [2026-08-23 修正] 力度 hook 改挂 ViewBlurProxy.applyBlurConfig()（无参分发入口）——
-        // PlatformBlurDrawable.applyBlurConfig 真机零触发（面板背景不走该实例方法路径）。
+        // [2026-09-16 修正] 力度 hook 挂 ViewBlurProxy.applyConfigToPlatformBlur()——PlatformStatic 分支里
+        // 真正把 blurRadius 交给 blurParam 的执行体（旧版挂 PlatformBlurDrawable.applyBlurConfig 实例方法，
+        // 2026-08-23 改挂无参 applyBlurConfig()，覆盖面仍窄于本方法）。
         mountViewBlurProxyApplyBlurConfig(api, classLoader)
+        // [2026-09-16 面板材质底色] 解析 MixColor 反射链（移除那层"灰"，在 applyConfigToPlatformBlur 内应用）
+        resolveMixColorReflect(classLoader)
+    }
+
+    /**
+     * [2026-09-16 面板材质底色] 移除面板背景的 MixColor 材质底色。
+     *
+     * **现象**：开启「保留系统模糊」后面板背景始终有一层灰，把「系统模糊力度」压到 8% 也不消退。
+     *
+     * **根因**（反编译逐层实证，详见 doc/spec/69）：
+     * `PlatformBlurDrawable.applyBlurConfig`（PlatformBlurDrawable.java:66-113）里，
+     * **模糊半径**与**材质底色**是两套独立参数：
+     * ```
+     * ① 底色：applyMixColorAndScale(blurParam, mixColor, mirrorScale, f)   // :51-53
+     *          → setMaterialParams(mode, topLayerColor×f, bottomLayerColor×f, ...)   // f = blurAmount
+     * ② 模糊：blurParam.setBlurRadius((int)(blurConfig.getBlurRadius() * f))          // :82
+     * ```
+     * 底色 alpha 只乘 `blurAmount`（面板展开进度），**不经过 blurRadius** → 力度滑杆管不到它。
+     *
+     * **修法**（2026-09-16 真机修正）：hook 点不用 `panelPlatformMixConfig`——**真机上该方法不存在**
+     * （`NoSuchMethodException`，反编译产物与真机 SystemUI 版本不一致），改用**已确认存在**的
+     * `ViewBlurProxy.applyConfigToPlatformBlur()`（模块已在用，见 [mountViewBlurProxyApplyBlurConfig]）：
+     * 在那里判定面板背景（`isPanelBackgroundViewBlurProxy`）后，把 `BlurConfig.platformMixConfig`
+     * **整体替换为 `BlurMixConfig.None.INSTANCE`** → 系统走自身 None 分支（只设模糊、不调
+     * `setMaterialParams`）→ 模糊保留、底色消失。
+     *
+     * **为何不用「只改 MixColor 颜色 alpha=0」**：真机实测实际类型是
+     * `BlurMixConfig$BlurMixSingleWithShader`（**反编译产物里没有这个类**，版本不一致），
+     * 持色的类不是 `BlurMixSingle`，按字段反射取色必然失败。整体替换 None 不依赖任何私有字段。
+     * `None.INSTANCE` 只读不写（不修改其字段，避免污染系统其它使用点）。
+     *
+     * 只影响面板背景（behind_scrim）；锁屏 bouncer 与元素混色不变。
+     */
+    private fun resolveMixColorReflect(classLoader: ClassLoader) {
+        try {
+            val mixCfgCls = Class.forName(CLASS_BLUR_MIX_CONFIG, false, classLoader)
+            val cfgCls = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
+            mBlurConfigGetPlatformMixConfig = cfgCls.getMethod("getPlatformMixConfig")
+            mBlurConfigSetPlatformMixConfig = cfgCls.getMethod("setPlatformMixConfig", mixCfgCls)
+            mBlurMixNoneSingleton = try {
+                Class.forName(CLASS_BLUR_MIX_CONFIG_NONE, false, classLoader)
+                    .getDeclaredField("INSTANCE").get(null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "cc-mixcolor: None.INSTANCE unresolved, feature disabled", t)
+                null
+            }
+            Log.i(TAG, "cc-mixcolor: reflect chain resolved (panelMixConfig -> None)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "cc-mixcolor: resolve reflect chain failed, feature disabled", t)
+        }
+    }
+
+    /** [2026-09-16 面板材质底色] 把面板背景 `BlurConfig.platformMixConfig` 整体替换为 `None`。
+     *  在 [mountViewBlurProxyApplyBlurConfig] 的面板分支内调用——时机在 `PlatformBlurDrawable.applyBlurConfig`
+     *  **之前**，故其读到的是替换后的 None → 走系统 None 分支（只设模糊、不调 setMaterialParams）。
+     *  幂等（已是 None 直接返回），可逐帧调用。
+     *
+     *  **为什么不做「只把 MixColor 颜色 alpha 归零」**：真机上实际类型是
+     *  `BlurMixConfig$BlurMixSingleWithShader`（**反编译产物里没有这个类**，与真机版本不一致），
+     *  持有 `mixColor` 的类不是 `BlurMixSingle`，按字段反射取色必然失败（2026-09-16 真机实测）。
+     *  整体替换 None 不依赖任何私有字段，是最稳的路径——真机验证效果正常。 */
+    private fun applyRemovePanelMixColor(vbp: Any) {
+        val cfg = try {
+            mViewBlurProxyBlurConfigField?.get(vbp)
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        val cur = try {
+            mBlurConfigGetPlatformMixConfig?.invoke(cfg)
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        if (cur.javaClass.name == CLASS_BLUR_MIX_CONFIG_NONE) return
+        val none = mBlurMixNoneSingleton ?: return
+        try {
+            mBlurConfigSetPlatformMixConfig?.invoke(cfg, none)
+            logThrottled("cc-mixcolor", Log.INFO, 1000L) {
+                "cc-mixcolor: panel platformMixConfig -> None (was=${cur.javaClass.simpleName})"
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "cc-mixcolor: replace with None failed", t)
+        }
     }
 
     /** [spec/61] 阻止面板背景缩小：hook `NotifiAndQsPlatformBlurExKt.applyPanelMirrorScale(boolean, float, ViewBlurProxy)`，
@@ -4454,8 +4704,9 @@ object BlurDrawHook {
                         if (keepSystemCcBlurEnabled() || ccBlurStrength() != Prefs.DEFAULT_CC_BLUR_STRENGTH) {
                             val args = chain.getArgs().toTypedArray()
                             args[0] = false
-                            if (moduleLogEnabled) {
-                                Log.i(TAG, "cc-blur: applyPanelMirrorScale block shrink (z->false)")
+                            // 逐帧调用，必须节流（一次下拉 40+ 条会淹没 logcat）
+                            logThrottled("cc-blur-mirror", Log.INFO, 1000L) {
+                                "cc-blur: applyPanelMirrorScale block shrink (z->false)"
                             }
                             return@intercept chain.proceed(args)
                         }
@@ -4470,51 +4721,89 @@ object BlurDrawHook {
         }
     }
 
-    /** [spec/61 2026-08-23 修正] 系统控制中心模糊力度：hook `ViewBlurProxy.applyBlurConfig()`（无参统一分发入口，
-     *  ViewBlurProxy.java:296——按 blurType 分发 PlatformStatic/Motion/Static/BlendWallpaper），hookBefore 判定
-     *  面板背景（view 字段是 ScrimView）→ 反射改 this.blurConfig.blurRadius（public 字段）= 原值×力度%/100 →
-     *  proceed 后各 applyConfigToXxx 用新半径。覆盖所有 blurType 路径（比 PlatformBlurDrawable.applyBlurConfig
-     *  实例方法可靠，后者真机零触发）。 */
+    /** [spec/61 + 2026-09-16 修复] 系统控制中心模糊力度：hook `ViewBlurProxy.applyConfigToPlatformBlur()`
+     *  （PlatformStatic 分支唯一执行体，ViewBlurProxy.java:314），hookBefore 判定面板背景（view 字段是
+     *  ScrimView）→ 反射把 `blurConfig.blurRadius` 写成 **系统原值 × 力度%/100**（原值取本实例首次见到的
+     *  值，见 [ccBlurBaseRadius]）→ proceed 后 `setBlurRadius(blurConfig.getBlurRadius() * blurAmount)` 用新半径。
+     *  改写幂等：同一 strength 反复调用结果恒定。 */
     private fun mountViewBlurProxyApplyBlurConfig(api: XposedInterface, classLoader: ClassLoader) {
         if (mBlurConfigBlurRadiusField == null) {
-            Log.w(TAG, "cc-blur: BlurConfig.blurRadius field unresolved, applyBlurConfig strength disabled")
+            Log.w(TAG, "cc-blur: BlurConfig.blurRadius field unresolved, strength adjust disabled")
             return
         }
         try {
             val vbpCls = Class.forName(CLASS_VIEW_BLUR_PROXY, false, classLoader)
-            val method = vbpCls.getMethod("applyBlurConfig")
+            val method = vbpCls.getMethod(METHOD_APPLY_CONFIG_TO_PLATFORM_BLUR)
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     try {
-                        if (keepSystemCcBlurEnabled()) {
-                            val vbp = chain.getThisObject()
-                            if (vbp != null && isPanelBackgroundViewBlurProxy(vbp)) {
-                                val strength = ccBlurStrength()
-                                val blurConfig = mViewBlurProxyBlurConfigField?.get(vbp)
-                                if (blurConfig != null) {
-                                    val sysRadius = reflectBlurConfigRadius(blurConfig)
-                                    if (sysRadius > 0) {
-                                        val newRadius = (sysRadius * strength / 100.0).toInt()
-                                            .coerceIn(0, sysRadius * 3)
-                                        if (newRadius != sysRadius) {
-                                            setBlurConfigRadius(blurConfig, newRadius)
-                                        }
-                                        if (moduleLogEnabled) {
-                                            Log.i(TAG, "cc-blur: ViewBlurProxy.applyBlurConfig adjust radius strength=$strength sys=$sysRadius new=$newRadius")
-                                        }
-                                    }
-                                }
-                            }
+                        val vbp = chain.getThisObject()
+                        val isPanel = vbp != null && isPanelBackgroundViewBlurProxy(vbp)
+                        val keep = keepSystemCcBlurEnabled()
+                        // [诊断] 入口无条件日志：hook 是否被调用、面板判定结果、开关状态一次说清。
+                        // 排查期日志缓冲常被进程重启清掉，故 runtime 证据必须靠这条（而非安装期 mounted 日志）。
+                        logThrottled("cc-blur-enter", Log.INFO, 1000L) {
+                            "cc-blur: ENTER this=${vbp?.javaClass?.name} view=${viewBlurProxyViewName(vbp)} isPanel=$isPanel keep=$keep strength=${ccBlurStrength()}%"
+                        }
+                        if (vbp != null && isPanel) {
+                            if (keep) applyCcBlurStrength(vbp)
+                            // [2026-09-16 面板材质底色] 去掉 MixColor 灰底（那层灰不随模糊力度缩放）。
+                            // 与 keep 无关地保持状态一致；keep=false 时整链短路，改了也看不到。
+                            if (removePanelMixColorEnabled()) applyRemovePanelMixColor(vbp)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "cc-blur: ViewBlurProxy.applyBlurConfig intercept error", t)
+                        Log.e(TAG, "cc-blur: applyConfigToPlatformBlur intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "cc-blur: ViewBlurProxy.applyBlurConfig mounted (strength adjust)")
+            Log.i(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mounted (strength adjust)")
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: ViewBlurProxy.applyBlurConfig mount FAILED", t)
+            Log.w(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mount FAILED", t)
+        }
+    }
+
+    /** [2026-09-16] 把面板背景 `BlurConfig.blurRadius` 写成「系统原值 × 力度%/100」。
+     *  原值按 BlurConfig 实例缓存（[ccBlurBaseRadius]）——**不能用当前值做基准**，否则每次调用都在
+     *  上一次改写结果上再乘一次比例，指数衰减到 0（真机「要么透明要么 100%」的根因）。 */
+    private fun applyCcBlurStrength(vbp: Any) {
+        val blurConfig = mViewBlurProxyBlurConfigField?.get(vbp)
+        if (blurConfig == null) {
+            logThrottled("cc-blur-nocfg", Log.WARN, 1000L) {
+                "cc-blur: blurConfig field null, strength skipped (fieldResolved=${mViewBlurProxyBlurConfigField != null})"
+            }
+            return
+        }
+        val key = System.identityHashCode(blurConfig)
+        val cur = reflectBlurConfigRadius(blurConfig)
+        val base: Int = ccBlurBaseRadius[key] ?: run {
+            // 未初始化（≤0）→ 本轮不记基准，等系统写入原值后再记，避免把 0 锁死成基准
+            if (cur <= 0) {
+                logThrottled("cc-blur-nobase", Log.WARN, 1000L) {
+                    "cc-blur: base unfixed, blurRadius=$cur (fieldResolved=${mBlurConfigBlurRadiusField != null}), skip"
+                }
+                return
+            }
+            if (ccBlurBaseRadius.size > 32) ccBlurBaseRadius.clear()
+            ccBlurBaseRadius[key] = cur
+            cur
+        }
+        val strength = ccBlurStrength()
+        val want = (base * strength / 100.0).toInt().coerceIn(0, base * 3)
+        if (cur != want) setBlurConfigRadius(blurConfig, want)
+        // 诊断：下拉一次即应出现本行；不出现 = 上一级 ENTER 日志会说明原因
+        logThrottled("cc-blur-strength", Log.INFO, 1000L) {
+            "cc-blur: base=$base cur=$cur want=$want strength=$strength% ${if (cur != want) "WRITTEN" else "already-ok"}"
+        }
+    }
+
+    /** [诊断] 读 ViewBlurProxy.view 的类名（面板背景判定依据）。反射失败返回 "?"。 */
+    private fun viewBlurProxyViewName(vbp: Any?): String {
+        if (vbp == null) return "null"
+        return try {
+            (mViewBlurProxyViewField?.get(vbp) as? View)?.javaClass?.name ?: "?"
+        } catch (t: Throwable) {
+            "?"
         }
     }
 
@@ -4527,68 +4816,6 @@ object BlurDrawHook {
             view?.javaClass?.name?.contains("ScrimView") == true
         } catch (t: Throwable) {
             false
-        }
-    }
-
-    /** [spec/61] 调整系统控制中心模糊力度：hook `PlatformBlurDrawable.applyBlurConfig(BlurConfig, float)`，
-     *  hookBefore 判定面板背景（getHostViewName 含 "ScrimView"）→ 反射改 blurConfig.blurRadius（public 字段）
-     *  = 原值 × 力度%/100 → 后续 `setBlurRadius(blurRadius*f)` 用用户值。力度 100（系统原值）不改。 */
-    private fun mountApplyBlurConfigStrength(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName(CLASS_PLATFORM_BLUR_DRAWABLE, false, classLoader)
-            val blurConfigCls = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
-            val method = clazz.getMethod(METHOD_APPLY_BLUR_CONFIG, blurConfigCls, Float::class.javaPrimitiveType)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        if (keepSystemCcBlurEnabled() || ccBlurStrength() != Prefs.DEFAULT_CC_BLUR_STRENGTH) {
-                            val pbd = chain.getThisObject()
-                            val hostName = if (pbd != null) pbdHostViewName(pbd) else null
-                            if (pbd != null && isPanelBackgroundBlurDrawable(pbd)) {
-                                val blurConfig = chain.getArg(0)
-                                if (blurConfig != null) {
-                                    val strength = ccBlurStrength()
-                                    val sysRadius = reflectBlurConfigRadius(blurConfig)
-                                    if (moduleLogEnabled) {
-                                        Log.i(TAG, "cc-blur: applyBlurConfig trigger host=$hostName strength=$strength sysRadius=$sysRadius")
-                                    }
-                                    if (sysRadius > 0) {
-                                        val newRadius = (sysRadius * strength / 100.0).toInt()
-                                            .coerceIn(0, sysRadius * 3)
-                                        if (newRadius != sysRadius) {
-                                            setBlurConfigRadius(blurConfig, newRadius)
-                                        }
-                                    }
-                                }
-                            } else if (moduleLogEnabled) {
-                                Log.i(TAG, "cc-blur: applyBlurConfig SKIP not panel scrim (host=$hostName this=${pbd?.javaClass?.name})")
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "cc-blur: applyBlurConfig intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Log.i(TAG, "cc-blur: applyBlurConfig mounted (strength adjust for panel scrim)")
-        } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: applyBlurConfig mount FAILED", t)
-        }
-    }
-
-    /** [spec/61] 判定 PlatformBlurDrawable 是否为面板背景 scrim：getHostViewName（Function0）invoke() 返回的
-     *  hostViewName 含 "ScrimView"。反射字段未解析 → false（不调力度，保守回退）。 */
-    private fun isPanelBackgroundBlurDrawable(pbd: Any): Boolean =
-        pbdHostViewName(pbd)?.contains("ScrimView") == true
-
-    /** [spec/61] 读 PlatformBlurDrawable.getHostViewName()（Function0.invoke()）。反射失败返回 null。 */
-    private fun pbdHostViewName(pbd: Any): String? {
-        val f = mPbdGetHostViewName ?: return null
-        return try {
-            val fn = f.get(pbd)
-            if (fn is Function0<*>) fn.invoke() as? String else null
-        } catch (t: Throwable) {
-            null
         }
     }
 
@@ -7111,9 +7338,13 @@ object BlurDrawHook {
             // [spec/35 黑遮罩 / spec/41 作用范围修正] 遮罩 uniform 变化检测：SystemUI 下拉所有元素
             // 统一值，配置/首次应用变化 → 走全量 setUniforms 重设 uMaskAlpha（禁用轻量分支）
             val maskOverlayChanged = applied == null || applied.maskAlpha != cg.maskAlpha
+            // [2026-09-16 doc/spec/67] 材质参数指纹变化（任何材质滑杆改动）→ 必须走全量 setUniforms 重设。
+            // 否则材质改动被 `if (!uniformsChanged) return true` 吃掉，直到几何变化才生效。
+            val materialChanged = applied == null || applied.materialHash != cg.params.hashCode()
             val uniformsChanged = sourceBitmapChanged || viewportChanged || maskChanged || srcRectChanged || cornerChanged ||
                 // [spec/35 黑遮罩 / spec/41 作用范围修正] 遮罩统一值变化（配置/首次应用）→ 走全量重设
-                maskOverlayChanged
+                maskOverlayChanged ||
+                materialChanged
 
             if (!uniformsChanged) return true
 
@@ -7204,6 +7435,7 @@ object BlurDrawHook {
                 cornerIsConic = cg.cornerIsConic, cornerWeight = cg.cornerWeight, cornerRadius = cg.cornerRadius,
                 cornerConicBlend = cg.cornerConicBlend,
                 maskAlpha = cg.maskAlpha,
+                materialHash = cg.params.hashCode(),
             )
             // [coord 诊断] refresh 重设 uniform 节流日志（每 64 次 + 距上次 ≥2s 打一条）
             refreshUniformCount++
@@ -7826,15 +8058,32 @@ object BlurDrawHook {
             if (lowResBitmapSourceId == id) return cached
         }
         return try {
-            val w = (source.width / 4).coerceAtLeast(1)
-            val h = (source.height / 4).coerceAtLeast(1)
-            Bitmap.createScaledBitmap(source, w, h, true).also {
+            // [doc/spec/68] 逐级 1/2 降采样（等效 mipmap）：一次 4× 双线性只取邻近 2×2 源像素，
+            // **不是区域平均** → 2~4px 的细笔画（文字/图标细节）被随机采样成孤立点
+            // （用户反馈「点状文字」的根因）。分两次各降一半、每级双线性都做一次平均
+            // → 等效 4×4 区域平均，走样大幅减少。仅在快照更新时执行一次，**零渲染开销**。
+            var cur = source
+            // [doc/spec/68] 降采样级数 **1/4**（逐级 1/2 两次）—— 用户指定。
+            // 三轮真机实证记录（供后续调参参考）：
+            //   1/4 + 5×5 → 明显网格；1/8 + 5×5 → 更重的方块；1/2 + 7×7 → 网格依旧。
+            // 结论：网格感主因在 **shader 侧高斯核形状**（σ 相对覆盖范围过大、只覆盖 ±1.33σ，
+            // 核边缘权重 0.41 ≈ 方框模糊），不在降采样级别 → 降采样回到内存/开销最优的 1/4。
+            repeat(2) {
+                val nw = (cur.width / 2).coerceAtLeast(1)
+                val nh = (cur.height / 2).coerceAtLeast(1)
+                if (nw >= cur.width && nh >= cur.height) return@repeat   // 已无法再降
+                val next = Bitmap.createScaledBitmap(cur, nw, nh, true)
+                // 回收中间产物（不回收源快照；尺寸相同时 createScaledBitmap 会返回同一对象，须判等）
+                if (cur !== source && next !== cur) cur.recycle()
+                cur = next
+            }
+            cur.also {
                 lowResBitmapCache = it
                 lowResBitmapSourceId = id
-                Log.i(TAG, "render: lowRes bitmap created ${it.width}x${it.height} (src ${source.width}x${source.height})")
+                Log.i(TAG, "render: lowRes bitmap created ${it.width}x${it.height} (src ${source.width}x${source.height}, 2-step)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "render: createScaledBitmap(1/4) failed", t)
+            Log.e(TAG, "render: createScaledBitmap(1/4 x2) failed", t)
             null
         }
     }
@@ -7847,6 +8096,7 @@ object BlurDrawHook {
      * 配置改动 ≤1s 生效（无需重启）。渲染输出不变（同值复用，仅读取频率降低）。
      */
     private data class CachedMaterialParams(
+        val blurRadius: Float,
         val refractionAmount: Float,
         val depth: Float,
         val dispersion: Float,
@@ -7857,6 +8107,9 @@ object BlurDrawHook {
         val lightAngleDegrees: Float,
         val parallaxX: Float,
         val parallaxY: Float,
+        /** [2026-09-16 弧线高光修复] 高光方向因子保底。放末尾并带默认值：位置参数构造，
+         *  避免重排既有实参（兜底分支不传即用配置默认）。 */
+        val highlightFloor: Float = Prefs.DEFAULT_HIGHLIGHT_FLOOR,
     )
 
     @Volatile
@@ -7886,6 +8139,7 @@ object BlurDrawHook {
         }
         val result = if (prefs == null) {
             CachedMaterialParams(
+                Prefs.DEFAULT_BLUR_RADIUS,
                 def.refractionAmount, def.depth, def.dispersion,
                 def.highlight, def.highlightWidth, Prefs.DEFAULT_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_VIBRANCY,
                 def.lightAngleDegrees, def.parallaxX, def.parallaxY,
@@ -7893,6 +8147,7 @@ object BlurDrawHook {
         } else {
             try {
                 CachedMaterialParams(
+                    prefs.getFloat(Prefs.KEY_BLUR_RADIUS, Prefs.DEFAULT_BLUR_RADIUS),
                     prefs.getFloat(Prefs.KEY_REFRACTION_AMOUNT, def.refractionAmount),
                     prefs.getFloat(Prefs.KEY_DEPTH, def.depth),
                     prefs.getFloat(Prefs.KEY_DISPERSION, def.dispersion),
@@ -7903,10 +8158,12 @@ object BlurDrawHook {
                     prefs.getFloat(Prefs.KEY_LIGHT_ANGLE, def.lightAngleDegrees),
                     prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),
                     prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_FLOOR, Prefs.DEFAULT_HIGHLIGHT_FLOOR),
                 )
             } catch (t: Throwable) {
                 Log.e(TAG, "buildParams: prefs float read failed, use defaults", t)
                 CachedMaterialParams(
+                    Prefs.DEFAULT_BLUR_RADIUS,
                     def.refractionAmount, def.depth, def.dispersion,
                     def.highlight, def.highlightWidth, Prefs.DEFAULT_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_VIBRANCY,
                     def.lightAngleDegrees, def.parallaxX, def.parallaxY,
@@ -7942,9 +8199,9 @@ object BlurDrawHook {
                 // shader 内 1.5×uCornerRadius + sdBezierDistance；uCornerWeight=CornerParamsKt 变换后值
                 cornerIsConic = cornerIsConic,
                 cornerWeight = cornerWeight,
-                // [强制透明诊断档] blurRadius 强制 0（清晰透镜）：诊断期间无视配置，防某元素
-                // 覆盖 blurRadius>0 造成"内部模糊"。恢复配置化后改回 prefs 读取。
-                blurRadius = 0f,
+                // [2026-09-16 恢复配置化] 撤回原「强制透明诊断档」的硬编码 0，改回读 KEY_BLUR_RADIUS
+                // （默认 8px）。用户反馈「横幅太透」即因长期被强制成清晰透镜。
+                blurRadius = m.blurRadius,
                 // [2026-08-14 折射自适应] 折射环带高度恒 = 元素短边一半（min(width,height)/2，每元素自适应——
                 // 元素大环带宽/元素小环带窄，比例统一）；不再读 refraction_height 配置（已废弃）。
                 // 折射强度读 KEY_REFRACTION_AMOUNT（默认 def=28）。
@@ -7955,6 +8212,7 @@ object BlurDrawHook {
                 highlight = m.highlight,
                 highlightWidth = m.highlightWidth,
                 highlightFalloff = m.highlightFalloff,
+                highlightFloor = m.highlightFloor,
                 vibrancy = m.vibrancy,
                 lightAngleDegrees = m.lightAngleDegrees,
                 parallaxX = m.parallaxX,

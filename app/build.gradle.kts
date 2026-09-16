@@ -13,7 +13,12 @@ android {
         applicationId = "com.coloros16.liquidglass"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
+        // [Drip 适配] Drip 按 versionCode 判定模块 APK 是否更新：固定值会让框架一直复用已解析的
+        // dex 缓存（框架日志特征 `reusing parsed APK (apk unchanged), skip re-parse`），表现为
+        // 「代码改了、编译安装也成功、设备上 APK 的 md5 也一致，但功能就是不生效」。
+        // 改用构建时间戳（秒）保证每次构建都递增，框架必然走 `module apk changed: rebuilding cache`
+        // 重新解析。注：秒级时间戳 2038-01 起溢出 Int，本项目调试期足够。
+        versionCode = (System.currentTimeMillis() / 1000L).toInt()
         versionName = "0.1.0"
     }
 

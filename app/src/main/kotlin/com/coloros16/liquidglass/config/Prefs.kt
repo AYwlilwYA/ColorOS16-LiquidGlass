@@ -42,6 +42,8 @@ object Prefs {
 
     // ---------- 液态玻璃材质参数（默认全关/零，随 M1 渲染 PoC 逐个启用） ----------
     const val KEY_BLUR_RADIUS = "blur_radius"
+    /** 模糊半径 UI 上限（px）：shader 为固定 5×5 tap，间隔 = spread/2，过大将出采样条带 */
+    const val BLUR_RADIUS_UI_MAX = 32
     const val KEY_REFRACTION_AMOUNT = "refraction_amount"
     /** ⚠️ 已废弃（2026-08-14 折射自适应）：折射环带高度不再可配置，恒 = 元素实际区域短边一半
      *  （BlurDrawHook/LauncherHook buildParams 内 minOf(width,height)/2f）。本键不再被代码读取；
@@ -52,14 +54,19 @@ object Prefs {
     const val KEY_HIGHLIGHT = "highlight"
     const val KEY_HIGHLIGHT_WIDTH = "highlight_width"
     const val KEY_HIGHLIGHT_FALLOFF = "highlight_falloff"
+    /** [2026-09-16 弧线高光修复] 高光方向因子保底（0~1，默认 0.4）。圆角弧线的法线旋转 90°，
+     *  必然经过与光源垂直处 → 原实现该处高光精确归零（弧线约 60% 跨度消失）。保底后弧线保留
+     *  基础亮度、不再断开；0 = 完全回退旧行为。详见 doc/spec/67。 */
+    const val KEY_HIGHLIGHT_FLOOR = "highlight_floor"
     const val KEY_VIBRANCY = "vibrancy"
     const val KEY_LIGHT_ANGLE = "light_angle"
     const val KEY_PARALLAX_X = "parallax_x"
     const val KEY_PARALLAX_Y = "parallax_y"
 
     // 新管线（2026-08-12 Kyant 分层：清晰内部透镜 + 内侧折射环带 + vibrancy + 高光）默认值
-    /** 内部可选轻模糊半径 px（0=清晰透镜=iOS 26 观感；>0 仅作用内部，不糊折射环带） */
-    const val DEFAULT_BLUR_RADIUS = 0f
+    /** 内部可选轻模糊半径 px（0=清晰透镜；>0 仅作用内部，不糊折射环带）。
+     *  [2026-09-16] 0f → 8f：原 0 使每块玻璃成完全清晰透镜（用户反馈「横幅太透、看得见背后文字」）。 */
+    const val DEFAULT_BLUR_RADIUS = 8f
     /** 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变） */
     const val DEFAULT_VIBRANCY = 1.5f
     /** 高光方向衰减指数（Kyant ControlCenter=2；越大越聚光） */
@@ -78,6 +85,9 @@ object Prefs {
     const val DEFAULT_HIGHLIGHT = 0.5f
     /** 高光带宽度默认 px */
     const val DEFAULT_HIGHLIGHT_WIDTH = 12f
+    /** [2026-09-16 弧线高光修复] 高光方向因子保底默认值（= LiquidGlassShader.Params 同源）。
+     *  0.4 = 弧线处保留 40% 基础高光（直边 0.53→0.72，弧线 0→0.40）。 */
+    const val DEFAULT_HIGHLIGHT_FLOOR = 0.4f
     /** 光角度默认（度） */
     const val DEFAULT_LIGHT_ANGLE = 45f
     /** 视差 X 默认 px（0 = 关闭视差） */
@@ -297,6 +307,31 @@ object Prefs {
     /** 保留系统控制中心模糊默认值（true = 恢复系统模糊） */
     const val DEFAULT_KEEP_SYSTEM_CC_BLUR = true
 
+    /** [2026-09-16 面板材质底色] 移除系统面板背景的 MixColor 材质底色（用户反馈的"一层灰遮罩"）。
+     *
+     *  **根因**（反编译实证）：`PlatformBlurDrawable.applyBlurConfig`（PlatformBlurDrawable.java:51-53/79-83）
+     *  里材质底色与模糊是两套独立参数 —— 底色 alpha 由 `applyMixColorAndScale(..., f)` 的 `f = blurAmount`
+     *  决定，**完全不经过 blurRadius**。故「系统模糊力度」滑杆压不下这层灰（真机：力度 8% 灰照旧）。
+     *
+     *  **修法**：hook `NotifiAndQsPlatformBlurExKt.panelPlatformMixConfig(Context, boolean)` 返回
+     *  `BlurMixConfig.None` 实例 → 系统走已有的 None 分支（PlatformBlurDrawable.java:72-78）
+     *  只设 `setBlurRadius`、**不调 setMaterialParams** → 模糊保留、底色消失。
+     *  None 是系统内置合法分支（非异常路径），无 ClassCastException 风险。
+     *
+     *  默认 **true**（用户明确反馈该底色是问题）。详见 doc/spec/69。 */
+    const val KEY_REMOVE_PANEL_MIX_COLOR = "remove_panel_mix_color"
+    /** 移除面板材质底色默认值（true = 移除那层灰） */
+    const val DEFAULT_REMOVE_PANEL_MIX_COLOR = true
+
+    // ---------- 桌面 Dock 栏液态玻璃化（doc/spec/66，2026-09-16） ----------
+    /** 桌面 Dock 栏（常驻图标条）液态玻璃背景。默认 **false**（与模块「默认全关」原则一致）。
+     *  直板机上系统原本因 `ScreenUtils.isSupportDockerExpandScreen()` 门控从不给 Dock 装配任何背景，
+     *  开启后本模块解开该门控 + 让 Dock 拿到 LayerBlurDrawable + 用自研玻璃 shader 渲染。
+     *  改动即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启 Launcher）。 */
+    const val KEY_DOCK_GLASS_ENABLE = "dock_glass_enable"
+    /** 桌面 Dock 栏玻璃默认值（false = 不干预，Dock 保持系统原样透明） */
+    const val DEFAULT_DOCK_GLASS_ENABLE = false
+
     // ---------- 弹出通知（heads-up）文字跟随整体颜色（doc/spec/47，2026-08-13） ----------
     /** heads-up 通知文字跟随整体颜色独立开关：true=开启（默认）；false=不放开（heads-up 文字回退
      *  mask/系统原逻辑）。**与遮罩开关无关**：开启时无论遮罩开/关，heads-up 窗口内中性色文字都按系统
@@ -315,12 +350,24 @@ object Prefs {
     const val DEFAULT_TEXT_FORCE_REFRESH_INTERVAL_MS = 500
 
     // ---------- 流体云（灵动岛）展开卡片玻璃化（doc/spec/44，2026-08-13） ----------
-    /** 流体云展开卡片（Seedling 大卡片）液态玻璃化总开关：true=开启（大卡片形态玻璃化）；
-     *  false=默认关闭（配置默认全关原则，用户手动开启）。仅 SystemUI 进程生效，
-     *  缩小（迷你胶囊）状态不处理。改动需重启 SystemUI 生效（install 时读取并缓存）。 */
+    /** 流体云（Seedling）液态玻璃化总开关：true=开启（大卡片 + 小胶囊都玻璃化）；
+     *  false=默认关闭（配置默认全关原则，用户手动开启）。仅 SystemUI 进程生效。
+     *  改动需重启 SystemUI 生效（install 时读取并缓存）。 */
     const val KEY_SEEDLING_CARD_GLASS_ENABLE = "seedling_card_glass_enable"
-    /** 流体云展开卡片玻璃化默认值（false = 默认关闭） */
+    /** 流体云玻璃化默认值（false = 默认关闭） */
     const val DEFAULT_SEEDLING_CARD_GLASS_ENABLE = false
+
+    /** [2026-09-16 用户需求变更] 流体云**小胶囊**（迷你种子卡片/小岛）也玻璃化。
+     *
+     *  原实现只处理「展开大卡片」，高度 < 阈值的缩小胶囊被显式跳过（当时用户需求是"只大卡片"）。
+     *  现用户要求小岛也加玻璃 → 本开关控制是否一并渲染小胶囊。
+     *  与总开关的关系：总开关关 → 全部不渲染；总开关开 + 本项开 → 大卡片与小胶囊都渲染。
+     *
+     *  **小胶囊用全圆角**（`min(w,h)/2`，胶囊形），不复用大卡片的 `corner_ratio` 比例
+     *  （小胶囊 min=状态栏高，0.22 比例只会得到小圆角矩形，不是胶囊）。 */
+    const val KEY_SEEDLING_CAPSULE_GLASS = "seedling_capsule_glass"
+    /** 流体云小胶囊玻璃化默认值（true = 小岛也渲染） */
+    const val DEFAULT_SEEDLING_CAPSULE_GLASS = true
 
     /** 展开大卡片判定高度系数：子卡片 View 高度 ≥（容器高度 × 本系数）判定展开大卡片，缩小胶囊跳过。
      *  ⚠️ [2026-08-15 修复] 容器（CapsulePluginContainer）FrameLayout AT_MOST 钳制子 View 高度 = 容器高

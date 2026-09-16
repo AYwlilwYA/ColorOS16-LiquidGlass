@@ -17,6 +17,7 @@ import android.util.Log
 import android.view.Choreographer
 import android.view.SurfaceControl
 import android.view.View
+import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import io.github.libxposed.api.XposedInterface
@@ -106,6 +107,27 @@ object LauncherHook {
     private const val CLASS_WALLPAPER_MANAGER = "android.app.WallpaperManager"
     private const val METHOD_SET_WALLPAPER_OFFSETS = "setWallpaperOffsets"
 
+    // ---- [doc/spec/66 2026-09-16] 桌面 Dock 栏液态玻璃化（借壳方案）----
+    /** Dock 控件：`com.android.launcher3.OplusHotseat`（extends Hotseat extends CellLayout），
+     *  背景 = 字段 `mShortcutsAndWidgets`（父类 CellLayout）的 background。 */
+    private const val CLASS_OPLUS_HOTSEAT = "com.android.launcher3.OplusHotseat"
+    /** Dock 背景装配入口（OplusHotseat:1564，public void，无参）。 */
+    private const val METHOD_SET_DOCKER_BACKGROUND = "setDockerBackground"
+    /** 建 blur 背景（OplusHotseat:181，**private** → 反射调用）。直板机因其内部
+     *  `hasLargeDisplayFeatures()` 门控不会走到，故需从外部强调（本模块借壳核心）。 */
+    private const val METHOD_CREATE_BLUR_DRAWABLE = "createBlurDrawable"
+    /** Dock 图标条容器（定义在父类 CellLayout → 沿继承链找）。 */
+    private const val FIELD_SHORTCUTS_AND_WIDGETS = "mShortcutsAndWidgets"
+    /** 门控方法（ScreenUtils:223，**static**）：`!isDockerExpandDisabled && (isTablet || isFoldScreenExpanded)`。
+     *  直板机恒 false → `setDockerBackground()` 全部调用点被挡 → Dock 无任何背景。
+     *  ⚠️ 只改这一个，**不动 `hasLargeDisplayFeatures`**（后者被 OplusTaskHeaderView 等复用，强制 true 会误伤）。 */
+    private const val CLASS_SCREEN_UTILS = "com.android.common.util.ScreenUtils"
+    private const val METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN = "isSupportDockerExpandScreen"
+    /** Dock 玻璃圆角回退值（dp）：系统 `createBlurDrawable` 用 `R.dimen.dp_20`。 */
+    private const val DOCK_CORNER_DP_FALLBACK = 20f
+    /** Dock 玻璃开关重读间隔（ms）：改动无需重启 Launcher（同 spec/64/65 的 TTL 模式）。 */
+    private const val DOCK_GLASS_TTL_MS = 500L
+
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
     /** [doc/spec/42 2026-08-13] Launcher 抓屏「只抓壁纸层」UID 过滤：setUid 语义 = 只抓
@@ -194,6 +216,15 @@ object LauncherHook {
     private var mLayerCls: Class<*>? = null
     private var mLayerBlurInnerField: Field? = null
 
+    // [doc/spec/66] Dock 借壳反射（解析失败只禁 Dock 玻璃，不影响文件夹）
+    private var mCreateBlurDrawable: Method? = null
+    private var mShortcutsAndWidgetsField: Field? = null
+    /** Dock 玻璃开关缓存（TTL 见 [DOCK_GLASS_TTL_MS]，热路径不每帧读 Prefs） */
+    @Volatile
+    private var cachedDockGlass = false
+    @Volatile
+    private var cachedDockGlassAtMs = 0L
+
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
     private val shaderCache = ConcurrentHashMap<Int, RuntimeShader>()
@@ -262,6 +293,9 @@ object LauncherHook {
         mountDrawBlurShader(api, classLoader)
         mountPreviewBackground(api, classLoader)
         mountFolderRoundImageView(api, classLoader)
+        // [doc/spec/66] 桌面 Dock 栏液态玻璃化（借壳：解开系统门控让 Dock 拿到 LayerBlurDrawable，
+        // 再补映射交给现有 drawBlurShader 替换链渲染玻璃）
+        mountDockGlass(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
         Log.i(TAG, "LauncherHook install done")
@@ -308,6 +342,32 @@ object LauncherHook {
         } catch (t: Throwable) {
             Log.e(TAG, "LauncherHook resolve FolderRoundImageView failed, folder icon map uses fallback radius", t)
         }
+        // [doc/spec/66] Dock 借壳反射（createBlurDrawable 是 private → getDeclaredMethod + setAccessible）
+        try {
+            val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
+            mCreateBlurDrawable = hotseat.getDeclaredMethod(METHOD_CREATE_BLUR_DRAWABLE)
+                .apply { isAccessible = true }
+            // mShortcutsAndWidgets 定义在父类（CellLayout）→ 沿继承链找，不写死所在类
+            mShortcutsAndWidgetsField = findFieldAlongHierarchy(hotseat, FIELD_SHORTCUTS_AND_WIDGETS)
+            Log.i(TAG, "LauncherHook resolved OplusHotseat.createBlurDrawable/mShortcutsAndWidgets (dock glass)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook resolve OplusHotseat failed, dock glass disabled", t)
+        }
+    }
+
+    /** [doc/spec/66] 沿继承链找字段（superclass 逐层 getDeclaredField），找不到返回 null。 */
+    private fun findFieldAlongHierarchy(start: Class<*>, name: String): Field? {
+        var c: Class<*>? = start
+        while (c != null && c != Any::class.java) {
+            try {
+                return c.getDeclaredField(name).apply { isAccessible = true }
+            } catch (_: NoSuchFieldException) {
+                c = c.superclass
+            } catch (t: Throwable) {
+                return null
+            }
+        }
+        return null
     }
 
     // ------------------------------------------------------------ Hook 1：BaseDrawable.drawBlurShader（主绘制）
@@ -421,6 +481,147 @@ object LauncherHook {
         } catch (t: Throwable) {
             Log.e(TAG, "LauncherHook mount FAILED: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW", t)
         }
+    }
+
+    // ------------------------------------------------------------ [doc/spec/66] Dock 玻璃（借壳）
+
+    /**
+     * Dock 栏液态玻璃化（借壳三步）。反编译实证（OplusLauncher）：
+     * - Dock 控件 `OplusHotseat`，背景 = 父类字段 `mShortcutsAndWidgets` 的 background
+     * - `OplusHotseat:1564 setDockerBackground()` 的全部调用点都套在 `ScreenUtils.isSupportDockerExpandScreen()`
+     *   （`:223` = `!isDockerExpandDisabled && (isTablet || isFoldScreenExpanded)`）里 → **直板机恒 false →
+     *   该函数一次都不被调用 → Dock 无任何背景**（既非 blur 也非普通背景，纯透明）
+     * - 即便进了该方法，`:1569` 还有 `hasLargeDisplayFeatures()` 门控（`isFoldScreenExpanded || isTablet`）
+     *   → 直板机走 `getHotseatNormalBgDrawable`（普通背景）而非 `createBlurDrawable()`（blur 背景）
+     *
+     * 故：①解开 `isSupportDockerExpandScreen` 门控让系统恢复调用；②在其 after 里反射调 private
+     * `createBlurDrawable()` 强建 `LayerBlurDrawable` 覆盖上去（绕过 ②' 的 `hasLargeDisplayFeatures`）；
+     * ③补 `screenRegionMap` 映射 —— **本项目特有**（LuckyTool 只需系统模糊显示，我们要用自研玻璃顶掉它，
+     * 无映射则 `drawBlurShader` 查表 miss → 回退系统模糊，与文件夹「玻璃不出现」同一坑，见 spec/10）。
+     *
+     * ⚠️ 只解 `isSupportDockerExpandScreen`，**不动 `hasLargeDisplayFeatures`**（后者被 OplusTaskHeaderView
+     * 等复用，强制 true 会误伤；LuckyTool 同款做法，其源码中该 hook 被注释）。
+     */
+    private fun mountDockGlass(api: XposedInterface, classLoader: ClassLoader) {
+        // ① 解开调用点门控：static 方法，interceptor 直接返回 true = 跳过原方法（LibXposed 的 Chain
+        //    没有 returnAndSkip/setResult，但 Hooker.intercept 的返回值即被 hook 方法的返回值）
+        try {
+            val cls = Class.forName(CLASS_SCREEN_UTILS, false, classLoader)
+            val method = cls.getMethod(METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    if (dockGlassEnabled()) true else chain.proceed()
+                }
+            Log.i(TAG, "LauncherHook mounted: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN -> true (dock glass)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN", t)
+        }
+
+        if (mCreateBlurDrawable == null || mShortcutsAndWidgetsField == null) {
+            Log.w(TAG, "LauncherHook dock glass: OplusHotseat unresolved, skip remaining dock hooks")
+            return
+        }
+
+        // ② setDockerBackground() after → 强建 blur 背景（系统逻辑先跑完，再覆盖）
+        try {
+            val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
+            val method = hotseat.getMethod(METHOD_SET_DOCKER_BACKGROUND)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        if (dockGlassEnabled()) forceDockBlurBackground(chain.getThisObject())
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "launcher dock: force blur background failed", t)
+                    }
+                    result
+                }
+            Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND (dock blur background)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND", t)
+        }
+
+        // ③ 常态映射：Dock 每次绘制登记 screenRegionMap（同 spec/10 文件夹的 FolderRoundImageView.onDraw）
+        try {
+            val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
+            val method = hotseat.getMethod(METHOD_ON_DRAW, Canvas::class.java)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        if (dockGlassEnabled()) registerDockRegion(chain)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "launcher dock: onDraw map failed", t)
+                    }
+                    chain.proceed()
+                }
+            Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW(Canvas) (dock map)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW", t)
+        }
+    }
+
+    /** [doc/spec/66 ②] 反射调 private `createBlurDrawable()` → 设给 `mShortcutsAndWidgets`。
+     *  重复调用幂等（`OplusHotseat:191-197`：背景已是 LayerBlurDrawable 且 bounds 匹配时直接返回原对象）。
+     *  无子项时清背景（与系统 `setDockerBackground` 的空态处理一致）。 */
+    private fun forceDockBlurBackground(hotseat: Any?) {
+        if (hotseat == null) return
+        val sw = mShortcutsAndWidgetsField?.get(hotseat) as? ViewGroup ?: return
+        if (sw.childCount == 0) {
+            sw.setBackgroundResource(0)
+            return
+        }
+        val drawable = mCreateBlurDrawable?.invoke(hotseat) as? Drawable ?: return
+        sw.background = drawable
+    }
+
+    /** [doc/spec/66 ③] Dock 映射登记：`mShortcutsAndWidgets` 的背景（LayerBlurDrawable）→ 内层
+     *  posteffect `BlurDrawable` → `screenRegionMap`（与 `drawBlurShader` 的 this 同 identityHashCode）。 */
+    private fun registerDockRegion(chain: XposedInterface.Chain) {
+        val hotseat = chain.getThisObject() as? View ?: return
+        val sw = mShortcutsAndWidgetsField?.get(hotseat) as? View ?: return
+        val drawable = sw.background ?: return
+        if (mLayerCls?.isInstance(drawable) != true) return
+        val inner = try {
+            mLayerBlurInnerField?.get(drawable)
+        } catch (t: Throwable) {
+            Log.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
+        } ?: return
+        registerBlurRegion(inner, sw, resolveDockCornerPx(sw))
+    }
+
+    /** [doc/spec/66] Dock 玻璃圆角 px：系统 `createBlurDrawable`（`OplusHotseat:203`）取
+     *  `R.dimen.dp_20`；解析不到时按 `20dp × density` 折算。**必须给正值** —— `registerBlurRegion`
+     *  对 corner<=0 会回退 `min(w,h)/2`（长条 Dock 会变成胶囊）。 */
+    private fun resolveDockCornerPx(host: View): Float {
+        return try {
+            val res = host.resources
+            val id = res.getIdentifier("dp_20", "dimen", host.context.packageName)
+            if (id > 0) res.getDimensionPixelSize(id).toFloat()
+            else DOCK_CORNER_DP_FALLBACK * res.displayMetrics.density
+        } catch (t: Throwable) {
+            Log.e(TAG, "launcher dock: resolve corner radius failed, fallback ${DOCK_CORNER_DP_FALLBACK}dp", t)
+            DOCK_CORNER_DP_FALLBACK * 3f
+        }
+    }
+
+    /** [doc/spec/66] Dock 玻璃开关（TTL [DOCK_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
+    private fun dockGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedDockGlassAtMs > DOCK_GLASS_TTL_MS) {
+            cachedDockGlassAtMs = now
+            cachedDockGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_DOCK_GLASS_ENABLE, Prefs.DEFAULT_DOCK_GLASS_ENABLE)
+                } ?: false
+            } catch (t: Throwable) {
+                Log.w(TAG, "prefs read dock_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedDockGlass
     }
 
     /**
@@ -1389,7 +1590,11 @@ object LauncherHook {
     // ------------------------------------------------------------ 材质参数
 
     private fun buildParams(width: Float, height: Float, cornerRadius: Float): LiquidGlassShader.Params {
-        val def = LiquidGlassShader.Params(viewportWidth = width, viewportHeight = height)
+        // def 兼作 prefs 不可用时的兜底：blurRadius 须带上配置默认值（否则退回 Params 默认 0f = 清晰透镜）
+        val def = LiquidGlassShader.Params(
+            viewportWidth = width, viewportHeight = height,
+            blurRadius = Prefs.DEFAULT_BLUR_RADIUS,
+        )
         val prefs = try {
             api?.let { Prefs.read(it) }
         } catch (t: Throwable) {
@@ -1404,8 +1609,9 @@ object LauncherHook {
                 // 文件夹玻璃本体角：RBox 圆弧（非 CONIC；Launcher 无 CornerParams CONIC 语义）
                 cornerIsConic = false,
                 cornerWeight = DEFAULT_CORNER_WEIGHT,
-                // 清晰透镜（内部可选轻模糊，同 SystemUI）
-                blurRadius = 0f,
+                // [2026-09-16 恢复配置化] 原硬编码 0（清晰透镜，同 SystemUI 的「强制透明诊断档」），
+                // 改回读 KEY_BLUR_RADIUS —— 用户反馈「玻璃太透、背景看得一清二楚」。
+                blurRadius = prefs.getFloat(Prefs.KEY_BLUR_RADIUS, Prefs.DEFAULT_BLUR_RADIUS),
                 // [2026-08-14 折射自适应] 折射环带高度恒 = 元素短边一半（不再读 refraction_height 配置）
                 refractionHeight = minOf(width, height) / 2f,
                 refractionAmount = prefs.getFloat(Prefs.KEY_REFRACTION_AMOUNT, def.refractionAmount),

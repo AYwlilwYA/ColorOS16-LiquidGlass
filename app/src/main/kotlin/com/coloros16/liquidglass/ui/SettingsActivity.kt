@@ -22,6 +22,8 @@ import androidx.appcompat.app.AppCompatActivity
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import io.github.libxposed.service.XposedService
 import kotlin.math.roundToInt
 
@@ -53,6 +55,26 @@ class SettingsActivity : AppCompatActivity() {
     /** [spec/64] 当前所在三级「桌面动画参数」组（null = 不在三级页）。 */
     private var currentAnimGroup: String? = null
 
+    /** [spec/64] 一键预设档位：刚度 / 阻尼 / 透明度时长（ms）；null = 取该组默认值。 */
+    private data class AnimPreset(val labelRes: Int, val stiffness: Int?, val damping: Int?, val fade: Int?)
+
+    /**
+     * [spec/64] 三档预设，阻尼一律取 100 = 临界阻尼（ζ=1.0），**数学上无过冲**，仅速度不同。
+     * 折算关系（与 SwiftUI 同模型）：刚度 = (2π/T)²，T = 感知时长（秒）；阻尼值 = 阻尼比 ζ × 100。
+     *
+     * 为何不用 ζ<1：欠阻尼必然过冲（`过冲量 = e^(-πζ/√(1-ζ²))`），
+     * 表现为「画面已铺满全屏仍在继续胀大再回缩」。小元件位移下 0.6% 过冲不可见，
+     * 但应用打开是「图标 → 全屏」的大位移放大，同样的 ζ 会被放大成肉眼可见的运动
+     * （ζ=0.70 时过冲 4.6%，1440px 下约 66px）—— 真机实测 ζ<1 的档位均被否决。
+     */
+    private val animPresets = listOf(
+        // 按组取 ZuyQA 原始默认值：打开/打断 580/140/340，关闭 120/87/510
+        AnimPreset(R.string.settings_anim_preset_default, null, null, null),
+        AnimPreset(R.string.settings_anim_preset_soft, 158, 100, 500),
+        AnimPreset(R.string.settings_anim_preset_mid, 220, 100, 420),
+        AnimPreset(R.string.settings_anim_preset_crisp, 320, 100, 350),
+    )
+
     /** 二级大类定义。 */
     private data class Category(val id: String, val titleRes: Int, val descRes: Int, val layoutRes: Int)
 
@@ -68,6 +90,7 @@ class SettingsActivity : AppCompatActivity() {
         Category("anim", R.string.cat_anim, R.string.cat_anim_desc, R.layout.view_cat_anim),
         // [spec/65] iOS 动态倾斜/透视（实验性，默认关）
         Category("tilt", R.string.cat_tilt, R.string.cat_tilt_desc, R.layout.view_cat_tilt),
+        Category("desktop", R.string.cat_desktop, R.string.cat_desktop_desc, R.layout.view_cat_desktop),
         Category("tracker", R.string.cat_tracker, R.string.cat_tracker_desc, R.layout.view_cat_tracker),
         Category("log", R.string.cat_log, R.string.cat_log_desc, R.layout.view_cat_log),
         Category("about", R.string.cat_about, R.string.cat_about_desc, R.layout.view_cat_about),
@@ -174,6 +197,7 @@ class SettingsActivity : AppCompatActivity() {
             "lockscreen" -> bindLockscreen(view)
             "anim" -> bindAnim(view)
             "tilt" -> bindTilt(view)
+            "desktop" -> bindDesktop(view)
             "tracker" -> bindTracker(view)
             "log" -> bindLog(view)
             "about" -> bindAbout(view)
@@ -194,6 +218,15 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 液态玻璃材质：内部轻模糊 / 鲜艳度 / 高光衰减 / 折射环带高度 / 折射强度。 */
     private fun bindMaterial(view: View) {
+        // [2026-09-16 恢复配置化] 模糊半径：0~32 px（默认 8）。原被硬编码 0（清晰透镜），
+        // 用户反馈「横幅太透」。>0 时 shader 走 5×5 内部轻模糊（25 次采样，仅作用内部不糊折射环带）。
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekBlurRadius), valueText = view.findViewById(R.id.blurRadiusValue),
+            key = Prefs.KEY_BLUR_RADIUS, default = Prefs.DEFAULT_BLUR_RADIUS,
+            fromProgress = { p -> p.toFloat() },
+            toProgress = { v -> v.roundToInt().coerceIn(0, Prefs.BLUR_RADIUS_UI_MAX) },
+            format = { v -> getString(R.string.settings_blur_radius_value, v.roundToInt()) },
+        )
         // vibrancy：1.0~2.0（progress 0~100 → 1.0~2.0，默认 1.5）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekVibrancy), valueText = view.findViewById(R.id.vibrancyValue),
@@ -252,6 +285,15 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 60) },
             format = { v -> getString(R.string.settings_highlight_width_value, v.roundToInt()) },
+        )
+        // highlightFloor：0~100 → 0~1（默认 0.4）。[doc/spec/67] 弧线高光保底：
+        // 0 = 纯方向性（圆角弧线因法线与光源垂直而偏暗）、1 = 整圈均匀一条亮线（等于"直接描一条边"）
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekHighlightFloor), valueText = view.findViewById(R.id.highlightFloorValue),
+            key = Prefs.KEY_HIGHLIGHT_FLOOR, default = Prefs.DEFAULT_HIGHLIGHT_FLOOR,
+            fromProgress = { p -> p / 100f },
+            toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
+            format = { v -> getString(R.string.settings_highlight_floor_value, (v * 100f).roundToInt()) },
         )
         // lightAngle：0~360°（默认 45）
         bindFloatSeekBar(
@@ -381,6 +423,17 @@ class SettingsActivity : AppCompatActivity() {
             switchKeepBlur, keepBlurListener,
             Prefs.KEY_KEEP_SYSTEM_CC_BLUR, Prefs.DEFAULT_KEEP_SYSTEM_CC_BLUR
         )
+
+        // [2026-09-16 面板材质底色] 移除系统面板背景那层 MixColor 灰底（默认开；模糊保留）
+        val switchRemoveMixColor = view.findViewById<Switch>(R.id.switchRemovePanelMixColor)
+        val removeMixColorListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_REMOVE_PANEL_MIX_COLOR, checked)
+        }
+        switchRemoveMixColor.setOnCheckedChangeListener(removeMixColorListener)
+        refreshBooleanSwitch(
+            switchRemoveMixColor, removeMixColorListener,
+            Prefs.KEY_REMOVE_PANEL_MIX_COLOR, Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR
+        )
     }
 
     /** 文字与可读性：文字反色 / 弹出通知文字跟随。 */
@@ -461,6 +514,17 @@ class SettingsActivity : AppCompatActivity() {
             Prefs.KEY_SEEDLING_CARD_GLASS_ENABLE, Prefs.DEFAULT_SEEDLING_CARD_GLASS_ENABLE
         )
 
+        // [2026-09-16 用户需求变更] 小胶囊（小岛）也玻璃化（默认开）
+        val switchCapsule = view.findViewById<Switch>(R.id.switchSeedlingCapsuleGlass)
+        val capsuleListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_SEEDLING_CAPSULE_GLASS, checked)
+        }
+        switchCapsule.setOnCheckedChangeListener(capsuleListener)
+        refreshBooleanSwitch(
+            switchCapsule, capsuleListener,
+            Prefs.KEY_SEEDLING_CAPSULE_GLASS, Prefs.DEFAULT_SEEDLING_CAPSULE_GLASS
+        )
+
         // 展开大卡片判定高度系数（0.5~3.0，默认 1.2）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekSeedlingExpandRatio), valueText = view.findViewById(R.id.seedlingExpandRatioValue),
@@ -511,6 +575,19 @@ class SettingsActivity : AppCompatActivity() {
         )
     }
 
+    /** [doc/spec/66] 桌面大类：Dock 栏液态玻璃化（默认关；Launcher 侧 TTL 500ms 重读，改动无需重启桌面）。 */
+    private fun bindDesktop(view: View) {
+        val switchDock = view.findViewById<Switch>(R.id.switchDockGlass)
+        val dockListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_DOCK_GLASS_ENABLE, checked)
+        }
+        switchDock.setOnCheckedChangeListener(dockListener)
+        refreshBooleanSwitch(
+            switchDock, dockListener,
+            Prefs.KEY_DOCK_GLASS_ENABLE, Prefs.DEFAULT_DOCK_GLASS_ENABLE
+        )
+    }
+
     // ------------------------------------------------------------ [spec/64] 桌面动画参数 ------------------------------------------------------------
 
     /** 桌面动画二级页：三组开关 + 三组参数入口。 */
@@ -537,6 +614,7 @@ class SettingsActivity : AppCompatActivity() {
     /** 三级参数页：启用开关 + 4 组（阻尼/刚度）+ 图标透明度时长。键名按组动态拼装。 */
     private fun bindAnimParams(view: View, group: String) {
         bindAnimGroupSwitch(view, R.id.switchAnimEnabled, group)
+        bindAnimPresets(view, group)
         bindAnimDamping(view, R.id.seekAnimXDamping, R.id.animXDampingValue, group, Prefs.ANIM_PARAM_X_DAMPING)
         bindAnimStiffness(view, R.id.seekAnimXStiffness, R.id.animXStiffnessValue, group, Prefs.ANIM_PARAM_X_STIFFNESS)
         bindAnimDamping(view, R.id.seekAnimYDamping, R.id.animYDampingValue, group, Prefs.ANIM_PARAM_Y_DAMPING)
@@ -577,6 +655,79 @@ class SettingsActivity : AppCompatActivity() {
             max = Prefs.ANIM_STIFFNESS_UI_MAX - Prefs.ANIM_STIFFNESS_UI_MIN, step = 1, offset = Prefs.ANIM_STIFFNESS_UI_MIN,
             format = { v -> getString(R.string.settings_anim_stiffness_value, v) },
         )
+    }
+
+    /** [spec/64] 一键预设 Chip + 「同步打开」按钮（后者仅打断组可见）。 */
+    private fun bindAnimPresets(view: View, group: String) {
+        val chips = view.findViewById<ChipGroup>(R.id.animPresetChips)
+        chips.removeAllViews()
+        animPresets.forEach { preset ->
+            chips.addView(Chip(view.context).apply {
+                text = getString(preset.labelRes)
+                isCheckable = false
+                setOnClickListener { applyAnimPreset(group, preset) }
+            })
+        }
+        // 打断动画大多与打开动画同参，提供手工「同步打开」按钮（不做自动联动）
+        val isBreak = group == Prefs.ANIM_GROUP_BREAK
+        val syncBtn = view.findViewById<View>(R.id.btnSyncFromOpen)
+        val syncDesc = view.findViewById<View>(R.id.txtSyncFromOpenDesc)
+        syncBtn.visibility = if (isBreak) View.VISIBLE else View.GONE
+        syncDesc.visibility = if (isBreak) View.VISIBLE else View.GONE
+        syncBtn.setOnClickListener {
+            if (copyAnimGroup(from = Prefs.ANIM_GROUP_OPEN, to = Prefs.ANIM_GROUP_BREAK)) {
+                bindCurrentPage()
+                Toast.makeText(this, R.string.settings_anim_sync_done, Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, R.string.settings_anim_sync_not_ready, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** 把预设档位写入本组全部 9 个参数，并刷新滑块回显。 */
+    private fun applyAnimPreset(group: String, preset: AnimPreset) {
+        val stiffness = preset.stiffness ?: Prefs.animDefaultStiffness(group)
+        val damping = preset.damping ?: Prefs.animDefaultDamping(group)
+        val fade = preset.fade ?: Prefs.animDefaultFadeDuration(group)
+        // ANIM_SPRING_PARAMS 顺序为「阻尼,刚度」交替，以 _stiffness 后缀区分
+        Prefs.ANIM_SPRING_PARAMS.forEach { param ->
+            writePrefInt(Prefs.animKey(group, param), if (param.endsWith("_stiffness")) stiffness else damping)
+        }
+        writePrefInt(Prefs.animKey(group, Prefs.ANIM_PARAM_FADE_DURATION), fade)
+        bindCurrentPage()
+        Toast.makeText(
+            this,
+            getString(R.string.settings_anim_preset_applied, getString(preset.labelRes)),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    /**
+     * 整组复制弹簧参数：读 [from] 已落盘的值写入 [to]，缺失项回退到 [from] 组的默认值。
+     *
+     * 框架未就绪时**返回 false 且不写入** —— 不可降级读 [xmlPrefs]：
+     * hook 端读不到 XML，且 `anim_*` 键只存在于框架侧存储，
+     * 降级读必然拿到默认值，再经 [writePrefInt] 排队落盘将**静默覆盖**用户配置。
+     */
+    private fun copyAnimGroup(from: String, to: String): Boolean {
+        val prefs = frameworkPrefs() ?: return false
+        Prefs.ANIM_SPRING_PARAMS.forEach { param ->
+            val def = if (param.endsWith("_stiffness")) {
+                Prefs.animDefaultStiffness(from)
+            } else {
+                Prefs.animDefaultDamping(from)
+            }
+            writePrefInt(Prefs.animKey(to, param), Prefs.readIntCompat(prefs, Prefs.animKey(from, param), def))
+        }
+        writePrefInt(
+            Prefs.animKey(to, Prefs.ANIM_PARAM_FADE_DURATION),
+            Prefs.readIntCompat(
+                prefs,
+                Prefs.animKey(from, Prefs.ANIM_PARAM_FADE_DURATION),
+                Prefs.animDefaultFadeDuration(from),
+            ),
+        )
+        return true
     }
 
     /** 动画组 → 标题资源。 */
