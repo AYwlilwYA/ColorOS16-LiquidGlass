@@ -1,0 +1,8 @@
+# LibXposed 模块元信息（Properties 格式，字段语义见 api 源码 package-info.java）
+# minApiVersion / targetApiVersion：所需 / 目标 Xposed API 版本（API_102 = 102，本地 api 102.0.0 实证）
+# staticScope：作用域是否固定（false = 允许用户在 LSPosed 里自行调整）
+# exceptionMode：hook 异常模式，默认 protective（hook 失败不炸系统 UI，回退原逻辑）
+minApiVersion=102
+targetApiVersion=102
+staticScope=false
+exceptionMode=protective

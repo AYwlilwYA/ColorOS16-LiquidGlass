@@ -1,0 +1,42 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# 本机配置
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志 / JVM 崩溃
+*.log
+hs_err_pid*.log
+
+# 临时数据库
+mc.db
+
+# 构建产物（含 demo）
+*/build/
+
+# 外部参考 clone（Kyant0 等，只读，不入库）
+reference/
+
+# 调试产物 / 截图 / 本地测试目录
+/tools/
+/*.png
+/*.jpg
+
+# 内部文档（不随开源仓库发布）
+/doc/
+/SESSION_SNAPSHOT.md
+/CLAUDE.md
+
+# AI 助手工作目录
+/.claude/

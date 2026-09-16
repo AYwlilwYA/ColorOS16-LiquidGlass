@@ -1,0 +1,8 @@
+# LibXposed 注入作用域：每行一个包名
+# 注入目标进程：
+# - com.android.systemui：SystemUI（通知中心/控制中心所在进程），液态玻璃渲染 + 每元素背景源
+# - com.android.launcher：Launcher（桌面所在进程），[spec/10] 文件夹背景液态玻璃化
+#   （闭合文件夹图标 OplusPreviewBackground + 打开文件夹卡片 Folder.dispatchDraw）
+# 注：com.oplus.blur 已于 2026-08-13 移除——玻璃背景完全走 SystemUI 端每元素抓屏，不再依赖 BlurService。
+com.android.systemui
+com.android.launcher

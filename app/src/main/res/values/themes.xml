@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material You 动态取色主题（Android 12+ 自动跟随壁纸取色，低版本回退静态色） -->
+    <style name="Theme.LiquidGlass" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar" />
+</resources>

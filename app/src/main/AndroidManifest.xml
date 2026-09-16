@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      LibXposed 模块的模块身份声明（实证来源）：
+      - 入口类注册：src/main/resources/META-INF/xposed/java_init.list
+      - 模块元信息：src/main/resources/META-INF/xposed/module.prop（minApiVersion/targetApiVersion）
+      - 注入作用域：src/main/resources/META-INF/xposed/scope.list
+        （com.android.systemui：Hook B/C 绘制与场景过滤；com.oplus.blur：Hook A 拦截未模糊原图）
+      见 api 源码 package-info.java 的 "Entry Registration / Module Configuration / Scope" 章节。
+      与同类 Xposed 模块（META-INF/xposed 三件套）做法一致。
+
+      android:label / android:description 会被框架作为模块名与描述读取（ApplicationInfo）。
+      LSPosed 兼容：设置入口 Activity 声明
+      category=de.robv.android.xposed.category.MODULE_SETTINGS（反编译实证）。
+      未加 xposedmodule meta-data（新式 LibXposed 框架不依赖它，见 package-info.java）。
+    -->
+
+    <application
+        android:name=".App"
+        android:label="@string/app_name"
+        android:description="@string/app_description"
+        android:theme="@style/Theme.LiquidGlass"
+        android:supportsRtl="true">
+
+        <!-- 模块配置界面（Material You 动态取色） -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

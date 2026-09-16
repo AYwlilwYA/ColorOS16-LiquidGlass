@@ -1,0 +1,32 @@
+# 版本目录：集中管理依赖版本
+# 版本选择依据：全部以本地 gradle 缓存（modules-2/files-2.1）已存在为准，避免重复下载。
+# 本地缓存路径：C:\Users\Administrator\.gradle\caches\modules-2\files-2.1\
+
+[versions]
+# Android Gradle Plugin（本地缓存 8.13.2 存在；要求 Gradle 8.13+，本工程 Gradle 8.14.2 满足）
+agp = "8.13.2"
+# Kotlin Gradle Plugin（本地缓存 2.2.10 存在）
+kotlin = "2.2.10"
+# LibXposed API：固定 102.0.0（本地缓存存在，勿改其他版本，否则 gradle 当新 artifact 重新下载）
+libxposed-api = "102.0.0"
+# 注：LibXposed service 不在此声明依赖——其 aar(service/interface) 声明 minCompileSdk=37，超过本工程
+# compileSdk=36 上限；改用官方 classes.jar 作为本地 jar（app/libs/），见 app/build.gradle.kts 注释。
+
+# AndroidX / Material（本地缓存均存在；版本受限于 AGP 8.13.2 + compileSdk 36：
+# core 1.19.0 需 compileSdk 37 / AGP 9.1，故不用）
+appcompat = "1.7.1"
+material = "1.14.0"
+
+# SDK
+compileSdk = "36"
+targetSdk = "36"
+minSdk = "26"
+
+[libraries]
+libxposed-api = { module = "io.github.libxposed:api", version.ref = "libxposed-api" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+material = { module = "com.google.android.material:material", version.ref = "material" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
