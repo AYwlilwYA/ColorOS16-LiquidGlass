@@ -115,8 +115,15 @@ object LiquidGlassShader {
             float2 dirEdge = normalize(max(cornerCoord, 0.0) + float2(0.0001));
             // 内部方向：平滑径向（无轴向跳变）
             float2 dirInner = normalize(a + float2(0.0001));
-            // 深度：0 = 恰在边界，越负越深入内部；用半径的一半作过渡带宽，避免过渡区过窄
-            float depth = min(cornerCoord.x, cornerCoord.y);
+            // 深度 = SDF 真值（边界 0、内部为负），用半径的一半作过渡带宽，避免过渡区过窄。
+            // [2026-09-16 顶边高光「圆角-亮-暗-亮-圆角」修复] 原用 `min(cornerCoord.x, cornerCoord.y)`
+            // 度量深度，但该量**只在角区才等于深度**：宽元素（w >> h）顶边主体的
+            // cornerCoord = (|x|-(w-r), r)，其 x 分量恒为 -(w-r) 这种大负数 →
+            // **整条顶边被判成「内部」** → 取 dirInner（径向梯度）而非 dirEdge（竖直法线）。
+            // 径向方向随 x 一路旋转，与光源夹角必然扫过 90°：顶边处
+            // dot = (x·cosθ − h·sinθ)/L，零点在 x = h·tanθ（1312×248、θ=43° → x≈±116）→
+            // 高光在顶边裂成亮-暗-亮两处断点（真机实证）。高 > 宽 的元素则是左右边。
+            float depth = sdRoundedRect(coord, halfSize, radius);
             float t = smoothstep(-max(radius, 1.0) * 0.5, 0.0, depth);
             return sign(coord) * normalize(mix(dirInner, dirEdge, t));
         }
