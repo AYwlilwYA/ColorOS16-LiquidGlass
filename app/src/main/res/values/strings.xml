@@ -142,6 +142,11 @@
     <string name="about_github">GitHub：https://github.com/AYwlilwYA/ColorOS16-LiquidGlass</string>
     <string name="about_copy_hint">点击条目复制</string>
 
+    <!-- [赞助] 收款码入口 -->
+    <string name="about_sponsor_title">赞助支持</string>
+    <string name="about_sponsor_desc">如果这个模块对你有帮助，欢迎扫码请作者喝杯咖啡</string>
+    <string name="about_sponsor_qr_desc">赞助收款二维码</string>
+
     <!-- 一级大类（SettingsActivity 二级菜单） -->
     <string name="cat_master">总开关</string>
     <string name="cat_master_desc">模块总开关（默认关闭）</string>

@@ -65,5 +65,33 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- [赞助] 收款码：只保留二维码本体，标题/姓名/微信 logo 已在裁切时去掉 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/about_sponsor_title"
+            android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+        <ImageView
+            android:id="@+id/aboutSponsorQr"
+            android:layout_width="240dp"
+            android:layout_height="240dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="12dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="@string/about_sponsor_qr_desc"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_sponsor_qr" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="@string/about_sponsor_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
     </LinearLayout>
 </ScrollView>
