@@ -34,6 +34,11 @@ class XposedEntry : XposedModule() {
         Log.i(TAG, "module loaded, process=${param.processName}, isSystemServer=${param.isSystemServer()}")
     }
 
+    // ⛔ [spec/82 已停用 2026-09-17] 曾在此实现 `onSystemServerStarting`，向 system_server 挂
+    // `WindowManagerService#mirrorWallpaperSurface` 通道 hook。**真机实证该注入会导致显示管线卡死**
+    // （屏幕 ON、`mWakefulness=Awake`，但 SurfaceFlinger 合成全黑；撤掉后恢复）。故整条注入撤除。
+    // 详见 doc/spec/82 §九。
+
     override fun onPackageLoaded(param: PackageLoadedParam) {
         // 框架可能注入超出 scope 的包，必须按包名过滤。
         // [2026-08-13 用户决定] BlurService 端全移除：仅 SystemUI 进程安装 hook（com.oplus.blur
@@ -77,6 +82,9 @@ class XposedEntry : XposedModule() {
         // 时钟数字 View（数字仍是系统原样），接管本身没发生 → 保持停用，设置页入口已移除。
         // LockScreenClockHook.install(this, classLoader)
         SceneFilter.install(this, classLoader)
+        // [spec/82] ⛔ 曾有 display-root 通道探针挂在这里，**已删除** —— 见 DisplayRootChannel 头部说明：
+        // 它在屏幕暗/AOD 时会连续 120 秒每 5 秒抓一次整屏，与 UI 合成抢 SF，
+        // 造成「进桌面卡顿」「SystemUI 重启后异常」。通道本身已验证通过，不再需要常驻探针。
     }
 
     companion object {

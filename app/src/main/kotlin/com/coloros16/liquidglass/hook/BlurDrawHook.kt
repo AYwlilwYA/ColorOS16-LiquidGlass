@@ -9293,8 +9293,43 @@ object BlurDrawHook {
     }
 
     /**
-     * 反射 IWindowManager.captureDisplay 抓【region 屏幕区域】排除 shade → 干净背景 HardwareBuffer
-     * （0.5 降采样），wrap+copy 出独立软件位图后 close hw。整屏快照传全屏 region。失败返回 null（静默，兜底铁律）。
+     * 收集抓屏排除层（防玻璃自采样）。
+     *
+     * [2026-08-14 用户要求·强制抓全屏] shade 可空：有效则排除；null/invalid（shade 不在渲染）→ 不排除
+     * （快照天然不含 shade，干净）。
+     * [spec/19] 追加 heads-up 窗口根 surface（`resolveShadeSfc` 只认 NotificationShadeWindowView；
+     * heads-up = HeadsUpLayout，type 2017），两者分开解析。
+     * [2026-08-15] 再追加 Simple Banner 窗口根 / 流体云展开大卡窗口根。
+     */
+    private fun collectExcludes(shade: SurfaceControl?): ArrayList<SurfaceControl> {
+        val excludes = ArrayList<SurfaceControl>(2)
+        if (shade != null && shade.isValid) excludes.add(shade)
+        try {
+            resolveHeadsUpSfc()?.let { if (it.isValid) excludes.add(it) }
+        } catch (t: Throwable) {
+            Log.e(TAG, "bg-element: resolve heads-up sfc failed", t)
+        }
+        try {
+            resolveSimpleBannerSfc()?.let { if (it.isValid) excludes.add(it) }
+        } catch (t: Throwable) {
+            Log.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
+        }
+        try {
+            resolveCardBackgroundSfc()?.let { if (it.isValid) excludes.add(it) }
+        } catch (t: Throwable) {
+            Log.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
+        }
+        return excludes
+    }
+
+    /**
+     * 抓【region 屏幕区域】排除玻璃自身窗口 → 干净背景 HardwareBuffer（降采样），
+     * wrap+copy 出独立软件位图后 close hw。整屏快照传全屏 region。失败返回 null（静默，兜底铁律）。
+     *
+     * **两条路径**（[spec/82]）：
+     * 1. 主：`DisplayRootChannel.captureViaDisplayRoot` —— display 根层 + 进程内静态 `captureLayers`，
+     *    零 WMS Binder、零 `WindowManager: captureDisplay` 记账日志。
+     * 2. 兜底：反射 `IWindowManager.captureDisplay`（旧路径，通道未就绪/解析失败时用）。
      */
     private fun captureElementBackground(shade: SurfaceControl?, region: RectF): ElementBackground? {
         // sourceCrop 必须落在显示范围内（MetaBall 扩张/动画中 region 可能含屏外边缘），clamp 兜底
@@ -9312,6 +9347,24 @@ object BlurDrawHook {
             return null
         }
         return try {
+            // [spec/82] 新抓屏源：OPPO display token + 进程内静态 `ScreenCapture.captureDisplay`。
+            // 动机：旧路径 `IWindowManager.captureDisplay` 每抓一次都在 system_server 记一行
+            // `D WindowManager: captureDisplay`（WMS 方法第一行、无条件、无节流），高频抓屏即刷屏。
+            // 新路径零 WMS Binder、零记账日志；**不注入任何进程**（第一版注入 system_server
+            // 导致显示管线卡死，教训见 DisplayRootChannel 头部）。
+            // 任何失败返回 null → 自动落到下面的旧路径（兜底铁律）。
+            val newScale = bgCaptureScale()
+            val newExcludes = collectExcludes(shade)
+            val viaToken = DisplayRootChannel.captureViaDisplayToken(
+                systemUiContext, crop, newScale, newExcludes.toTypedArray()
+            )
+            if (viaToken != null) {
+                logThrottled("capture-display-token-ok", Log.INFO) {
+                    "bg-element: captureDisplay(token) ok ${viaToken.width}x${viaToken.height} crop=$crop (${newScale}x, excl=${newExcludes.size})"
+                }
+                return ElementBackground(viaToken, region)
+            }
+
             val wmBinder = Class.forName("android.os.ServiceManager")
                 .getMethod("getService", String::class.java).invoke(null, "window")
             if (wmBinder == null) {
@@ -9334,30 +9387,8 @@ object BlurDrawHook {
                     // （见 runElementCaptureWorker / motionResetRunnable），不再降低抓屏分辨率。
                     val scale = bgCaptureScale()
                     builderCls.getMethod("setSourceCrop", Rect::class.java).invoke(builder, crop)
-                    // [spec/19 Heads-Up 玻璃化] 排除数组追加 heads-up 窗口根 surface（防快照含横幅自采样磨砂）。
-                    // shade 与 heads-up 两个窗口 surface 分开解析、分别进 exclude 数组
-                    //（resolveShadeSfc 只认 NotificationShadeWindowView；heads-up=HeadsUpLayout，type 2017）。
-                    val excludes = ArrayList<SurfaceControl>(2)
-                    // [2026-08-14 用户要求·强制抓全屏] shade 可空：有效则排除（防自采样）；null/invalid（shade
-                    // 不在渲染）→ 不排除直接抓全屏（快照天然不含 shade，干净）
-                    if (shade != null && shade.isValid) excludes.add(shade)
-                    try {
-                        resolveHeadsUpSfc()?.let { if (it.isValid) excludes.add(it) }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "bg-element: resolve heads-up sfc failed", t)
-                    }
-                    // [2026-08-15 轻打扰折叠横幅玻璃化] 追加 Simple Banner Window 根 surface（防横幅玻璃自采样）
-                    try {
-                        resolveSimpleBannerSfc()?.let { if (it.isValid) excludes.add(it) }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
-                    }
-                    // [2026-08-15 持续抓屏对齐 heads-up] 追加流体云展开大卡窗口根 surface（防玻璃自采样）
-                    try {
-                        resolveCardBackgroundSfc()?.let { if (it.isValid) excludes.add(it) }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
-                    }
+                    // 排除数组（防玻璃自采样）。抽成函数：新路径（spec/82 display 根层抓屏）共用同一份。
+                    val excludes = collectExcludes(shade)
                     builderCls.getMethod("setExcludeLayers", Array<SurfaceControl>::class.java)
                         .invoke(builder, excludes.toTypedArray())
                     builderCls.getMethod("setFrameScale", Float::class.javaPrimitiveType).invoke(builder, scale)

@@ -3,6 +3,9 @@
 # - com.android.systemui：SystemUI（通知中心/控制中心所在进程），液态玻璃渲染 + 每元素背景源
 # - com.android.launcher：Launcher（桌面所在进程），[spec/10] 文件夹背景液态玻璃化
 #   （闭合文件夹图标 OplusPreviewBackground + 打开文件夹卡片 Folder.dispatchDraw）
+# ⛔ [spec/82 已停用 2026-09-17] 曾加入 `android`（system_server）以承载 display 根层通道，
+#   真机实证**该注入会导致显示管线卡死**（屏幕 ON 但 SurfaceFlinger 合成全黑），已移除。
+#   **不要再加回来**，除非先证明卡死根因另有其因。详见 doc/spec/82 §九。
 # 注：com.oplus.blur 已于 2026-08-13 移除——玻璃背景完全走 SystemUI 端每元素抓屏，不再依赖 BlurService。
 com.android.systemui
 com.android.launcher
