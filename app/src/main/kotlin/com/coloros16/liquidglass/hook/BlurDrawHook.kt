@@ -5722,18 +5722,29 @@ object BlurDrawHook {
      * 的误判），不会误伤通知/QS 玻璃区域内文字；与 spec/38（ScrimView 不写 map）互补，双保险。
      * 调用方：applyLocalTextContrast / maybeResampleTextContrast / forceRefreshTextColor（文字变色全路径）。
      */
+    /** [2026-09-17 性能] 类名 → 「是否状态栏区域宿主」判定缓存。
+     *
+     *  **为什么必须缓存**（simpleperf 火焰图实证）：`isInStatusBarArea` 对**每个 TextView 沿父链逐层**
+     *  做最多 5 次 `contains`，而它被两条高频全屏路径调用（`resampleAllTextContrast` 与
+     *  `forceRefreshAllTextColors`）→ 屏幕上百个 TextView × 父链十几层 × 5 次 = **上万次字符串搜索**，
+     *  **且类名判定结果恒定、每次重算**。火焰图显示 `String.indexOf` 占主线程采样 **13.31%**，
+     *  其中 78.81%(某路径) / 52.65%(另一路径) 经由本函数。
+     *
+     *  类名数量有限（几十个），缓存不膨胀；ConcurrentHashMap 兜住 worker 线程（文字扫描在后台单飞）并发。 */
+    private val statusBarHostClassCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     private fun isInStatusBarArea(textView: View): Boolean {
         var v: View? = textView
         while (v != null) {
             val name = v.javaClass.name
-            if (name.contains("PhoneStatusBarView") ||
-                name.contains("KeyguardStatusBarView") ||
-                name.contains("StatusBarWindowView") ||
-                name.contains("StatusBarContainer") ||
-                name.contains("StatusIconContainer")
-            ) {
-                return true
+            val isHost = statusBarHostClassCache.getOrPut(name) {
+                name.contains("PhoneStatusBarView") ||
+                    name.contains("KeyguardStatusBarView") ||
+                    name.contains("StatusBarWindowView") ||
+                    name.contains("StatusBarContainer") ||
+                    name.contains("StatusIconContainer")
             }
+            if (isHost) return true
             val parent = v.parent
             v = if (parent is View) parent else null
         }
@@ -6144,14 +6155,20 @@ object BlurDrawHook {
                 if (isKeyguardLockedNow() && !isHeadsUpHostActive() && !panelExpansionActive) {
                     logThrottled("lg-batt-periodic-lock-skip", Log.DEBUG) { "lg-batt: periodic lock-screen skip" }
                 } else {
-                    // [2026-09-17 用户要求·三种瞬态场景强制抓] heads-up 横幅 / 流体云展开卡 /
-                    // simple-banner 活跃期间，**绕过 idle-skip 无条件抓屏**，并以高频
-                    // （continuousCaptureIntervalMs = panel_capture_hz）续跑本 Runnable。
+                    // [2026-09-17 三种瞬态场景强制抓] heads-up 横幅 / 流体云展开卡 / simple-banner
+                    // 活跃期间，**绕过 idle-skip 无条件抓屏**，并以高频（continuousCaptureIntervalMs =
+                    // panel_capture_hz）续跑本 Runnable。
                     //
-                    // 为什么必须强制：这三种玻璃悬浮在内容之上、底层随时在变，而「内容变化信号」对它们
+                    // 为什么必须强制抓：这三种玻璃悬浮在内容之上、底层随时在变，而「内容变化信号」对它们
                     // 不可靠（横幅不走 onBlurReady —— 反编译实证：heads-up 默认走 BackgroundBlurDrawable
                     // 且被 excludeRules 拦，posteffect drawable 不注册）→ 静止期零抓屏 → 玻璃背景冻结。
-                    // 用户明确要求：「不要变化率，强制抓」——不看内容变没变，按速率一直抓。
+                    //
+                    // ⚠️ **[2026-09-17 需求变更·检查变化]** 抓屏照旧高频（保证底层一变就立刻跟上），
+                    // 但**下游更新改为「检查变化」**：captureSnapshotImmediate 里做内容指纹比对，
+                    // **内容没变则丢弃本帧、不更新快照、不 postInvalidateHosts** ——
+                    // 省掉 invalidate → 重录 → RenderThread 重绘整条链（火焰图实证 RenderThread 占 45%）。
+                    // 见 [snapshotContentFingerprint]。
+                    //
                     // 非这三种场景仍走下方原 idle-skip（空闲不抓，spec/49 用户原要求，省电）。
                     forceCaptureScene = isHeadsUpHostActive() ||
                         isCardBackgroundHostActive() ||
@@ -8747,6 +8764,38 @@ object BlurDrawHook {
         kickElementCaptureWorker()
     }
 
+    /** [2026-09-17 需求变更·检查变化] 上一帧整屏快照的内容指纹（0 = 尚无 / 位图不可读）。 */
+    private var lastSnapshotFingerprint = 0
+
+    /** [2026-09-17 需求变更·检查变化] 快照内容指纹：24×24 均匀网格采样像素值滚动散列。
+     *
+     *  用途：三种瞬态场景高频强制抓时，**内容没变就不更新快照、不通知重绘** —— 省掉
+     *  invalidate → 重录 → RenderThread 绘制整条链（火焰图实证 RenderThread 占 45%）。
+     *  代价 ~576 次 `getPixel`（软件位图、worker 线程，亚毫秒级），相对一次 captureDisplay
+     *  （20-50ms）可忽略。
+     *
+     *  返回 0 = 读不了（硬件位图等）→ 调用方按「有变化」处理，保证不错过更新。
+     *  ⚠️ 网格取 24 是权衡：太稀会漏掉局部变化（背景卡住），太密则抬高每次抓屏耗时。 */
+    private fun snapshotContentFingerprint(bmp: android.graphics.Bitmap): Int {
+        return try {
+            val stepX = (bmp.width / 24).coerceAtLeast(1)
+            val stepY = (bmp.height / 24).coerceAtLeast(1)
+            var h = 17
+            var y = 0
+            while (y < bmp.height) {
+                var x = 0
+                while (x < bmp.width) {
+                    h = h * 31 + bmp.getPixel(x, y)
+                    x += stepX
+                }
+                y += stepY
+            }
+            h
+        } catch (t: Throwable) {
+            0
+        }
+    }
+
     /** **[2026-08-15 恢复 worker] 整屏快照抓屏执行体**（由抓屏 worker 调用，spec/56 保留逻辑复用）：
      *  当前线程**同步** resolveShadeSfcOrFallback（spec/45 兜底）→ captureScreenSnapshot（复用
      *  captureElementBackground 的排除 shade + heads-up 逻辑 + 降采样）→ 立即 screenSnapshot = bg →
@@ -8781,7 +8830,6 @@ object BlurDrawHook {
         // 不再重试/冷却/静默放弃。shade 在渲染但 sfc 短暂 invalid 时轻微自采样，sfc 恢复后 exclude 抓屏覆盖。
         val bg = captureScreenSnapshot(shade)
         if (bg != null) {
-            screenSnapshot = bg
             sfcFailCount = 0
             elementCaptureRetries[SNAPSHOT_ID] = 0
             elementCaptureQuitAt.remove(SNAPSHOT_ID)
@@ -8789,6 +8837,22 @@ object BlurDrawHook {
             // 判断是否该停（sfc 长期无效 = 收起 → 停止 120Hz 空转）
             // [2026-09-17 修复] 只用**真 shade** 更新（fallback 兜底层不算「shade 在渲染」，见上方说明）
             if (realShadeValid) lastValidSfcCaptureMs = SystemClock.uptimeMillis()
+            // [2026-09-17 需求变更·检查变化] 内容指纹比对：**内容未变 → 丢弃本帧**。
+            // 三种瞬态场景（heads-up / 流体云卡 / simple-banner）走高频强制抓，但其中大量帧内容完全相同
+            //（悬浮玻璃底下没动）—— 若照旧更新快照 + postInvalidateHosts，就会白白驱动
+            // invalidate → 重录 → RenderThread 重绘整条链（火焰图实证 RenderThread 占 45%）。
+            // 用户要求：「改成检查变化」。代价 = 576 次 getPixel（<1ms，worker 线程），
+            // 远小于一次 captureDisplay（20-50ms）。
+            // fp==0 = 位图不可读（硬件位图等）→ 按「有变化」处理，保证不错过更新。
+            val fp = snapshotContentFingerprint(bg.bitmap)
+            if (fp != 0 && fp == lastSnapshotFingerprint) {
+                logThrottled("snapshot-unchanged", Log.DEBUG) {
+                    "bg-element: snapshot unchanged, frame dropped (no invalidate)"
+                }
+                return
+            }
+            lastSnapshotFingerprint = fp
+            screenSnapshot = bg
             if (mainThreadSync) diagFirstLog("snapshot-replace", " source=$source")
             if (textContrastEnabled && !isMotionActive) {
                 runTextContrastScanAsync(bg)
@@ -9067,18 +9131,23 @@ object BlurDrawHook {
 
     /** [2026-09-17] 「玻璃自身窗口」判定：只有这些窗口允许作为抓屏排除层（防玻璃自采样）。
      *  非玻璃窗口（Launcher / 其他 app 窗口）被误排除 → 抓回来的画面缺失该层 → 玻璃内容冻结/不跟手。
-     *  命中现有判定：[isHeadsUpRootView]（HeadsUpLayout/HeadsUpContainerWindow/type 2017）、
-     *  [isSimpleBannerRootView]（FullScreenBanner/SimpleBanner/标题含 Simple Banner Window），
-     *  外加 shade 窗口根 `NotificationShadeWindowView`。 */
+     *
+     *  ⚠️ **必须纯类名匹配、零反射**：本函数在 `resolveAnyAttachedHostSfc` 里**逐个宿主**调用，
+     *  而后者在抓屏热路径上（每 ~8ms 一次）。早先版本复用了 [isHeadsUpRootView] /
+     *  [isSimpleBannerRootView]，它们在类名不匹配时会继续走 `reflectWindowType` /
+     *  `reflectWindowTitle`（各含 getViewRootImpl→getWindowAttributes→取值 多次反射）——
+     *  对**每个非玻璃窗口**都要把这几套反射跑一遍 → 每秒上万次反射调用 → **下拉控制中心卡顿**
+     *  （真机实证：关掉运动追踪器后卡顿依旧，定位到这里）。
+     *
+     *  **代价可接受**：类名不匹配者（原本靠窗口 type 2017 兜底命中的）现在**不排除** ——
+     *  后果只是"少排一层"（轻微自采样），远好于卡顿；且绝不会再误排除桌面层。 */
     private fun isGlassOwnWindowRoot(rootView: View): Boolean {
-        return try {
-            if (rootView.javaClass.name.contains("NotificationShadeWindowView")) return true
-            if (isHeadsUpRootView(rootView)) return true
-            if (isSimpleBannerRootView(rootView)) return true
-            false
-        } catch (t: Throwable) {
-            false
-        }
+        val name = rootView.javaClass.name
+        return name.contains("NotificationShadeWindowView") ||
+            name.contains("HeadsUpLayout") ||
+            name.contains("HeadsUpContainerWindow") ||
+            name.contains("FullScreenBanner") ||
+            name.contains("SimpleBanner")
     }
 
     /** 主线程 Handler（惰性创建一次；worker → 主线程 post invalidate 用） */
@@ -9203,10 +9272,26 @@ object BlurDrawHook {
     /** [spec/19] heads-up 窗口根 View 判定：rootView=HeadsUpLayout（HeadsUpContainerWindow ccView，
      *  反编译实证 com.oplus.systemui.notification.headsup.windowframe.HeadsUpLayout）；
      *  兜底按窗口类型 type==2017（TYPE_STATUS_BAR_SUB_PANEL，HeadsUpContainerWindow lp 实证）。 */
+    /** [2026-09-17 性能] rootView → 「窗口类型是否 heads-up」的反射结果缓存。
+     *
+     *  `reflectWindowType` 每次要三跳反射（getViewRootImpl → getWindowAttributes → 读 type 字段），
+     *  而本函数被 `isInHeadsUpWindow` 对**每个文字 View** 调用（类名不匹配时走反射兜底）
+     *  → 火焰图实证：`resolveReadableTextColor → isHeadsUpRootView → reflectWindowType` 一路烧到
+     *  `art::Class_getDeclaredMethodInternal`（占主线程采样 1.66%）。
+     *
+     *  窗口类型对**同一个窗口根**恒定 → 按 rootView 实例缓存即可，无需失效策略；
+     *  WeakHashMap 防泄漏（rootView 销毁即自动移除）。 */
+    private val headsUpWindowTypeCache = java.util.WeakHashMap<View, Boolean>()
+
     private fun isHeadsUpRootView(rootView: View): Boolean {
         val name = rootView.javaClass.name
         if (name.contains("HeadsUpLayout") || name.contains("HeadsUpContainerWindow")) return true
-        return reflectWindowType(rootView) == WINDOW_TYPE_HEADS_UP
+        synchronized(headsUpWindowTypeCache) {
+            headsUpWindowTypeCache[rootView]?.let { return it }
+        }
+        val result = reflectWindowType(rootView) == WINDOW_TYPE_HEADS_UP
+        synchronized(headsUpWindowTypeCache) { headsUpWindowTypeCache[rootView] = result }
+        return result
     }
 
     /** [2026-08-15 轻打扰折叠横幅玻璃化] Simple Banner Window 根 sfc 解析：遍历 registeredHostViews，
@@ -9249,14 +9334,27 @@ object BlurDrawHook {
     private fun isSimpleBannerRootView(rootView: View): Boolean {
         val name = rootView.javaClass.name
         if (name.contains("FullScreenBanner") || name.contains("SimpleBanner")) return true
-        if (reflectWindowType(rootView) == WINDOW_TYPE_HEADS_UP) return true
-        return try {
-            val title = reflectWindowTitle(rootView)
-            title != null && title.contains("Simple Banner")
+        // [2026-09-17 性能] 反射兜底（窗口 type + 窗口标题）按 rootView 实例缓存。
+        // 该分支原先每次都要跑 reflectWindowType + reflectWindowTitle（各三跳反射），
+        // 而本函数在遍历宿主表时逐个调用。
+        // ⚠️ **必须用独立缓存**：本函数语义 = 「type 是 heads-up **或** 标题含 Simple Banner」，
+        // 与 [isHeadsUpRootView]（只看 type）**不同** —— 共用缓存会把 heads-up 的 false 结果
+        // 污染成 banner 的 false（或反之）。
+        synchronized(simpleBannerRootCache) {
+            simpleBannerRootCache[rootView]?.let { return it }
+        }
+        val result = try {
+            reflectWindowType(rootView) == WINDOW_TYPE_HEADS_UP ||
+                (reflectWindowTitle(rootView)?.contains("Simple Banner") == true)
         } catch (t: Throwable) {
             false
         }
+        synchronized(simpleBannerRootCache) { simpleBannerRootCache[rootView] = result }
+        return result
     }
+
+    /** [2026-09-17 性能] Simple Banner 窗口根判定缓存（**独立于 [headsUpWindowTypeCache]**，语义不同，见上）。 */
+    private val simpleBannerRootCache = java.util.WeakHashMap<View, Boolean>()
 
     /** [2026-08-15] 反射读窗口根 View 的窗口标题（ViewRootImpl.getWindowAttributes().getTitle()）。失败 null。
      *  getTitle Method 缓存到 [mWindowGetTitleMethod]（reduce 每抓屏 getMethod 开销）。 */
