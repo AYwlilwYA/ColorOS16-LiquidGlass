@@ -73,8 +73,8 @@ class XposedEntry : XposedModule() {
         // Hook A（BlurService 端原图注入）已随 [2026-08-13 用户决定] 全移除——系统模糊管线原样，
         // 玻璃源 = SystemUI 端每元素背景源（BlurDrawHook 内 captureDisplay）。
         BlurDrawHook.install(this, classLoader)
-        // [2026-08-15 用户决定暂停] 锁屏时钟玻璃化暂停（放大动画覆盖硬障碍，见 spec/43）：
-        // 注释掉 LockScreenClockHook，避免残留 hook 干扰其他任务；恢复时取消注释。
+        // [spec/81 2026-09-17 停用] 锁屏时钟玻璃化：真机品红二分实证 `View.draw` hook 未命中
+        // 时钟数字 View（数字仍是系统原样），接管本身没发生 → 保持停用，设置页入口已移除。
         // LockScreenClockHook.install(this, classLoader)
         SceneFilter.install(this, classLoader)
     }

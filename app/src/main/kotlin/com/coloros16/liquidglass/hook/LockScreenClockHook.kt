@@ -3,12 +3,15 @@ package com.coloros16.liquidglass.hook
 import android.app.WallpaperManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BitmapShader
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.os.Bundle
+import android.text.Layout
 import android.util.Log
 import android.view.View
 import android.view.ViewParent
@@ -20,118 +23,148 @@ import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.util.WeakHashMap
 
 /**
- * 锁屏大时钟液态玻璃化（doc/spec/43，2026-08-13）。
+ * 锁屏大时钟液态玻璃化（doc/spec/43 → doc/spec/80 / spec/81）。
  *
- * ## 绘制链（反编译实证，spec/14 + 本调查补充）
+ * ## 绘制链（反编译实证）
  *
- * 锁屏大时钟（大字时钟）**不走** posteffect drawBlurShader 链（面板/控件那套），而是独立位图投递链：
- * - `KeyguardWallpaperDeliveryController`（com.oplus.systemui.keyguard.clockstyle，:97-99,127-128,323-376）
- *   → `BlurParam(0,63)` + `setBlurRadius(180)` → `BlurBitmapFactory`（com.oplus.posteffect，注册
- *   BlurStateListener 收模糊结果）→ `liveWallpaperRealTimeBitmapListener.onBlurComplete(Bitmap,int,float)`
- *   → `sendBlurBitmapToClock`（:355）→ `IOplusKeyguardStyleTheme.setBlurWallpaperBitmap(Bitmap,Bundle,boolean)`
- *   → `ThemePlugin.setWallpaperBitmapInternal(Bitmap,String,Bundle,boolean,boolean)`（ThemePlugin.java:791）
- *   → 时钟插件 `setWallpaperBitmap`。
- * - 大时钟插件（system_ext/app/KeyguardPersonalityClocks，`com.oplus.keyguard.clock.big`）的数字文字视图 =
- *   `MyCustomizedTextView`（extends 公共 `CustomizedTextView` extends `OplusHDRTextView` extends TextView），
- *   布局 `big_clock_layout_single_clock_digital_time_view_*.xml` 每数字一个 TextView；
- *   `setBlurRatio(float)`（MyCustomizedTextView.java:133-140）给数字 View 挂 `RenderEffect.createBlurEffect`
- *   即系统"壁纸模糊衬底"。
+ * 锁屏大时钟**不走** posteffect drawBlurShader 链，而是独立位图投递链：
+ * `KeyguardWallpaperDeliveryController` → `BlurBitmapFactory` → `sendBlurBitmapToClock`
+ * → `ThemePlugin.setWallpaperBitmapInternal(Bitmap,String,Bundle,boolean,boolean)` → 时钟插件。
+ * 数字文字视图 = `MyCustomizedTextView`（`com.oplus.keyguard.clock.big.widget`，每数字一个 TextView）。
  *
- * ## 实现（方案 B：对时钟数字 UI 注入液态玻璃 shader）
+ * ## 接管入口（spec/80 §二，踩坑纠正）
  *
- * 背景源 = 时钟壁纸投递位图（`ThemePlugin.setWallpaperBitmapInternal` hook 拦截保存）。数字 TextView
- * onDraw 时把 text paint 的 shader 替换为液态玻璃 RuntimeShader（复用 `LiquidGlassShader`，uSource =
- * 壁纸位图、uViewport=数字 View 尺寸、uSourceRect=数字 View 屏幕区域折算到壁纸位图），字形即以玻璃质感
- * 绘制（内部清晰/轻磨砂透镜 + vibrancy + 可选折射/高光），与时钟同一绘制层级（depth/景深不产生层级错乱）。
+ * ⚠️ **不能 hook `TextView.onDraw`**：类链
+ * `MyCustomizedTextView → CustomizedTextView → OplusHDRTextView → COUITextView → TextView`
+ * 中 `OplusHDRTextView.onDraw` 是 **final override**，会挡住基类 hook → 永不触发。
+ * `Layout.draw` 同理被 `DynamicLayout`/`BoringLayout` 挡住。
  *
- * ## 景深/层级（用户约束）
+ * **唯一有效入口 = `View.draw`** —— `MyCustomizedTextView.draw` 的两条绘制分支
+ * （`GeneralElementSwitchHelper.d(canvas)` 的 canvas.scale 缩放态 / 非缩放态）最终都调
+ * `super.draw(canvas)` → `TextView.draw` → `View.draw`，且是**同一个 canvas**，
+ * 故缩放动画天然作用到我们画的内容上。
  *
- * 锁屏时钟启用景深（depth）会有层级遮挡。本实现直接替换**数字 View 自身**的 text paint shader，玻璃绘制在
- * 数字所在绘制层级内部（同一 View 的 onDraw 内），不新增覆盖层、不改 View 结构——玻璃与时钟天然同层。
+ * ## 字形玻璃的实现路线（spec/80 §六点五 → spec/81）
+ *
+ * ⛔ **不能把 shader 挂到 text paint 上**（已实测卡死）。原因已查实：HDR span
+ * `a4.a.updateDrawState`（插件反编译，`OplusHDRTextView` 在 `f6439c=true` 时给文本加）
+ * 只做三件事：`setShader(null)` + `setColorFilter(null)` + `setColor(getCurrentTextColor())`；
+ * 而 `Layout.drawText` 会把 `mPaint` **复制到工作副本 `mWorkPaint`** 再交给 `TextLine`，
+ * span 改的是那份副本 → 挂在我们 paint 上的 shader 必被清掉，且我们无法从外侧拦截。
+ *
+ * ✅ **本实现改为「字形轮廓 Path + drawPath + 玻璃 shader」**：
+ * 用 `Paint.getTextPath` 把字形取成矢量轮廓（纯几何，与 span / 颜色 / shader 完全无关），
+ * 再用**我们自己的 Paint** 承载 RuntimeShader 画 `drawPath`。全程不碰 text paint ⇒
+ * 既躲开 HDR span，也躲开「画矩形有效、画字形 0.5s 失效」那条失效路径；
+ * 且 `drawPath + shader` 是本项目**已验证可用**的 op 类别（其余玻璃元素同款）。
+ *
+ * 字形轮廓的排版参数（typeface / textSize / letterSpacing / fontFeatureSettings /
+ * fontVariationSettings）逐项从 `layout.paint` 复制，保证与系统排版一致。
+ * 定位：`dx = compoundPaddingLeft`，`dy = tv.baseline - layout.getLineBaseline(0)`
+ * （= `getExtendedPaddingTop() + getVerticalOffset(true)`，即系统 `TextView.onDraw` 的平移量，
+ * 见 AOSP `TextView.getBaseline()`）；行内原点 x 用 `layout.getLineLeft(i)`，
+ * 与 `Layout.drawText` 内部算法（SDK34 `Layout.java:712-737`，ALIGN_CENTER 取整差异 ≤1px）一致。
  *
  * ## 配置
  * - `KEY_LOCKSCREEN_CLOCK_GLASS`（默认 false）：总开关，改动需重启 SystemUI 生效。
  * - `KEY_LOCKSCREEN_CLOCK_BLUR`（默认 6）：数字内部轻模糊半径，0=清晰透镜。
- * - 材质其他参数复用全局玻璃参数（KEY_BLUR_RADIUS/KEY_VIBRANCY 等，见 [Prefs]），改动即时生效。
+ *
+ * ## 调试日志
+ * 统一 tag `LiquidGlass`，前缀 `lockscreen-clock:`，由 `Prefs.KEY_ENABLE_LOGS` 门控（默认关）。
+ *
+ * ## ⛔ 停用原因（spec/81 决定性实证，2026-09-17）
+ *
+ * 本路径**已实测未生效**：把 [selfDrawClockDigit] 的字形改成不透明品红做二分 ——
+ * 真机锁屏数字**仍是系统原样的浅灰渐变**，品红从未出现。
+ * ⇒ **`View.draw` hook 根本没命中时钟数字 View**，问题不在渲染层，而在接管本身。
+ * 这同时推翻了 spec/80「跳过系统绘制有效且持久」那条旧实证在新代码下的适用性。
+ *
+ * 故 `XposedEntry.installHooks` 里 `LockScreenClockHook.install(...)` **保持注释停用**，
+ * 设置页对应的「锁屏大时钟液态玻璃」入口已一并移除（spec/81）。
+ * 要重开需先查清 hook 为何未命中 —— 优先核对 [isClockDigitView] 的宿主类名常量
+ * 与真机实际 View 链是否一致。
  */
 object LockScreenClockHook {
 
     private const val TAG = "LiquidGlass"
 
-    // ---- 目标类（16.1 PJZ110 反编译实证）----
-    /** 时钟主题插件宿主（SystemUI 类，IOplusKeyguardStyleTheme 实现），接收 KeyguardWallpaperDeliveryController
-     *  投递的壁纸位图。 */
+    // ---- 目标类（真机反编译实证）----
+    /** 时钟主题插件宿主，接收 KeyguardWallpaperDeliveryController 投递的壁纸位图。 */
     private const val CLASS_THEME_PLUGIN = "com.oplus.keyguard.plugin.ThemePlugin"
     private const val METHOD_SET_WALLPAPER_BITMAP_INTERNAL = "setWallpaperBitmapInternal"
-    /** 锁屏时钟宿主 View（插件数字 View 的祖先）：CustomOplusKeyguardStyleClock（keyguard/view）与
-     *  基类 OplusKeyguardStyleClock（keyguard）。数字 View 的 parent 链走到它 = 属于锁屏时钟。 */
+    /** 锁屏时钟宿主 View（插件数字 View 的祖先）。 */
     private const val CLOCK_HOST_NAME = "com.oplus.systemui.keyguard.view.CustomOplusKeyguardStyleClock"
     private const val CLOCK_HOST_BASE_NAME = "com.oplus.keyguard.OplusKeyguardStyleClock"
-    /** AOD 时钟宿主 View（SystemUI 反编译实证 `com.oplus.systemui.aod.aodclock.off`，AOD 时钟数字 View
-     *  parent 链必经）——锁屏 + AOD 双场景覆盖（用户硬约束）。 */
+    /** AOD 时钟宿主 View（锁屏 + AOD 双场景覆盖）。 */
     private const val CLOCK_HOST_AOD_NAME = "com.oplus.systemui.aod.aodclock.off.AodClockLayout"
 
     // ---- 状态 ----
     @Volatile
     private var enabled = false
-    /** 时钟壁纸投递位图（玻璃源）。来自 ThemePlugin.setWallpaperBitmapInternal arg0。 */
+    /** 时钟壁纸投递位图的**自有副本**（玻璃源兜底）。
+     *  ⚠️ 必须 copy：系统投递的位图随时可能被回收，直接引用会踩
+     *  `project_launcher-blur-bitmap-invalid`（位图失效 → 绘制静默失效）。 */
     @Volatile
     private var wallpaperBitmap: Bitmap? = null
-    /** 壁纸位图换代令牌（每次收到新位图 +1，用于 shader 重绑输入去重）。 */
-    @Volatile
-    private var wallpaperToken = 0
-    /** 屏幕尺寸（用于把数字 View 屏幕区域折算到壁纸位图坐标）。 */
+    /** 屏幕尺寸（屏幕坐标 → 壁纸位图坐标折算用）。 */
     @Volatile
     private var screenWidth = 1080
     @Volatile
     private var screenHeight = 2400
-
-    /** 已判定"是否锁屏时钟数字 View"的缓存（防每帧走 parent 链）。 */
-    private val clockDigitCache = WeakHashMap<TextView, Boolean>()
-
-    /** 每数字 View 的玻璃 shader 状态（独立实例防 uniform 串扰，同 BlurDrawHook 铁律）。 */
-    private class DigitGlassState {
-        val shader: RuntimeShader = LiquidGlassShader.create()
-        var wallpaperToken = -1
-        var source: Shader? = null
-        var viewport = RectF()
-        var srcRect = RectF()
-        var lastBlur = -1f
-        var lastVibrancy = -1f
-    }
-
-    private val digitStates = WeakHashMap<TextView, DigitGlassState>()
-
-    private var api: XposedInterface? = null
-
-    /** `View.mRenderEffect` 反射句柄（路径 3 清字段用，类级缓存；解析失败 null = 仅 RenderNode 兜底）。
-     *  `resolved` 标志防每帧重复反射失败。 */
-    @Volatile
-    private var mRenderEffectField: java.lang.reflect.Field? = null
-    @Volatile
-    private var mRenderEffectFieldResolved = false
-    /** `View.getRenderNode()` 反射句柄（@hide，API 36 android.jar 不导出，需反射；类级缓存）。 */
-    @Volatile
-    private var mGetRenderNodeMethod: java.lang.reflect.Method? = null
-    @Volatile
-    private var mGetRenderNodeResolved = false
-    /** `View.mRenderNode` 私有字段反射句柄（Android 稳定字段，类型 android.graphics.RenderNode；
-     *  比 getRenderNode() 方法更可靠——Android 16 方法可能改名/隐藏，字段名长期稳定）。 */
-    @Volatile
-    private var mRenderNodeField: java.lang.reflect.Field? = null
-    @Volatile
-    private var mRenderNodeFieldResolved = false
-    /** [spec/43 HDR span 保护] 时钟数字 View onDraw 绘制期间标志（ThreadLocal，同线程生效）：
-     *  HDR 文字用自定义 Span（`a4.a.updateDrawState` 调 `TextPaint.setShader(null)`）清掉我们设的玻璃
-     *  shader → hook `Paint.setShader` 在此标志为 true 且 newShader==null 时跳过，保护玻璃 shader。 */
-    private val inClockDigitDraw: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
-    /** [2026-08-15 玻璃源改进] 原始壁纸源（WallpaperManager 解码清晰壁纸，替代投递的模糊位图——用户反馈
-     *  字形磨砂 = 玻璃源含 BlurBitmapFactory 模糊）。静态壁纸文件解码；动态壁纸（无文件）返回 null
-     *  → prepareGlass fallback 投递位图。 */
+    /** 原始壁纸（`getWallpaperFile` 解码的清晰版，优先于投递位图；模块自有，不会被回收）。 */
     @Volatile
     private var originalWallpaper: Bitmap? = null
     @Volatile
     private var originalWallpaperId = -1
+    /** 壁纸滚动 offset，[0,1]（锁屏不自滚动，解码后从系统读一次）。 */
+    @Volatile
+    private var wallpaperOffsetX = 0f
+    @Volatile
+    private var wallpaperOffsetY = 0f
+    @Volatile
+    private var wallpaperOffsetsSynced = false
+
+    /** 已判定「是否锁屏时钟数字 View」的缓存（防每帧走 parent 链）。 */
+    private val clockDigitCache = WeakHashMap<TextView, Boolean>()
+    /** 每数字 View 的玻璃 shader / 字形轮廓状态（独立实例防 uniform 串扰）。 */
+    private val digitStates = WeakHashMap<TextView, DigitGlassState>()
+
+    private var api: XposedInterface? = null
+
+    /** `View.mRenderEffect` / `View.mRenderNode` 反射句柄（清 View 级 RenderEffect 用）。 */
+    @Volatile
+    private var mRenderEffectField: java.lang.reflect.Field? = null
+    @Volatile
+    private var mRenderEffectFieldResolved = false
+    @Volatile
+    private var mRenderNodeField: java.lang.reflect.Field? = null
+    @Volatile
+    private var mRenderNodeFieldResolved = false
+    @Volatile
+    private var mGetRenderNodeMethod: java.lang.reflect.Method? = null
+    @Volatile
+    private var mGetRenderNodeResolved = false
+
+    /** 每数字 View 的玻璃绘制状态。 */
+    private class DigitGlassState {
+        /** 液态玻璃 RuntimeShader（挂在我们自己的 [glyphPaint] 上，与 text paint 无关）。 */
+        val shader: RuntimeShader = LiquidGlassShader.create()
+        /** 承载 shader 的自有 Paint（绘图属性每次重排时从 `layout.paint` 同步一次）。 */
+        val glyphPaint: Paint = Paint()
+        /** 字形矢量轮廓（文本/尺寸不变时复用）。 */
+        val glyphPath: Path = Path()
+        /** 轮廓缓存键（文本 + 尺寸 + 行左/基线）。 */
+        var glyphKey: String? = null
+        var sourceToken = -1
+        var source: Shader? = null
+        var viewport = RectF()
+        var srcRect = RectF()
+        /** uniform 是否已按 (viewport, srcRect) 设置过——壁纸源瞬时不可用时复用上次结果，避免回退系统白字。 */
+        var ready = false
+    }
+
+    /** 壁纸「贴屏 cover」映射：把屏幕坐标折算回位图坐标。 */
+    private class WallpaperMapping(val scale: Float, val cropX: Float, val cropY: Float)
 
     /** SystemUI 进程安装（XposedEntry.installHooks 调用）。 */
     fun install(api: XposedInterface, classLoader: ClassLoader) {
@@ -150,19 +183,15 @@ object LockScreenClockHook {
         screenHeight = dm.heightPixels.coerceAtLeast(1)
         mountSetWallpaperBitmap(api, classLoader)
         mountRenderEffectBlocker(api, classLoader)
-        mountPaintSetShaderBlocker(api, classLoader)
         mountViewDraw(api, classLoader)
-        mountTextViewOnDraw(api, classLoader)
-        Log.i(TAG, "lockscreen-clock-glass mounted (wallpaper source + RenderEffect blocker + TextView.onDraw)")
+        Log.i(TAG, "lockscreen-clock-glass mounted (wallpaper source + RenderEffect blocker + View.draw)")
     }
 
     // ------------------------------------------------------------ hook 挂载
 
     /**
-     * 拦截时钟壁纸位图投递：`ThemePlugin.setWallpaperBitmapInternal(Bitmap,String,Bundle,boolean,boolean)`。
-     * `KeyguardWallpaperDeliveryController.sendBlurBitmapToClock` → `setBlurWallpaperBitmap(bitmap,bundle,z)`
-     * → `setWallpaperBitmapInternal(bitmap,"",bundle,false,z)` 全路径汇入此方法（含 setWallpaperBitmap 四参）。
-     * 收到非空位图 → 存为玻璃源（wallpaperToken++），并 invalidate 已登记的时钟数字 View 重绘。
+     * 拦截时钟壁纸位图投递（`ThemePlugin.setWallpaperBitmapInternal`）：**复制一份自有副本**
+     * 存为玻璃源，并 invalidate 已登记的时钟数字 View。
      */
     private fun mountSetWallpaperBitmap(api: XposedInterface, classLoader: ClassLoader) {
         try {
@@ -177,11 +206,11 @@ object LockScreenClockHook {
                 .intercept { chain ->
                     try {
                         val bmp = chain.getArg(0) as? Bitmap
-                        if (bmp != null && !bmp.isRecycled) {
-                            wallpaperBitmap = bmp
-                            wallpaperToken++
+                        // 必须 copy：系统位图随时可能被回收（见 project_launcher-blur-bitmap-invalid）
+                        val mine = bmp?.let { adoptWallpaper(it) }
+                        if (mine != null) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: wallpaper bitmap captured ${bmp.width}x${bmp.height}")
+                                Log.i(TAG, "lockscreen-clock: wallpaper bitmap adopted ${mine.width}x${mine.height}")
                             }
                             invalidateClockDigits()
                         }
@@ -197,22 +226,16 @@ object LockScreenClockHook {
     }
 
     /**
-     * 阻断系统把 RenderEffect（blur 后处理）挂到时钟数字 View（spec/43 修复，路径 1+2）。
-     *
-     * 根因：`MyCustomizedTextView.setBlurRatio(float)` 给数字 View 挂 `RenderEffect.createBlurEffect`，
-     * View 级硬件后处理在 onDraw 之后把玻璃字形再糊一遍 → 玻璃观感未生效。两条挂载路径都要拦：
-     * 1. 标准路径 `android.view.View.setRenderEffect(RenderEffect)`（主线程 super 调用）。
-     * 2. RenderThread 路径 `com.oplus.animation.OplusAsyncAnimatorUtils.setRenderEffect(View, RenderEffect)`
-     *    （静态方法，MyCustomizedTextView.setRenderEffecCheck 实证；Oplus framework 运行时类，不在反编译
-     *    产物里，反射失败仅此路径失效，路径 1+3 兜底）。
-     * 命中时钟数字 View && effect 非 null → 参数换 null 后 proceed（系统执行 setRenderEffect(null)=不挂 blur，
-     * 避免直接跳过导致状态不一致）；effect null（清除）与非时钟 View 一律放行——严格 scoped，SystemUI
-     * 其他 View 的 RenderEffect 不受影响。
+     * 阻断系统给时钟数字 View 挂 RenderEffect（blur 后处理会把玻璃字形再糊一遍）。
+     * 两条路径：① `View.setRenderEffect` ② RenderThread 异步路径
+     * `com.oplus.animation.OplusAsyncAnimatorUtils.setRenderEffect(View, RenderEffect)`。
+     * 命中时钟数字 View 且 effect 非 null → 参数换 null 后 proceed；其余一律放行（严格 scoped）。
      */
     private fun mountRenderEffectBlocker(api: XposedInterface, classLoader: ClassLoader) {
-        // 路径 1：标准 View.setRenderEffect（时钟数字 View 恒为 TextView 子类，as? TextView 判定精确 scoped）
         try {
-            val method = View::class.java.getDeclaredMethod("setRenderEffect", android.graphics.RenderEffect::class.java)
+            val method = View::class.java.getDeclaredMethod(
+                "setRenderEffect", android.graphics.RenderEffect::class.java
+            )
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
@@ -221,7 +244,7 @@ object LockScreenClockHook {
                         val effect = chain.getArg(0) as? android.graphics.RenderEffect
                         if (view != null && effect != null && isClockDigitView(view)) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: BLOCKED View.setRenderEffect(blur) on clock digit ${view.javaClass.name} w=${view.width} h=${view.height}")
+                                Log.i(TAG, "lockscreen-clock: BLOCKED View.setRenderEffect on clock digit ${view.javaClass.name}")
                             }
                             val args = chain.getArgs().toTypedArray()
                             args[0] = null
@@ -237,7 +260,6 @@ object LockScreenClockHook {
             Log.e(TAG, "lockscreen-clock-glass mount FAILED: View#setRenderEffect blocker", t)
         }
 
-        // 路径 2：RenderThread 异步路径 OplusAsyncAnimatorUtils.setRenderEffect(View, RenderEffect)（静态）
         try {
             val clazz = Class.forName("com.oplus.animation.OplusAsyncAnimatorUtils", false, classLoader)
             val method = clazz.getDeclaredMethod(
@@ -251,7 +273,7 @@ object LockScreenClockHook {
                         val effect = chain.getArg(1) as? android.graphics.RenderEffect
                         if (view != null && effect != null && isClockDigitView(view)) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: BLOCKED OplusAsyncAnimatorUtils.setRenderEffect(blur) on clock digit ${view.javaClass.name}")
+                                Log.i(TAG, "lockscreen-clock: BLOCKED OplusAsyncAnimatorUtils.setRenderEffect on clock digit")
                             }
                             val args = chain.getArgs().toTypedArray()
                             args[1] = null
@@ -264,129 +286,15 @@ object LockScreenClockHook {
                 }
             Log.i(TAG, "lockscreen-clock-glass mounted: OplusAsyncAnimatorUtils#setRenderEffect blocker")
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: OplusAsyncAnimatorUtils#setRenderEffect blocker (path2 inactive, path1+3 兜底)", t)
+            Log.i(TAG, "lockscreen-clock-glass: OplusAsyncAnimatorUtils 不可用（该路径不生效，其余路径兜底）")
         }
     }
 
     /**
-     * [spec/43 HDR span 保护] hook `Paint.setShader(Shader)`：时钟数字 View onDraw 绘制期间
-     * （[inClockDigitDraw] ThreadLocal 标志 true），HDR 文字的自定义 Span（`a4.a.updateDrawState`，
-     * 反编译实证调 `textPaint.setShader(null)` + `setColorFilter(null)` + `setColor(HDR色)`）会清掉
-     * 我们设在 text paint 上的玻璃 shader → 拦截 newShader==null 时跳过（不执行），保护玻璃 shader
-     * 让字形以玻璃质感填充。shader 优先级高于 color，HDR span 的 setColor 不影响玻璃效果。
-     * scoped：仅 onDraw 绘制期间同线程命中，SystemUI 其他 View 的 Paint.setShader 不受影响。
-     */
-    private fun mountPaintSetShaderBlocker(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("android.graphics.Paint", false, classLoader)
-            val method = clazz.getDeclaredMethod("setShader", android.graphics.Shader::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        val newShader = chain.getArg(0) as? android.graphics.Shader
-                        if (newShader == null && inClockDigitDraw.get()) {
-                            // HDR span 正在清 shader → 跳过原方法，保留玻璃 shader
-                            if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: PROTECTED glass shader from HDR span clear")
-                            return@intercept null
-                        }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: Paint.setShader intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Log.i(TAG, "lockscreen-clock-glass mounted: Paint#setShader protector")
-        } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: Paint#setShader protector", t)
-        }
-    }
-
-    /**
-     * hook `TextView.onDraw(Canvas)`：对【锁屏时钟数字 View】把 text paint 的 shader 替换为液态玻璃
-     * RuntimeShader（字形以玻璃质感绘制），画完还原（不污染其他绘制）。非时钟数字 View O(1) 快速跳过。
-     *
-     * 选择 hook 框架基类 TextView.onDraw（而非插件类）的原因：插件类（com.oplus.keyguard.clock.big.*）由
-     * 插件 package-context 的独立 classloader 加载，install 时拿不到；TextView 是 framework 基类，SystemUI
-     * classloader 直接可 hook，且覆盖所有时钟风格（big/base/gallery/graffiti）的数字文字视图。
-     */
-    private fun mountTextViewOnDraw(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("android.widget.TextView", false, classLoader)
-            val method = clazz.getDeclaredMethod("onDraw", Canvas::class.java).apply { isAccessible = true }
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        val tv = chain.getThisObject() as? TextView
-                        if (tv != null && isClockDigitView(tv)) {
-                            // [2026-08-15 玻璃化第一步] 跳过系统 onDraw（白色字形不画），改用手动绘制：
-                            // 用 getPaint()（完全控制）+ 玻璃 RuntimeShader 填充字形 → 字形=壁纸玻璃。
-                            // 之前 shader/alpha 无效因为系统绘制用内部 paint ≠ getPaint()；手动绘制绕开该问题。
-                            clearClockRenderEffect(tv)
-                            val canvas = chain.getArg(0) as? Canvas
-                            val glass = prepareGlass(tv)
-                            if (canvas != null && glass != null) {
-                                if (moduleLogEnabled()) {
-                                    Log.i(TAG, "lockscreen-clock: clock digit GLASS self-draw w=${tv.width} h=${tv.height} text='${tv.text}'")
-                                }
-                                val paint = tv.paint
-                                inClockDigitDraw.set(true)
-                                try {
-                                    // [临时测试 2026-08-15] drawText 用纯红 BitmapShader：验证 drawText+shader 是否真正
-                                    // 作用字形（截图确认数字是否变红）。红色 = drawText+shader 生效，问题在玻璃 shader
-                                    // 参数/采样；仍白 = drawText+shader 没生效（RuntimeShader 文字绘制/被覆盖）。
-                                    val redBmp = try {
-                                        android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888).apply {
-                                            eraseColor(0xFFFF0000.toInt())
-                                        }
-                                    } catch (t: Throwable) {
-                                        null
-                                    }
-                                    val testShader: Shader = if (redBmp != null) {
-                                        android.graphics.BitmapShader(redBmp, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
-                                    } else {
-                                        glass
-                                    }
-                                    paint.shader = testShader
-                                    // 用 Layout 精确坐标绘制文字（getLineLeft/getLineBaseline），确保画在字形正确位置
-                                    val layout = tv.layout
-                                    val text = tv.text?.toString().orEmpty()
-                                    if (layout != null && text.isNotEmpty()) {
-                                        val x = tv.paddingLeft.toFloat() + layout.getLineLeft(0)
-                                        val y = tv.paddingTop.toFloat() + layout.getLineBaseline(0).toFloat()
-                                        if (moduleLogEnabled()) {
-                                            Log.i(TAG, "lockscreen-clock: drawText '$text' x=$x y=$y w=${tv.width} h=${tv.height}")
-                                        }
-                                        canvas.drawText(text, x, y, paint)
-                                    }
-                                    paint.shader = null
-                                } finally {
-                                    inClockDigitDraw.set(false)
-                                }
-                                return@intercept null
-                            }
-                            // 无玻璃源 → 保持隐藏（字形不画）
-                            if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: clock digit hidden (no glass) w=${tv.width} h=${tv.height} text='${tv.text}'")
-                            }
-                            return@intercept null
-                        }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: TextView.onDraw intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Log.i(TAG, "lockscreen-clock-glass mounted: TextView#onDraw")
-        } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: TextView#onDraw", t)
-        }
-    }
-
-    /**
-     * [2026-08-15 完全自绘] hook `android.view.View.draw(Canvas)`（比 onDraw 更外层，覆盖放大动画
-     *  helper actualDraw=super.draw 路径）：时钟数字 View 完全跳过系统绘制（背景/文字/任何），
-     *  自己用玻璃 shader 绘制字形——放大动画后系统白色覆盖问题根治（任何系统绘制路径都经此注入玻璃）。
-     *  scoped：isClockDigitView 命中才接管，SystemUI 其他 View 放行。
+     * 接管绘制：`View.draw` 命中时钟数字 View → 跳过系统绘制（白色字形不画）→ 自绘玻璃字形。
+     * 自绘前置条件不满足（无壁纸源 / 无 Layout / 取不到轮廓）时**回退系统绘制**
+     * （宁可见白字，不可见空白）。
+     * scoped：仅时钟数字 View 接管，SystemUI 其他 View 一律放行。
      */
     private fun mountViewDraw(api: XposedInterface, classLoader: ClassLoader) {
         try {
@@ -400,52 +308,187 @@ object LockScreenClockHook {
                         if (tv != null && isClockDigitView(tv)) {
                             clearClockRenderEffect(tv)
                             val canvas = chain.getArg(0) as? Canvas
-                            // [2026-08-15 修复] 不跳过 super.draw（跳过导致 RecordingCanvas 状态异常，drawText 不生效）：
-                            // 先 proceed 让 super.draw 正常绘制（canvas 初始化 + 系统字形），之后 drawText 红色覆盖。
-                            val result = chain.proceed()
-                            if (canvas != null && tv.text?.isNotEmpty() == true) {
-                                if (moduleLogEnabled()) {
-                                    Log.i(TAG, "lockscreen-clock: clock digit View.draw OVERLAY w=${tv.width} h=${tv.height} text='${tv.text}'")
+                            if (canvas != null) {
+                                val state = digitStates.getOrPut(tv) { DigitGlassState() }
+                                if (ensureGlass(tv, state) && selfDrawClockDigit(tv, canvas, state)) {
+                                    return@intercept null
                                 }
-                                selfDrawClockDigit(tv, canvas, prepareGlass(tv))
+                                if (moduleLogEnabled()) {
+                                    Log.i(TAG, "lockscreen-clock: self-draw skipped, fallback to system (ready=${state.ready})")
+                                }
                             }
-                            return@intercept result
                         }
                     } catch (t: Throwable) {
                         Log.e(TAG, "lockscreen-clock: View.draw intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "lockscreen-clock-glass mounted: View#draw full self-draw")
+            Log.i(TAG, "lockscreen-clock-glass mounted: View#draw")
         } catch (t: Throwable) {
             Log.e(TAG, "lockscreen-clock-glass mount FAILED: View#draw", t)
         }
     }
 
-    /** [2026-08-15 完全自绘] 用正确坐标（居中 x + tv.baseline）+ 玻璃 shader 绘制字形。
-     *  （当前 LockScreenClockHook 已注释停用——XposedEntry 不调用 install；此实现保留待后续恢复） */
-    private fun selfDrawClockDigit(tv: TextView, canvas: Canvas, glass: RuntimeShader?) {
-        val paint = tv.paint
-        val text = tv.text?.toString().orEmpty()
-        if (text.isEmpty() || glass == null) return
-        val x = tv.paddingLeft.toFloat() + (tv.width - tv.paddingLeft - tv.paddingRight - paint.measureText(text)) / 2f
-        val y = tv.baseline.toFloat()
-        inClockDigitDraw.set(true)
-        try {
-            paint.shader = glass
-            canvas.drawText(text, x, y, paint)
-            paint.shader = null
-        } finally {
-            inClockDigitDraw.set(false)
-            paint.shader = null
-        }
-    }
-
-    // ------------------------------------------------------------ 判定 / 玻璃
+    // ------------------------------------------------------------ 绘制
 
     /**
-     * 判定 TextView 是否为锁屏/AOD 时钟数字 View：parent 链上出现时钟宿主（锁屏
-     * `OplusKeyguardStyleClock`/`CustomOplusKeyguardStyleClock`，AOD `AodClockLayout`）即为时钟内文字。
+     * 用**字形矢量轮廓** + 自有 Paint 画玻璃字形。返回 true = 画成功（调用方跳过系统绘制）。
+     *
+     * ✅ 全程不碰 `layout.paint` —— 这是上一版（把 shader 挂 text paint）失效的根因：
+     * HDR span 只在 `TextLine` 的工作副本上 `setShader(null)`，我们拦不到也保不住。
+     * `drawPath + shader` 则是本项目已验证可用的 op。
+     */
+    private fun selfDrawClockDigit(tv: TextView, canvas: Canvas, state: DigitGlassState): Boolean {
+        val layout = tv.layout ?: return false
+        if (layout.lineCount <= 0) return false
+        if (!ensureGlyphPath(tv, layout, state)) return false
+        val dx = tv.compoundPaddingLeft.toFloat()
+        val dy = (tv.baseline - layout.getLineBaseline(0)).toFloat()
+        val save = canvas.save()
+        try {
+            canvas.translate(dx, dy)
+            state.glyphPaint.shader = state.shader
+            canvas.drawPath(state.glyphPath, state.glyphPaint)
+        } finally {
+            state.glyphPaint.shader = null
+            canvas.restoreToCount(save)
+        }
+        return true
+    }
+
+    /**
+     * 取字形轮廓（缓存：文本 / 尺寸 / 行左 / 基线不变则复用）。
+     * 排版属性一次性从 `layout.paint` 复制到自有 [DigitGlassState.glyphPaint]，之后只更新 shader。
+     */
+    private fun ensureGlyphPath(tv: TextView, layout: Layout, state: DigitGlassState): Boolean {
+        val text = tv.text ?: return false
+        if (text.isEmpty()) return false
+        // Paint.getTextPath 只接受 String / char[]（无 CharSequence 重载）
+        val str = text.toString()
+        val key = buildString {
+            append(str)
+            append('|').append(tv.width).append('x').append(tv.height)
+            for (i in 0 until layout.lineCount) {
+                append('|').append(layout.getLineLeft(i)).append(',').append(layout.getLineBaseline(i))
+            }
+        }
+        if (key == state.glyphKey && !state.glyphPath.isEmpty) return true
+        syncGlyphPaint(state.glyphPaint, layout.paint)
+        val path = state.glyphPath
+        path.reset()
+        for (i in 0 until layout.lineCount) {
+            val start = layout.getLineStart(i)
+            val end = layout.getLineEnd(i)
+            if (end <= start) continue
+            state.glyphPaint.getTextPath(
+                str, start, end,
+                layout.getLineLeft(i), layout.getLineBaseline(i).toFloat(), path,
+            )
+        }
+        if (path.isEmpty) {
+            state.glyphKey = null
+            return false
+        }
+        state.glyphKey = key
+        return true
+    }
+
+    /**
+     * 排版属性同步：从系统 paint 复制**只影响字形形状/位置**的参数，
+     * 颜色 / shader / colorFilter / 下划线等一律重置（轮廓只需几何）。
+     */
+    private fun syncGlyphPaint(dst: Paint, src: Paint) {
+        dst.reset()
+        dst.typeface = src.typeface
+        dst.textSize = src.textSize
+        dst.textScaleX = src.textScaleX
+        dst.textSkewX = src.textSkewX
+        dst.letterSpacing = src.letterSpacing
+        dst.fontFeatureSettings = src.fontFeatureSettings
+        dst.fontVariationSettings = src.fontVariationSettings
+        dst.textLocale = src.textLocale
+        dst.isAntiAlias = true
+        dst.isSubpixelText = false
+        dst.style = Paint.Style.FILL
+        dst.color = Color.WHITE
+        dst.shader = null
+        dst.colorFilter = null
+        dst.xfermode = null
+    }
+
+    /**
+     * 为时钟数字 View 准备液态玻璃 shader（含 uniform 刷新）。返回 false = 无源且从未就绪
+     * → 调用方回退系统绘制。
+     *
+     * 着色参数（用户要求「纯玻璃效果，没有白」）：字形 = 背后壁纸的原位采样，**不做任何增亮** ——
+     * refractionAmount=0（取消位移）、highlight=0（去掉加性白高光，其 floor 保底会把字形抬灰发白）、
+     * dispersion=0、vibrancy=1。玻璃只透光，不发光、不位移。
+     */
+    private fun ensureGlass(tv: TextView, state: DigitGlassState): Boolean {
+        val w = tv.width
+        val h = tv.height
+        if (w <= 0 || h <= 0) return false
+        val bmp = glassSource() ?: return state.ready
+        val mapping = wallpaperMapping(bmp) ?: return state.ready
+        val loc = IntArray(2)
+        try {
+            tv.getLocationOnScreen(loc)
+        } catch (t: Throwable) {
+            return state.ready
+        }
+        if (!wallpaperOffsetsSynced) {
+            wallpaperOffsetsSynced = true
+            syncWallpaperOffsets(tv)
+        }
+        val srcRect = RectF(
+            mapping.cropX + loc[0] / mapping.scale,
+            mapping.cropY + loc[1] / mapping.scale,
+            mapping.cropX + (loc[0] + w) / mapping.scale,
+            mapping.cropY + (loc[1] + h) / mapping.scale,
+        )
+        val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
+        // 壁纸换代 → 重建 BitmapShader 并重绑输入
+        val bmpToken = System.identityHashCode(bmp)
+        if (state.sourceToken != bmpToken || state.source == null) {
+            val src = LiquidGlassShader.createSourceBitmapShader(bmp)
+            state.source = src
+            state.shader.setInputShader("uSource", src)
+            state.shader.setInputShader("uSourceLowRes", src)
+            state.sourceToken = bmpToken
+        }
+        // 全部输入未变 → 复用上次 uniform（时间刻度视图每分钟才重绘）
+        if (state.ready && state.viewport == viewport && state.srcRect == srcRect) return true
+        val params = LiquidGlassShader.Params(
+            viewportWidth = w.toFloat(),
+            viewportHeight = h.toFloat(),
+            cornerRadius = 0f,
+            cornerIsConic = false,
+            // 极大值 → 全走内部（原位）分支
+            refractionHeight = 100000f,
+            refractionAmount = 0f,
+            depth = 0f,
+            dispersion = 0f,
+            highlight = 0f,
+            highlightWidth = 0f,
+            vibrancy = 1f,
+            blurRadius = readClockBlur(),
+        )
+        LiquidGlassShader.setUniforms(
+            state.shader, params, null,
+            sourceRect = srcRect, lowResSourceRect = srcRect,
+            debugCoord = 0f,
+            maskRect = viewport, maskCornerRadius = 0f, maskOffsetX = 0f, maskOffsetY = 0f,
+        )
+        state.viewport = viewport
+        state.srcRect = srcRect
+        state.ready = true
+        return true
+    }
+
+    // ------------------------------------------------------------ 判定 / 壁纸折算
+
+    /**
+     * 判定 TextView 是否为锁屏/AOD 时钟数字 View：parent 链上出现时钟宿主即为时钟内文字。
      * 结果缓存（WeakHashMap，attach 才判定）。
      */
     private fun isClockDigitView(tv: TextView): Boolean {
@@ -463,116 +506,82 @@ object LockScreenClockHook {
             parent = parent.parent
             depth++
         }
-        // 仅 attach 状态下缓存判定结果（未 attach 不缓存，下次重判）
         if (tv.isAttachedToWindow) {
             clockDigitCache[tv] = isClock
         }
         return isClock
     }
 
-    /**
-     * 为时钟数字 TextView 准备液态玻璃 shader（含 uniform 刷新）。返回 null = 无壁纸源/尺寸非法 → 系统原样。
-     *
-     * uniform 契约（同 BlurDrawHook）：uViewport=数字 View 自身尺寸（onDraw canvas 为 View 局部坐标空间，
-     * coord(0,0)=View 左上角）；uSourceRect=数字 View 屏幕区域折算到壁纸位图（srcCoord 手动换算）。
-     * 玻璃参数：内部清晰/轻磨砂透镜（uBlurRadius=KEY_LOCKSCREEN_CLOCK_BLUR）+ vibrancy（KEY_VIBRANCY）；
-     * 关闭 SDF 形状类边缘效果（refractionHeight 极大 → 全内部、refractionAmount=0、highlight=0、dispersion=0）
-     * —— 字形本身由 TextView text paint 定义，无需也不应套用圆角矩形 SDF 折射/高光。
-     */
-    private fun prepareGlass(tv: TextView): RuntimeShader? {
-        // [2026-08-15 玻璃源改进] 优先原始壁纸（WallpaperManager 解码，清晰），fallback 投递位图
-        // （ThemePlugin 投递的可能含 BlurBitmapFactory 模糊 → 字形磨砂，用户反馈）
-        val bmp = refreshOriginalWallpaper() ?: wallpaperBitmap
-        if (bmp == null) {
-            if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: prepareGlass null (no wallpaper source)")
-            return null
-        }
-        if (bmp.isRecycled) {
-            if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: prepareGlass null (wallpaper recycled)")
-            if (bmp === wallpaperBitmap) wallpaperBitmap = null
-            originalWallpaper = null
-            return null
-        }
-        val w = tv.width
-        val h = tv.height
-        if (w <= 0 || h <= 0) {
-            if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: prepareGlass null (zero size w=$w h=$h) ${tv.javaClass.name}")
-            return null
-        }
-        val loc = IntArray(2)
-        try {
-            tv.getLocationOnScreen(loc)
-        } catch (t: Throwable) {
-            if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: prepareGlass null (getLocationOnScreen fail)")
-            return null
-        }
-        // 壁纸位图坐标 ← 屏幕坐标：按 (位图/屏幕) 比例折算（投递位图为屏幕/壁纸缓存尺寸，近似屏幕对齐）
-        val scaleX = bmp.width.toFloat() / screenWidth
-        val scaleY = bmp.height.toFloat() / screenHeight
-        val srcRect = RectF(
-            loc[0] * scaleX, loc[1] * scaleY,
-            (loc[0] + w) * scaleX, (loc[1] + h) * scaleY
-        )
-        val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
-        // 读配置（即时生效；热路径每绘制读 Prefs 有 binder 开销，用节流缓存）
-        val blur = readClockBlur()
-        val vibrancy = readVibrancy()
-        val state = digitStates.getOrPut(tv) { DigitGlassState() }
-        // 壁纸换了（原始壁纸/投递位图任一源换代）→ 重建 BitmapShader 并重绑输入
-        // （uSource/uSourceLowRes 同源；用位图身份做 token，双源切换都能检测）
-        val bmpToken = System.identityHashCode(bmp)
-        if (state.wallpaperToken != bmpToken || state.source == null) {
-            val src = LiquidGlassShader.createSourceBitmapShader(bmp)
-            state.source = src
-            state.shader.setInputShader("uSource", src)
-            state.shader.setInputShader("uSourceLowRes", src)
-            state.wallpaperToken = bmpToken
-        }
-        // 全部输入未变 → 复用上次 uniform，跳过 setUniforms（时间刻度视图每分钟才重绘，过渡动画期也零冗余）
-        if (state.viewport == viewport && state.srcRect == srcRect &&
-            state.lastBlur == blur && state.lastVibrancy == vibrancy
-        ) {
-            return state.shader
-        }
-        val params = LiquidGlassShader.Params(
-            viewportWidth = w.toFloat(),
-            viewportHeight = h.toFloat(),
-            cornerRadius = 0f,
-            cornerIsConic = false,
-            // 内部透镜：refractionHeight 极大 → 全走折射环带分支，字形内部壁纸采样偏移 = refractionAmount
-            refractionHeight = 100000f,
-            // [2026-08-15 玻璃质感明显化] refractionAmount 200 → 字形内部壁纸内容大幅错位（玻璃透镜感，
-            // 区别于系统壁纸透出）；色散/高光增强玻璃质感。用户反馈"和系统一样"= 之前 40px 偏移太小。
-            refractionAmount = 200f,
-            depth = 0f,
-            dispersion = 0.1f,
-            highlight = 0.5f,
-            highlightWidth = 8f,
-            vibrancy = vibrancy,
-            // [2026-08-15 用户要求完全玻璃化、去磨砂] blurRadius 0 → 内部清晰透镜
-            blurRadius = 0f,
-        )
-        // 输入 shader 已在上方按壁纸换代重绑；此处传 source=null 让 setUniforms 跳过重复 setInputShader
-        // （仅重设 uSourceRect 等 uniform 即可——srcCoord 手动换算不依赖 BitmapShader 矩阵）
-        LiquidGlassShader.setUniforms(
-            state.shader, params, null,
-            sourceRect = srcRect, lowResSourceRect = srcRect,
-            debugCoord = 0f,
-            maskRect = viewport, maskCornerRadius = 0f, maskOffsetX = 0f, maskOffsetY = 0f,
-        )
-        state.viewport = viewport
-        state.srcRect = srcRect
-        state.lastBlur = blur
-        state.lastVibrancy = vibrancy
-        if (moduleLogEnabled()) {
-            Log.i(TAG, "lockscreen-clock: shader applied srcRect=$srcRect viewport=$viewport bmp=${bmp.width}x${bmp.height}")
-        }
-        return state.shader
+    /** 玻璃源：优先自有解码的原图，回退系统投递位图的**自有副本**。 */
+    private fun glassSource(): Bitmap? {
+        refreshOriginalWallpaper()?.let { if (!it.isRecycled) return it }
+        val fallback = wallpaperBitmap
+        return if (fallback != null && !fallback.isRecycled) fallback else null
     }
 
-    // ------------------------------------------------------------ 辅助
+    /**
+     * 把系统投递的壁纸位图复制成自有副本（防系统侧回收后绘制静默失效，
+     * 见记忆 `project_launcher-blur-bitmap-invalid`）。失败返回 null（调用方不改状态）。
+     */
+    private fun adoptWallpaper(bmp: Bitmap): Bitmap? {
+        return try {
+            if (bmp.isRecycled || bmp.width <= 0 || bmp.height <= 0) return null
+            val copy = bmp.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            wallpaperBitmap = copy
+            copy
+        } catch (t: Throwable) {
+            Log.w(TAG, "lockscreen-clock: wallpaper copy failed", t)
+            null
+        }
+    }
 
-    /** [spec/54] WallpaperManager 实例（ActivityThread.currentApplication 上下文，SystemUI 进程内）。 */
+    /**
+     * 壁纸「贴屏 cover」映射：`scale` = 位图像素 → 屏幕像素（取两轴较大者）；可见窗口 = 屏幕 / scale；
+     * 超出部分由滚动 offset 平移。语义与 `LauncherHook.buildVisibleCrop` 一致。
+     *
+     * 例：壁纸 2875x3168、屏幕 1440x3168 → scale = max(0.5009, 1.0) = 1.0（高度正好贴屏），
+     * 横向可滚 1435px。**不可**用 `bmp.width / screenWidth`（会得 1.9965，横向拉伸 2 倍采到无关区域）。
+     */
+    private fun wallpaperMapping(bmp: Bitmap): WallpaperMapping? {
+        val scrW = screenWidth.toFloat()
+        val scrH = screenHeight.toFloat()
+        if (scrW <= 0f || scrH <= 0f || bmp.width <= 0 || bmp.height <= 0) return null
+        val scale = maxOf(scrW / bmp.width, scrH / bmp.height)
+        if (scale <= 0f) return null
+        val maxScrollX = (bmp.width - scrW / scale).coerceAtLeast(0f)
+        val maxScrollY = (bmp.height - scrH / scale).coerceAtLeast(0f)
+        return WallpaperMapping(
+            scale = scale,
+            cropX = wallpaperOffsetX.coerceIn(0f, 1f) * maxScrollX,
+            cropY = wallpaperOffsetY.coerceIn(0f, 1f) * maxScrollY,
+        )
+    }
+
+    /**
+     * 从系统读壁纸 offset（`WallpaperManager.getWallpaperOffsets(IBinder, float[], float[])`，
+     * @SystemApi 需反射）。锁屏不自滚动 → 读一次即可；失败静默保持 0（对不可滚壁纸无影响）。
+     */
+    private fun syncWallpaperOffsets(anchor: View) {
+        try {
+            val wm = wallpaperManager() ?: return
+            val token = anchor.rootView?.windowToken ?: return
+            val xs = FloatArray(1)
+            val ys = FloatArray(1)
+            wm.javaClass.getMethod(
+                "getWallpaperOffsets",
+                android.os.IBinder::class.java, FloatArray::class.java, FloatArray::class.java,
+            ).invoke(wm, token, xs, ys)
+            wallpaperOffsetX = xs[0]
+            wallpaperOffsetY = ys[0]
+            if (moduleLogEnabled()) {
+                Log.i(TAG, "lockscreen-clock: wallpaper offsets x=${xs[0]} y=${ys[0]}")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "lockscreen-clock: getWallpaperOffsets read failed (keep 0)", t)
+        }
+    }
+
+    /** WallpaperManager 实例（ActivityThread.currentApplication 上下文，SystemUI 进程内）。 */
     private fun wallpaperManager(): WallpaperManager? {
         return try {
             val app = Class.forName("android.app.ActivityThread")
@@ -584,9 +593,10 @@ object LockScreenClockHook {
         }
     }
 
-    /** [2026-08-15 玻璃源改进] 刷新原始壁纸（清晰）：静态壁纸 `WallpaperManager.getWallpaperFile(FLAG_SYSTEM)`
-     *  解码（inSampleSize 使解码尺寸 ≈ 屏幕，坐标折算对齐）；id 未变直接返回缓存；动态壁纸
-     *  （getWallpaperInfo != null，无文件）返回 null → prepareGlass fallback 投递位图。 */
+    /**
+     * 刷新原始壁纸（清晰）：静态壁纸 `WallpaperManager.getWallpaperFile(FLAG_SYSTEM)` 解码；
+     * id 未变直接返回缓存；动态壁纸（无文件）返回 null → 调用方回退投递位图。
+     */
     private fun refreshOriginalWallpaper(): Bitmap? {
         val cur = originalWallpaper
         if (cur != null && !cur.isRecycled) return cur
@@ -623,6 +633,7 @@ object LockScreenClockHook {
             if (bmp != null && bmp.width > 0 && bmp.height > 0) {
                 originalWallpaper = bmp
                 originalWallpaperId = id
+                wallpaperOffsetsSynced = false
                 if (moduleLogEnabled()) {
                     Log.i(TAG, "lockscreen-clock: original wallpaper decoded ${bmp.width}x${bmp.height} id=$id")
                 }
@@ -639,32 +650,26 @@ object LockScreenClockHook {
         return null
     }
 
-    /** 路径 3 兜底：清除时钟数字 View 上系统挂的 RenderEffect（blur 后处理），双保险防路径 1/2 失效。
-     *  反射清 `View.mRenderEffect` 字段 = null + `view.renderNode.setRenderEffect(null)`（`View.getRenderNode()`
-     *  是 @hide 需反射；`RenderNode.setRenderEffect` public，null 幂等；effect 已空时不触发 invalidate）。
-     *  整体 try-catch，单条失败忽略，绝不影响绘制主流程。仅由 isClockDigitView 命中（时钟数字 View）分支
-     *  调用，SystemUI 其他 View 不受影响。 */
+    // ------------------------------------------------------------ 辅助
+
+    /**
+     * 清除时钟数字 View 上系统挂的 RenderEffect（blur 后处理），兜底防路径 1/2 失效。
+     * 反射清 `View.mRenderEffect` = null + `RenderNode.setRenderEffect(null)`（幂等）。
+     */
     private fun clearClockRenderEffect(view: View) {
         try {
             try {
-                val f = mRenderEffectField()
-                if (f != null) f.set(view, null)
+                mRenderEffectField()?.set(view, null)
             } catch (t: Throwable) {
-                // 反射清字段失败：忽略（RenderNode 路径兜底）
+                // 忽略（RenderNode 路径兜底）
             }
             try {
-                val rn = mGetRenderNode(view) as? android.graphics.RenderNode
-                if (rn != null) {
-                    rn.setRenderEffect(null)
-                    if (moduleLogEnabled()) Log.i(TAG, "lockscreen-clock: cleared RenderNode renderEffect")
-                } else if (moduleLogEnabled()) {
-                    Log.i(TAG, "lockscreen-clock: no RenderNode available to clear")
-                }
+                mGetRenderNode(view)?.setRenderEffect(null)
             } catch (t: Throwable) {
-                // RenderNode 清空失败：忽略
+                // 忽略
             }
         } catch (t: Throwable) {
-            // 整体兜底：绝不让清除逻辑影响 onDraw
+            // 整体兜底：绝不影响绘制主流程
         }
     }
 
@@ -674,20 +679,17 @@ object LockScreenClockHook {
         mRenderEffectField = try {
             View::class.java.getDeclaredField("mRenderEffect").apply { isAccessible = true }
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock: View.mRenderEffect field resolve failed (RenderNode path only)", t)
             null
         }
         return mRenderEffectField
     }
 
     private fun mGetRenderNode(view: View): android.graphics.RenderNode? {
-        // 优先 `View.mRenderNode` 私有字段（稳定，Android 16 实测 getRenderNode() 方法名/可见性不可靠）
         if (!mRenderNodeFieldResolved) {
             mRenderNodeFieldResolved = true
             mRenderNodeField = try {
                 View::class.java.getDeclaredField("mRenderNode").apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.e(TAG, "lockscreen-clock: View.mRenderNode field resolve failed", t)
                 null
             }
         }
@@ -699,7 +701,6 @@ object LockScreenClockHook {
                 null
             }
         }
-        // fallback：getRenderNode() 方法（Android 16 可能失败）
         if (!mGetRenderNodeResolved) {
             mGetRenderNodeResolved = true
             mGetRenderNodeMethod = try {
@@ -720,9 +721,9 @@ object LockScreenClockHook {
         val it = clockDigitCache.entries.iterator()
         while (it.hasNext()) {
             val e = it.next()
-            val tv = e.key
             if (e.value) {
                 try {
+                    val tv = e.key
                     if (tv.isAttachedToWindow) tv.invalidate()
                 } catch (t: Throwable) {
                     // 忽略单 View 异常
@@ -734,6 +735,7 @@ object LockScreenClockHook {
     /** 时钟玻璃模糊半径：节流读 Prefs（热路径不每帧 IPC），默认 6f。 */
     private var lastBlurRead = -1f
     private var lastBlurReadAt = 0L
+
     private fun readClockBlur(): Float {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastBlurReadAt < 1000L && lastBlurRead >= 0f) return lastBlurRead
@@ -747,24 +749,9 @@ object LockScreenClockHook {
         return lastBlurRead
     }
 
-    /** vibrancy（复用全局玻璃参数）：节流读 Prefs，默认 1.5f。 */
-    private var lastVibrancyRead = -1f
-    private var lastVibrancyReadAt = 0L
-    private fun readVibrancy(): Float {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastVibrancyReadAt < 1000L && lastVibrancyRead >= 0f) return lastVibrancyRead
-        lastVibrancyRead = try {
-            api?.let { Prefs.read(it).getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY) }
-                ?.coerceIn(0.5f, 3f) ?: Prefs.DEFAULT_VIBRANCY
-        } catch (t: Throwable) {
-            Prefs.DEFAULT_VIBRANCY
-        }
-        lastVibrancyReadAt = now
-        return lastVibrancyRead
-    }
-
     private var lastLogEnabled = false
     private var lastLogEnabledAt = 0L
+
     private fun moduleLogEnabled(): Boolean {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastLogEnabledAt < 1000L) return lastLogEnabled

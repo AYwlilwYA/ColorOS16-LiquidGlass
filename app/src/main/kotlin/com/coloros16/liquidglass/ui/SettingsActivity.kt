@@ -90,7 +90,7 @@ class SettingsActivity : AppCompatActivity() {
         Category("text", R.string.cat_text, R.string.cat_text_desc, R.layout.view_cat_text),
         Category("mask", R.string.cat_mask, R.string.cat_mask_desc, R.layout.view_cat_mask),
         Category("seedling", R.string.cat_seedling, R.string.cat_seedling_desc, R.layout.view_cat_seedling),
-        Category("lockscreen", R.string.cat_lockscreen, R.string.cat_lockscreen_desc, R.layout.view_cat_lockscreen),
+        // [spec/81 2026-09-17] 锁屏时钟分类页已删除（hook 未命中数字 View，功能整体停用，无存活控件）
         // [spec/64] 桌面动画参数（三组开关 + 三级参数页）
         Category("anim", R.string.cat_anim, R.string.cat_anim_desc, R.layout.view_cat_anim),
         // [spec/65] iOS 动态倾斜/透视（实验性，默认关）
@@ -254,7 +254,6 @@ class SettingsActivity : AppCompatActivity() {
             "text" -> bindText(view)
             "mask" -> bindMask(view)
             "seedling" -> bindSeedling(view)
-            "lockscreen" -> bindLockscreen(view)
             "anim" -> bindAnim(view)
             "tilt" -> bindTilt(view)
             "desktop" -> bindDesktop(view)
@@ -612,27 +611,8 @@ class SettingsActivity : AppCompatActivity() {
         )
     }
 
-    /** 锁屏时钟：液态玻璃化开关 + 磨砂半径（spec/43）。 */
-    private fun bindLockscreen(view: View) {
-        // 锁屏大时钟液态玻璃化开关（默认关；改动需重启 SystemUI 生效）
-        val switchClock = view.findViewById<Switch>(R.id.switchLockscreenClockGlass)
-        val clockListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_LOCKSCREEN_CLOCK_GLASS, checked)
-        }
-        switchClock.setOnCheckedChangeListener(clockListener)
-        refreshBooleanSwitch(
-            switchClock, clockListener,
-            Prefs.KEY_LOCKSCREEN_CLOCK_GLASS, Prefs.DEFAULT_LOCKSCREEN_CLOCK_GLASS
-        )
-        // 时钟玻璃数字内部轻模糊半径滑杆（0~60px，默认 6；改动即时生效）
-        bindFloatSeekBar(
-            seek = view.findViewById(R.id.seekLockscreenClockBlur), valueText = view.findViewById(R.id.lockscreenClockBlurValue),
-            key = Prefs.KEY_LOCKSCREEN_CLOCK_BLUR, default = Prefs.DEFAULT_LOCKSCREEN_CLOCK_BLUR,
-            fromProgress = { p -> p.toFloat() },
-            toProgress = { v -> v.toInt().coerceIn(0, 60) },
-            format = { v -> getString(R.string.settings_lockscreen_clock_blur_value, v) },
-        )
-    }
+    // [spec/81 2026-09-17] bindLockscreen 已删除：锁屏时钟 hook 真机未命中数字 View，
+    // 功能整体停用，「锁屏」分类页及其入口一并移除。
 
     /** [doc/spec/66] 桌面大类：Dock 栏液态玻璃化（默认关；Launcher 侧 TTL 500ms 重读，改动无需重启桌面）。 */
     private fun bindDesktop(view: View) {

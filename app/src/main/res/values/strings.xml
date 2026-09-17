@@ -123,11 +123,7 @@
     <string name="settings_seedling_force_transparent_bg">透明卡片背景（默认开）</string>
     <string name="settings_seedling_force_transparent_bg_desc">展开卡片背景置透明，让液态玻璃透出。</string>
 
-    <!-- 锁屏时钟 -->
-    <string name="settings_lockscreen_clock_glass">锁屏大时钟液态玻璃（默认关）</string>
-    <string name="settings_lockscreen_clock_glass_desc">锁屏大时钟数字以玻璃质感填充，与时钟同绘制层级。</string>
-    <string name="settings_lockscreen_clock_blur">时钟玻璃数字磨砂（px，0=清晰透镜）</string>
-    <string name="settings_lockscreen_clock_blur_value">%1$.0f px</string>
+    <!-- [spec/81 2026-09-17] 锁屏时钟相关字符串已随功能停用移除 -->
 
     <!-- [2026-09-17] 追踪器相关字符串已随追踪器整体移除 -->
 
@@ -159,8 +155,6 @@
     <string name="cat_mask_desc">黑遮罩压暗 + 文字强制白</string>
     <string name="cat_seedling">流体云</string>
     <string name="cat_seedling_desc">灵动岛展开卡片液态玻璃</string>
-    <string name="cat_lockscreen">锁屏时钟</string>
-    <string name="cat_lockscreen_desc">锁屏大时钟液态玻璃</string>
     <string name="cat_log">日志与诊断</string>
     <string name="cat_log_desc">模块日志开关</string>
 
