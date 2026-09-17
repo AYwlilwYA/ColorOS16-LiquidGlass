@@ -9,7 +9,7 @@ import io.github.libxposed.api.XposedInterface.ExceptionMode
  *
  * 设计依据：doc/spec/04-技术方案.md 第 3 节（方案三 Hook C）
  * - 目标：PlatformBlurDrawable.getHostViewName() / drawableId
- * - 配置：Prefs 场景白名单（KEY_SCENE_WHITELIST，默认关闭过滤）
+ * - 配置：待定（原 Prefs 场景白名单键已于 2026-09-17 作为死键清理，见 Prefs.kt）
  *
  * ⚠️ 占位阶段：目标类名/方法名来自旧版反编译，待新版核对后再落地。
  */

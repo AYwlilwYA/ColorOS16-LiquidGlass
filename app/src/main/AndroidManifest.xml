@@ -17,6 +17,12 @@
       未加 xposedmodule meta-data（新式 LibXposed 框架不依赖它，见 package-info.java）。
     -->
 
+    <!--
+      [2026-09-17 升级提示] 启动时请求 GitHub Releases API 比对版本号。
+      仅用于该检查（api.github.com），模块不向任何其它地址发请求。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".App"
         android:label="@string/app_name"

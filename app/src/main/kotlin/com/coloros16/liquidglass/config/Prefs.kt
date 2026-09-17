@@ -30,25 +30,16 @@ object Prefs {
     /** 模块总开关，默认关闭（false = 模块完全不生效） */
     const val KEY_MASTER = "master_enabled"
 
-    // ---------- 背景档位 ----------
-    /** 背景处理档位（KEY_BACKGROUND_MODE 取值之一） */
-    const val KEY_BACKGROUND_MODE = "background_mode"
-    /** 完全透明，壁纸清晰透出（首期默认档） */
-    const val BACKGROUND_TRANSPARENT = "transparent"
-    /** 极轻模糊 + 轻 MixColor 色调 */
-    const val BACKGROUND_LIGHT = "light"
-    /** 保留系统原模糊，模块不干预 */
-    const val BACKGROUND_SYSTEM = "system"
+    // [2026-09-17 死键清理] 背景档位已删除：KEY_BACKGROUND_MODE + BACKGROUND_TRANSPARENT/LIGHT/SYSTEM
+    // 三个取值 + Prefs.backgroundMode()，全部零调用方（档位语义早已被材质参数逐项取代）。
 
     // ---------- 液态玻璃材质参数（默认全关/零，随 M1 渲染 PoC 逐个启用） ----------
     const val KEY_BLUR_RADIUS = "blur_radius"
     /** 模糊半径 UI 上限（px）：shader 为固定 5×5 tap，间隔 = spread/2，过大将出采样条带 */
     const val BLUR_RADIUS_UI_MAX = 32
     const val KEY_REFRACTION_AMOUNT = "refraction_amount"
-    /** ⚠️ 已废弃（2026-08-14 折射自适应）：折射环带高度不再可配置，恒 = 元素实际区域短边一半
-     *  （BlurDrawHook/LauncherHook buildParams 内 minOf(width,height)/2f）。本键不再被代码读取；
-     *  保留仅防已有用户配置写入时抛错。 */
-    const val KEY_REFRACTION_HEIGHT = "refraction_height"
+    // [2026-09-17 死键清理] KEY_REFRACTION_HEIGHT 已删除：折射环带高度恒 = 元素短边一半
+    //（BlurDrawHook/LauncherHook buildParams 内 minOf(width,height)/2f），本键零调用方。
     const val KEY_DEPTH = "depth"
     const val KEY_DISPERSION = "dispersion"
     const val KEY_HIGHLIGHT = "highlight"
@@ -95,44 +86,19 @@ object Prefs {
     /** 视差 Y 默认 px（0 = 关闭视差） */
     const val DEFAULT_PARALLAX_Y = 0f
 
-    // ---------- 原图 dump 诊断（F4） ----------
-    /** 原图 dump 开关：开启后 onBlurReady 缓存更新时把原图 Bitmap dump 成 PNG 存
-     * /data/local/tmp/lg_dump.png（只写一次），供真机拉出定性抓屏内容是否混着面板旧影。
-     * 默认 false（避免 IO 开销）；改后需重启 SystemUI 生效。 */
-    const val KEY_DUMP_ORIGINAL = "dump_original"
+    // [2026-09-17 死键清理] 原图 dump 键（KEY_DUMP_ORIGINAL）已删除：dump 诊断改走触发文件机制
+    //（/data/local/tmp/lg_dump_trigger → lg_dump.png），本键零调用方。
 
-    // ---------- 任务 G+：通用运动追踪器 + 回退恢复（配置接线，2026-08-12） ----------
-    /** 通用运动追踪器开关：开启后 Choreographer 逐帧比对已登记宿主 View 的屏幕位置/尺寸快照，
-     * 变化即 invalidate 宿主本身强制重录 → 映射/srcRect 逐帧跟随（根治控制中心滑动/翻页区域冻结）。
-     * 默认 true。关闭时运动追踪器不启动（Choreographer 不跑），区域跟随退化由任务 G 白名单
-     * 事件源 hook（onPageScrolled/setExpansionHeight）兜底。 */
-    const val KEY_TRACK_HOST_MOTION = "track_host_motion"
+    // ---------- 回退恢复（配置接线，2026-08-12） ----------
+    // [2026-09-17] 通用运动追踪器键（KEY_TRACK_HOST_MOTION / DEFAULT_TRACK_HOST_MOTION）已随
+    // 追踪器整体删除：真机实测关闭后表现无差异，逐帧 Choreographer 遍历属纯空转。
 
-    /** glassRetryPending 回退恢复节流毫秒：冷启动/无映射回退系统模糊后，新原图到达时
-     * invalidate 宿主重试玻璃的节流间隔（onBlurReady 按 drawable 逐个回调 20+ 次同帧，
-     * 且回退若持续存在防「新帧→invalidate→重录→新模糊请求→新帧」反馈风暴）。默认 150ms。
-     * 改动即时生效（captureOriginalFrame 每次读 Prefs）。 */
-    const val KEY_RETRY_THROTTLE_MS = "retry_throttle_ms"
+    // [2026-09-17 死键清理] 回退恢复节流键（KEY_RETRY_THROTTLE_MS / DEFAULT_RETRY_THROTTLE_MS）
+    // 已删除：重试节流现由 BlurDrawHook 的 retryIntervalMs（250ms 起步、×2、4s 封顶）承担。
 
-    /** 通用运动追踪器开关默认值（true = 默认开启） */
-    const val DEFAULT_TRACK_HOST_MOTION = true
-    /** 回退恢复节流默认毫秒（150ms，与原硬编码一致） */
-    const val DEFAULT_RETRY_THROTTLE_MS = 150
-
-    // ---------- 每元素独立背景源（doc/spec/07，2026-08-13） ----------
-    /** ⚠️ 已废弃（2026-08-13 组合方案改整屏快照）：每元素背景缓存容量（LruCache，drawableId → 元素区域
-     * crop 位图）。整屏快照方案下元素背景移除，改共享单张整屏 0.5 降采样快照，本键不再被代码读取；保留仅防
-     * 已有用户配置写入时抛错。 */
-    const val KEY_ELEMENT_BG_CAP = "element_bg_cap"
-    /** 已废弃（见 [KEY_ELEMENT_BG_CAP]） */
-    const val DEFAULT_ELEMENT_BG_CAP = 64
-
-    /** ⚠️ 已废弃（2026-08-13 用户决定「无节流立即刷新」）：内容变化背景重抓的节流下限毫秒。决定后内容变化
-     * （面板开/关、onBlurReady 新帧、映射写入）**立即**抓整屏快照，不再限制频率（异步 worker ≤2 并发控负载）。
-     * 本键不再被代码读取；保留仅防已有用户配置写入时抛错。 */
-    const val KEY_BG_REFRESH_MS = "bg_refresh_ms"
-    /** 已废弃（见 [KEY_BG_REFRESH_MS]） */
-    const val DEFAULT_BG_REFRESH_MS = 300
+    // [2026-09-17 死键清理] 每元素背景容量（KEY/DEFAULT_ELEMENT_BG_CAP）与内容变化重抓节流
+    //（KEY/DEFAULT_BG_REFRESH_MS）已删除：均自述废弃且零调用方——整屏快照方案下元素背景已移除，
+    // 内容变化改「无节流立即刷新」。
 
     // ---------- 抓屏/空置/追踪参数全配置化（doc/spec/17，2026-08-13） ----------
     // A. 抓屏速率 / 空置速率（用户点名三项）
@@ -191,13 +157,8 @@ object Prefs {
     const val DEFAULT_BG_WALLPAPER_MAX_DIM = 2048
 
     // B. 抓屏并发 / 重试
-    /** ⚠️ 已废弃（2026-08-13 整屏快照单任务下并发无意义）：抓屏 worker 并发上限。队列当前唯一任务 =
-     * SNAPSHOT_ID 整屏快照（pendingCaptureIds 去重后同刻最多 1 个任务），并发 worker 永远只跑 1 个，
-     * 配置项形同虚设。worker 固定单线程（1，单线程串行抓屏，见 doc/spec/15）。本键不再被
-     * 代码读取；保留仅防已有用户配置写入时抛错。 */
-    const val KEY_BG_CAPTURE_WORKERS = "bg_capture_workers"
-    /** 已废弃（见 [KEY_BG_CAPTURE_WORKERS]） */
-    const val DEFAULT_BG_CAPTURE_WORKERS = 2
+    // [2026-09-17 死键清理] 抓屏 worker 并发上限键（KEY/DEFAULT_BG_CAPTURE_WORKERS）已删除：
+    // 自述废弃（整屏快照单任务下并发无意义，worker 固定单线程）且零调用方。
 
     /** 抓屏失败重试间隔毫秒（3 次/320ms）。改动即时生效（runElementCaptureWorker 读 Prefs）。 */
     const val KEY_BG_CAPTURE_RETRY_MS = "bg_capture_retry_ms"
@@ -210,20 +171,8 @@ object Prefs {
     const val DEFAULT_BG_CAPTURE_RETRY_LIMIT = 3
 
     // C. 追踪器（spec/16 状态机 + 降频）
-    /** 追踪器最小遍历间隔帧数（1=每帧现行为；2~3=隔帧降频）。改动即时生效（motionFrameCallback 每帧读 Prefs）。 */
-    const val KEY_TRACKER_MIN_INTERVAL_FRAMES = "tracker_min_interval_frames"
-    /** 追踪器最小遍历间隔帧数默认值（1 = 每帧，现行为） */
-    const val DEFAULT_TRACKER_MIN_INTERVAL_FRAMES = 1
-
-    /** 追踪器空闲（连续无宿主变化）时拉大的遍历间隔帧数。改动即时生效（motionFrameCallback 每帧读 Prefs）。 */
-    const val KEY_TRACKER_IDLE_INTERVAL_FRAMES = "tracker_idle_interval_frames"
-    /** 追踪器空闲遍历间隔帧数默认值（12） */
-    const val DEFAULT_TRACKER_IDLE_INTERVAL_FRAMES = 12
-
-    /** 连续无宿主位置变化多少帧后判定"空闲"进入低频遍历。改动即时生效（motionFrameCallback 每帧读 Prefs）。 */
-    const val KEY_TRACKER_IDLE_AFTER_FRAMES = "tracker_idle_after_frames"
-    /** 追踪器空闲判定帧数默认值（30） */
-    const val DEFAULT_TRACKER_IDLE_AFTER_FRAMES = 30
+    // [2026-09-17] 三个追踪器间隔键（tracker_min/idle_interval_frames、tracker_idle_after_frames）
+    // 已随追踪器整体删除。
 
     // ---------- 持续抓屏周期性刷新（doc/spec/33，2026-08-13；spec/36 后仅 SystemUI 侧使用） ----------
     /** 持续抓屏开关：true=活跃玻璃宿主（通知/控件）期间周期性触发整屏快照重抓，
@@ -525,11 +474,8 @@ object Prefs {
     /** 透视扭曲上限（150%，超过则 clamp） */
     const val ANIM_TILT_PERSPECTIVE_MAX = 150
 
-    // ---------- 场景过滤（Hook C） ----------
-    /** 场景过滤总开关，默认关（不拦截任何场景） */
-    const val KEY_SCENE_FILTER_ENABLED = "scene_filter_enabled"
-    /** 场景白名单（StringSet，如 scrim / qs_tile_bg / 通知卡片 hostView 名），默认空 */
-    const val KEY_SCENE_WHITELIST = "scene_whitelist"
+    // [2026-09-17 死键清理] 场景过滤键（KEY_SCENE_FILTER_ENABLED / KEY_SCENE_WHITELIST）已删除：
+    // 零调用方（SceneFilter.kt 尚处占位阶段，仅注释提及）。
 
     // ---------- 读取（hook 端，SystemUI 进程） ----------
     fun read(api: XposedInterface): SharedPreferences = api.getRemotePreferences(PREFS_NAME)
@@ -553,13 +499,8 @@ object Prefs {
 
     fun masterEnabled(api: XposedInterface): Boolean = read(api).getBoolean(KEY_MASTER, false)
 
-    fun backgroundMode(api: XposedInterface): String =
-        read(api).getString(KEY_BACKGROUND_MODE, BACKGROUND_TRANSPARENT) ?: BACKGROUND_TRANSPARENT
-
-    fun isSceneFilterEnabled(api: XposedInterface): Boolean = read(api).getBoolean(KEY_SCENE_FILTER_ENABLED, false)
-
-    fun sceneWhitelist(api: XposedInterface): Set<String> =
-        read(api).getStringSet(KEY_SCENE_WHITELIST, emptySet()) ?: emptySet()
+    // [2026-09-17 死键清理] backgroundMode / isSceneFilterEnabled / sceneWhitelist 三个读取辅助
+    // 已随对应死键一并删除（零调用方）。
 
     // ---------- 读写（模块 UI 进程，SettingsActivity） ----------
     /** 框架侧存储（与 hook 端 getRemotePreferences 同一份数据，可写）。 */

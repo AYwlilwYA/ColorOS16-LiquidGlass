@@ -16,7 +16,6 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
-import android.view.Choreographer
 import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewParent
@@ -1102,17 +1101,9 @@ object BlurDrawHook {
      * 新位置 → drawBlurShader 重跑 → 玻璃跟随。Root cause：控制中心滑动/翻页走容器 RenderNode
      * offset/translation，子 View display list 不重录，映射一直停在滑动前旧坐标 → srcRect 冻结。
      * 必须 invalidate 宿主 View 本身（ViewGroup.invalidate 不重录子节点 display list）。
-     *
-     * [任务 G+ 通用运动追踪] 每个 HostEntry 顺带缓存上帧屏幕位置/尺寸快照，
-     * Choreographer 逐帧比对（见 trackHostViewMotion），不再依赖白名单事件源。
      */
     private class HostEntry(view: View) {
         val ref = WeakReference(view)
-        /** 上帧快照；MIN_VALUE = 尚无快照（首帧只记录不 invalidate，防全量误触发） */
-        var lastX = Int.MIN_VALUE
-        var lastY = Int.MIN_VALUE
-        var lastW = -1
-        var lastH = -1
     }
 
     private val registeredHostViews = LinkedHashSet<HostEntry>()
@@ -1147,21 +1138,10 @@ object BlurDrawHook {
      *  仅作泄漏兜底保留。 */
     private val containerTransforms = ConcurrentHashMap<Int, ContainerTransform>()
 
-    // ---- 任务 G+ 通用运动追踪器（症状 2/4/5：区域冻结根治，替代白名单事件源打地鼠） ----
-    /** SystemUI 主线程 Choreographer（首次登记宿主时惰性获取） */
-    @Volatile
-    private var choreographer: Choreographer? = null
-
-    /** 帧回调是否已挂（防重复 post） */
-    @Volatile
-    private var frameCallbackPosted = false
-
-    // ---- [spec/17 配置接线] 追踪器状态机（doc/spec/16 + 17） ----
-    /** 追踪器累计帧计数（每次回调 +1，隔帧取模决定本次是否跑遍历；间隔切换时取模粒度不齐可接受） */
-    private var trackerFrameCount = 0
-
-    /** 连续无宿主位置变化帧数（≥ KEY_TRACKER_IDLE_AFTER_FRAMES 判定"空闲"进低频遍历；宿主移动即重置 0） */
-    private var staticFrames = 0
+    // [2026-09-17 追踪器整体移除] 通用运动追踪器（Choreographer 逐帧比对宿主屏幕位置/尺寸快照）已删除：
+    // 真机实测关闭该开关后表现无差异（区域跟随已由 setTranslation / onPageScrolled / setExpansionHeight
+    // 等事件源 hook 覆盖），逐帧 getLocationOnScreen 遍历属纯空转。
+    // 其内嵌的 glassRetryPending 回退重试已迁到低频 Handler 循环，见 retryInvalidateRunnable。
 
     // ---- [doc/spec/33 持续抓屏 2026-08-13] 活跃玻璃宿主期间周期性整屏快照（动态背景实时刷新） ----
     /** 周期抓屏 Runnable 是否已 post（防重复 postDelayed；宿主全灭/功能关闭时停置 false） */
@@ -1176,11 +1156,14 @@ object BlurDrawHook {
     /** 回退恢复 invalidate 节流（同一批 onBlurReady 逐 drawable 回调 20+ 次，防反馈风暴） */
     private var lastRetryInvalidateAt = 0L
 
-    /** [回退恢复②·退避] 追踪器驱动重试的当前间隔（250ms 起步指数退避到 4s 封顶；
-     *  [2026-08-13] 新元素背景就绪时重置（原：新原图到达）。防永久 map miss 的 drawable
-     *  造成恒定高频 invalidate） */
+    /** [回退恢复②·退避] 重试当前间隔（250ms 起步指数退避到 4s 封顶）。防永久 map miss 的 drawable
+     *  造成恒定高频 invalidate。[2026-09-17] 驱动方由逐帧追踪器改为 Handler 循环，退避语义不变。 */
     @Volatile
     private var retryIntervalMs = 250L
+
+    /** [2026-09-17 追踪器移除] 回退重试 Runnable 是否已排（幂等防重复 postDelayed） */
+    @Volatile
+    private var retryLoopPosted = false
 
     /** 是否已成功替换过（首帧日志用） */
     @Volatile
@@ -3024,8 +3007,9 @@ object BlurDrawHook {
             logThrottled("nbv-skip-empty-bounds", Log.DEBUG) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
             return
         }
-        // [Bug 5 方向确认 2026-08-13] 登记 bgView 到运动追踪器：卡片尺寸/位置变化（trackHostViewMotion
-        // 比对 lastX/lastY/lastW/lastH）→ invalidate 宿主 → 重录 draw → 本方法用最新位置/尺寸折算 region
+        // [Bug 5 方向确认 2026-08-13] 登记 bgView：卡片尺寸/位置变化 → invalidate 宿主 → 重录 draw →
+        // 本方法用最新位置/尺寸折算 region。[2026-09-17] 原逐帧追踪器（比对 lastX/lastY/lastW/lastH）
+        // 已删除，尺寸变化链路改由 setTranslation / 布局 hook 覆盖。
         // → srcRect 及时跟上。横向滑动期间 setTranslation hook 已保证每帧 invalidate；此登记补全
         // 布局/动画/滚动等其他尺寸变化链路（原 recordNotificationCardRegion 未登记，卡片 region 可能冻结）。
         registerHostView(bgView)
@@ -5914,10 +5898,8 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Log.e(TAG, "bg-source: cache shade root view failed", t)
         }
-        // 新宿主登记 = 面板活动信号，确保运动追踪器在跑
-        //（整屏快照重抓触发点不在此时——screenRegionMap 的映射由 registerScreenRegionCore
-        //  在登记之后写入，抓屏触发已移到映射写入分支，见 registerScreenRegionCore）
-        kickMotionTracker()
+        // 整屏快照重抓触发点不在此时——screenRegionMap 的映射由 registerScreenRegionCore
+        // 在登记之后写入，抓屏触发已移到映射写入分支（见 registerScreenRegionCore）
         // [doc/spec/33 持续抓屏] 新宿主登记 = 有活跃玻璃显示 → 启动周期性抓屏（动态背景实时刷新；
         // 宿主全灭时 periodicCaptureRunnable 自动停止续跑）
         kickPeriodicCapture()
@@ -6036,81 +6018,39 @@ object BlurDrawHook {
         }
     }
 
-    // ------------------------------------------------------------ 任务 G+：通用运动追踪器（症状 2/4/5）
+    // ------------------------------------------------------------ 回退重试（原嵌在追踪器内，2026-09-17 迁出）
 
     /**
-     * 通用运动追踪（根治「区域冻结」，替代任务 G 白名单事件源打地鼠）。
+     * glassRetryPending 回退重试：元素背景缺失导致回退系统模糊（冷启动首帧背景未抓到、静止后无新元素
+     * 背景 → 仅靠入队抓屏可能磨砂滞留数十秒）时，invalidate 宿主强制重录重试玻璃。
      *
-     * NC↔CC 翻页、QS 翻页、过冲展开（症状 5 手指下拉间距变大）、惯性滚动等所有
-     * 「容器 RenderNode 平移/offset 不重录子 display list」的运动，无论事件源是谁，
-     * 可观测表现都是**宿主 View 屏幕位置或尺寸变化**。Choreographer 每帧比对已登记宿主的
-     * getLocationOnScreen + 宽高快照，变化即 invalidate() 宿主本身 → 下一帧重录 →
-     * AutoBlurDrawable.draw / drawBlurShader 重跑 → 映射/srcRect 逐帧跟随手指。
+     * [2026-09-17 追踪器移除] 原实现是「追踪器每帧检查 距上次重试 ≥ retryIntervalMs？」，追踪器整体删除
+     * 后改由本 Runnable 承担——低频 Handler 循环，退避语义**完全不变**：250ms 起步、每次 ×2、4s 封顶
+     *（永久 map miss 的 drawable 回退是 C2 设计行为，低频重试无感知）。
      *
-     * 成本：~30 宿主 × getLocationOnScreen（父链偏移累加，微秒级）/帧，仅在有位移时 invalidate。
-     * 面板关闭后宿主 View detach/GC，集合清空自动停跑。
+     * 调度：渲染侧 buildLiquidShader 失败置 glassRetryPending 后调 [scheduleGlassRetry]（幂等）。
+     * 停跑：执行时 pending 已清（渲染成功 / 别处已重试）→ 不再续排，零空转。
      */
-    /**
-     * [spec/17 配置接线] 帧回调：帧计数 + 空闲判定 + 隔帧降频（KEY_TRACKER_MIN/IDLE_INTERVAL_FRAMES）。
-     * active（staticFrames < IDLE_AFTER）用 MIN_INTERVAL，idle 用 IDLE_INTERVAL；帧计数取模决定本次
-     * 是否跑遍历（interval=1 = 每帧，现行为）。trackHostViewMotion 返回是否有宿主位置变化：
-     * true → staticFrames=0 重置空闲，false → staticFrames+1 累计。
-     * 空闲 + 空置抓屏 ENABLED → 按 KEY_BG_IDLE_CAPTURE_INTERVAL_MS 间隔入队整屏快照（节流由 idle 间隔本身控制）。
-     */
-    private val motionFrameCallback = Choreographer.FrameCallback {
-        frameCallbackPosted = false
-        try {
-            trackerFrameCount++
-            val idleAfter = trackerIdleAfterFrames()
-            val active = staticFrames < idleAfter
-            val interval = if (active) trackerMinIntervalFrames() else trackerIdleIntervalFrames()
-            if (interval <= 1 || trackerFrameCount % interval == 0) {
-                val moved = trackHostViewMotion()
-                staticFrames = if (moved) 0 else staticFrames + 1
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "taskG+: trackHostViewMotion error", t)
-        }
-        // [2026-08-14 用户要求·空置抓屏并入持续抓屏] 空置抓屏已移除——收起周期兜底由
-        // periodicCaptureRunnable（持续抓屏）承担，不再在帧回调里单独空置抓屏。
-        // 仍有存活宿主 → 继续逐帧追踪（面板可能在动）；全灭则停跑等新登记
-        var hasLive = false
-        synchronized(this) {
-            for (entry in registeredHostViews) {
-                if (entry.ref.get() != null) { hasLive = true; break }
-            }
-        }
-        if (hasLive) kickMotionTracker()
+    private val retryInvalidateRunnable = Runnable {
+        retryLoopPosted = false
+        if (!glassRetryPending) return@Runnable
+        glassRetryPending = false
+        lastRetryInvalidateAt = SystemClock.uptimeMillis()
+        retryIntervalMs = (retryIntervalMs * 2).coerceAtMost(4000L)
+        Log.i(TAG, "render: retry pending glass (handler-driven, interval=${retryIntervalMs}ms)")
+        invalidateRegisteredHostViews()
     }
 
-    /** 启动/续跑帧回调（主线程调用；惰性获取 Choreographer，任何失败静默不崩） */
-    private fun kickMotionTracker() {
-        // [任务 G+ 配置接线] 通用运动追踪器开关：false → 不启动/不续跑 Choreographer。
-        // 已 posted 的帧回调下一帧执行完 trackHostViewMotion 后再 kickMotionTracker 读到
-        // false 即停止续跑（延迟一帧，可接受）；从 false 切 true 时 registerHostView /
-        // captureOriginalFrame 会再次 kickMotionTracker 启动。开关读 Prefs 即时生效。
-        if (!isTrackHostMotionEnabled()) return
-        // [spec/62 锁屏耗电优化 2026-08-26] 锁屏门控：锁屏且面板未展开、无 heads-up → 玻璃宿主不可见、
-        // 无运动，逐帧追踪无意义 → 不启动/不续跑 Choreographer（消灭锁屏每 vsync 唤醒主线程）。
-        // 解锁后面板交互（onExpansionStarted / setExpansionHeight / registerHostView / onBlurReady）
-        // 会重新 kick，自然恢复。
-        if (isKeyguardLockedNow() && !panelExpansionActive && !isHeadsUpHostActive()) {
-            logThrottled("lg-batt-motion-lock-stop", Log.DEBUG) { "lg-batt: motion tracker lock-screen stop" }
-            return
-        }
-        if (frameCallbackPosted) return
-        val c = choreographer ?: try {
-            Choreographer.getInstance().also { choreographer = it }
-        } catch (t: Throwable) {
-            Log.e(TAG, "taskG+: Choreographer.getInstance failed (not main thread?)", t)
-            return
-        }
-        frameCallbackPosted = true
+    /** 调度一次回退重试（幂等：已排则不重复排；主线程执行 invalidate）。
+     *  渲染线程可调——[mainHandler] 是主 Looper 的 Handler，postDelayed 线程安全。 */
+    private fun scheduleGlassRetry() {
+        if (retryLoopPosted) return
+        retryLoopPosted = true
         try {
-            c.postFrameCallback(motionFrameCallback)
+            mainHandler().postDelayed(retryInvalidateRunnable, retryIntervalMs)
         } catch (t: Throwable) {
-            frameCallbackPosted = false
-            Log.e(TAG, "taskG+: postFrameCallback failed", t)
+            retryLoopPosted = false
+            Log.e(TAG, "render: schedule glass retry failed", t)
         }
     }
 
@@ -6141,7 +6081,7 @@ object BlurDrawHook {
      * pending 去重防重复入队；KEY_BG_PERIODIC_CAPTURE_ENABLE=false 恢复纯内容变化触发；**不每帧抓**。
      *
      * 停止条件：宿主全灭（registeredHostViews 无存活引用）→ 不续跑，周期抓屏自动停止
-     * （静止零抓屏保持）；功能关闭 → 同上。独立于 track_host_motion 开关（Choreographer 不跑时仍生效）。
+     * （静止零抓屏保持）；功能关闭 → 同上。独立于运动追踪器（2026-09-17 已整体移除）。
      */
     private val periodicCaptureRunnable = Runnable {
         periodicCapturePosted = false
@@ -6238,16 +6178,7 @@ object BlurDrawHook {
         }
     }
 
-    /** [任务 G+ 配置接线] 读通用运动追踪器开关（Prefs.KEY_TRACK_HOST_MOTION，默认 true）。 */
-    private fun isTrackHostMotionEnabled(): Boolean {
-        val a = api ?: return Prefs.DEFAULT_TRACK_HOST_MOTION
-        return try {
-            Prefs.read(a).getBoolean(Prefs.KEY_TRACK_HOST_MOTION, Prefs.DEFAULT_TRACK_HOST_MOTION)
-        } catch (t: Throwable) {
-            Log.w(TAG, "taskG+: prefs read track_host_motion failed, default true", t)
-            Prefs.DEFAULT_TRACK_HOST_MOTION
-        }
-    }
+    // [2026-09-17] 追踪器开关读取（isTrackHostMotionEnabled）随追踪器一并删除。
 
     // ---- [spec/17 配置接线] 抓屏/空置/追踪参数读取（每处独立 try-catch 兜底默认值，改动即时生效；api 在 install 时缓存） ----
 
@@ -6293,7 +6224,7 @@ object BlurDrawHook {
     /** [2026-08-15 主动式持续抓屏 + 2026-08-14 运动节流] 主动持续抓屏 tick 间隔毫秒：**运动时满速
      *  [panelCaptureHz]（默认 120Hz → ~8ms），静止时减半（120×0.5=60Hz → ~16ms）**——用 [isMotionActive]
      *  运动标志判定（[markMotion] 由面板动画 / 内容变化 / 元素移动（QS 翻页 / setExpansionHeight /
-     *  通知卡滑动 / trackHostViewMotion 追踪）置位，复位延迟 300ms）。
+     *  通知卡滑动）置位，复位延迟 300ms）。
      *  间隔 = 1000/有效Hz ms，clamp 4~1000ms（防过快打爆 SF / 过慢背景滞后）。**下拉面板与通知横幅共用
      *  同一套速率**（[startPanelContinuousCapture] / [startHeadsUpContinuousCapture]）。
      *  [2026-08-14 节流语义替换] `KEY_BG_CAPTURE_MIN_INTERVAL_MS`>0 减半逻辑**已移除**（该键只作用于
@@ -6375,103 +6306,8 @@ object BlurDrawHook {
         }
     }
 
-    /** 追踪器最小遍历间隔帧数（KEY_TRACKER_MIN_INTERVAL_FRAMES，默认 1=每帧） */
-    private fun trackerMinIntervalFrames(): Int {
-        val a = api ?: return Prefs.DEFAULT_TRACKER_MIN_INTERVAL_FRAMES
-        return try {
-            Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_TRACKER_MIN_INTERVAL_FRAMES, Prefs.DEFAULT_TRACKER_MIN_INTERVAL_FRAMES)
-                .coerceAtLeast(1)
-        } catch (t: Throwable) {
-            Log.w(TAG, "prefs read tracker_min_interval_frames failed, default 1", t)
-            Prefs.DEFAULT_TRACKER_MIN_INTERVAL_FRAMES
-        }
-    }
-
-    /** 追踪器空闲遍历间隔帧数（KEY_TRACKER_IDLE_INTERVAL_FRAMES，默认 12） */
-    private fun trackerIdleIntervalFrames(): Int {
-        val a = api ?: return Prefs.DEFAULT_TRACKER_IDLE_INTERVAL_FRAMES
-        return try {
-            Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_TRACKER_IDLE_INTERVAL_FRAMES, Prefs.DEFAULT_TRACKER_IDLE_INTERVAL_FRAMES)
-                .coerceAtLeast(1)
-        } catch (t: Throwable) {
-            Log.w(TAG, "prefs read tracker_idle_interval_frames failed, default 12", t)
-            Prefs.DEFAULT_TRACKER_IDLE_INTERVAL_FRAMES
-        }
-    }
-
-    /** 追踪器空闲判定帧数（KEY_TRACKER_IDLE_AFTER_FRAMES，默认 30） */
-    private fun trackerIdleAfterFrames(): Int {
-        val a = api ?: return Prefs.DEFAULT_TRACKER_IDLE_AFTER_FRAMES
-        return try {
-            Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_TRACKER_IDLE_AFTER_FRAMES, Prefs.DEFAULT_TRACKER_IDLE_AFTER_FRAMES)
-                .coerceAtLeast(0)
-        } catch (t: Throwable) {
-            Log.w(TAG, "prefs read tracker_idle_after_frames failed, default 30", t)
-            Prefs.DEFAULT_TRACKER_IDLE_AFTER_FRAMES
-        }
-    }
-
-    /** 逐帧快照比对：位置/尺寸变化的宿主 invalidate() → 重录 → 映射跟随（症状 4/5 直接修复）。
-     *  @return 是否有宿主位置/尺寸变化（true → 调用方 staticFrames=0 重置空闲，spec/17） */
-    @Synchronized
-    private fun trackHostViewMotion(): Boolean {
-        if (registeredHostViews.isEmpty()) return false
-        // [回退恢复②·不依赖新帧] 元素背景缺失导致回退系统模糊（冷启动首帧背景未抓到、
-        // 静止后无新元素背景 → 仅靠入队抓屏可能磨砂滞留数十秒）：
-        // 追踪器每帧检查，条件满足即 invalidate 重试，250ms 起步指数退避 4s 封顶
-        //（永久 map miss 的 drawable 回退是 C2 设计行为，低频重试无感知）。
-        // [2026-08-13] 无全局 onBlurReady 帧（BlurService 端全移除）：改纯时间驱动退避，
-        // 新元素背景就绪时 worker 会 postInvalidateHosts 及时重试。
-        if (glassRetryPending) {
-            val now = SystemClock.uptimeMillis()
-            if (now - lastRetryInvalidateAt >= retryIntervalMs) {
-                lastRetryInvalidateAt = now
-                glassRetryPending = false
-                retryIntervalMs = (retryIntervalMs * 2).coerceAtMost(4000L)
-                Log.i(TAG, "render: retry pending glass (tracker-driven, interval=${retryIntervalMs}ms)")
-                invalidateRegisteredHostViews()
-            }
-        }
-        var moved = false
-        val loc = IntArray(2)
-        val it = registeredHostViews.iterator()
-        while (it.hasNext()) {
-            val entry = it.next()
-            val v = entry.ref.get()
-            if (v == null) {
-                it.remove()
-                continue
-            }
-            try {
-                // 未 attach（面板关闭/视图销毁中）：跳过，不更新快照（reattach 后位置变了再触发）
-                if (!v.isAttachedToWindow) continue
-                v.getLocationOnScreen(loc)
-                val w = v.width
-                val h = v.height
-                if (entry.lastX == Int.MIN_VALUE) {
-                    // 首帧只建立快照，不 invalidate（登记时本就已录过 draw）
-                    entry.lastX = loc[0]; entry.lastY = loc[1]; entry.lastW = w; entry.lastH = h
-                    continue
-                }
-                if (entry.lastX != loc[0] || entry.lastY != loc[1] || entry.lastW != w || entry.lastH != h) {
-                    entry.lastX = loc[0]; entry.lastY = loc[1]; entry.lastW = w; entry.lastH = h
-                    // 移动/尺寸变化：invalidate 宿主 → 重录 → 映射更新 → 渲染侧 srcRect 按新 region 折算实时跟，
-                    // **不触发背景重抓**（整屏快照覆盖全屏，背后内容未变）
-                    moved = true
-                    markMotion()
-                    v.invalidate()
-                }
-            } catch (t: Throwable) {
-                Log.e(TAG, "taskG+: track single host failed", t)
-            }
-        }
-        // [2026-08-13 用户决定·分离 srcRect 与背景图] 移动/滑动**不再触发背景重抓**——背后内容未变，
-        // 每帧重抓纯属浪费 + 并发占用高（原「每帧无条件入队」满速实验）。移动时 srcRect 由渲染侧
-        // resolveRenderSource 按当前 region 折算到整屏快照坐标（shader 采样坐标实时跟），快照保持。
-        // 背景重抓仅由**内容变化**事件触发（mountPanelExpansion 面板开/关、captureOriginalFrame 新帧、
-        // registerScreenRegionCore / recordNotificationCardRegion 映射写入），无节流立即见 triggerBackgroundCapture。
-        return moved
-    }
+    // [2026-09-17] 追踪器三个间隔读取（trackerMin/IdleIntervalFrames、trackerIdleAfterFrames）与
+    // trackHostViewMotion 一并删除；其中的 glassRetryPending 重试已迁到 retryInvalidateRunnable。
 
     /** [2026-08-14 CPU 优化] shade 是否在渲染（面板展开）：最近「shade sfc 有效」抓屏是否在
      *  [CONTINUOUS_CAPTURE_STOP_SFC_STALE_MS] 内。收起时 sfc 长期拿不到（强制全屏，不更新
@@ -6866,7 +6702,7 @@ object BlurDrawHook {
      *  追踪器在跑 + 触发整屏快照重抓（内容变化入口，无节流立即；快照缺失 → 渲染异步请求，失败回退系统模糊）。 */
     private fun captureOriginalFrame(chain: XposedInterface.Chain) {
         // [spec/62 锁屏耗电优化 2026-08-26] 锁屏门控：锁屏无玻璃元素，onBlurReady 驱动的抓屏无意义 → 直接
-        // 返回（连 kickMotionTracker 也不启动，避免锁屏后仍被 kick）。保留 panelExpansionActive/headsUp
+        // 返回（锁屏无玻璃元素，抓屏无意义）。保留 panelExpansionActive/headsUp
         // 逃生通道（审查加固）：锁屏仍可能展开面板/弹横幅（背景需刷新），且 context 反射失败保守 true 时
         // 避免永久阻断 onBlurReady 抓屏。未来恢复锁屏时钟玻璃化时改为「锁屏但时钟玻璃开启才放行」。
         if (isKeyguardLockedNow() && !panelExpansionActive && !isHeadsUpHostActive()) {
@@ -6876,8 +6712,6 @@ object BlurDrawHook {
         // [2026-08-14 排障·横幅静止刷新慢] onBlurReady 到达本 hook 的触发日志：过滤 lg-hook
         // 看系统重模糊回调是否实时到达（对比静止期 contentChange=true 是否缺失）
         diagHookLog("onBlurReady")
-        // 新帧到达 = 面板活动信号，确保运动追踪器在跑（移动 invalidate → 映射/srcRect 跟随）
-        kickMotionTracker()
         // [2026-08-14 用户方案·onBlurReady 驱动抓屏] 系统重模糊 = 底层内容变化（视频播放/动态壁纸
         // 每帧重模糊）→ 每次 onBlurReady 都触发抓屏（用户确认无需节流，onBlurReady 频率本身可控）。
         // 静态底层（系统不重模糊）→ onBlurReady 停 → 零抓屏。替代移除的主动持续抓屏 120Hz tick。
@@ -7152,14 +6986,16 @@ object BlurDrawHook {
         // 2) 构造液态玻璃 shader（编译/反射/uniform/坐标映射任何异常或缺失 → 回退，不动 paint）
         val liquid = try {
             buildLiquidShader(drawable, bounds) ?: run {
-                // [症状 2] map miss 或背景源缺失（元素背景未抓到且全局帧缓存无帧）：挂重试标记，
-                // 新帧/背景源到达或宿主重录后自动重试玻璃
+                // [症状 2] map miss 或背景源缺失（元素背景未抓到且全局帧缓存无帧）：挂重试标记 +
+                // 排一次低频退避重试（新帧/背景源到达时 worker 的 postInvalidateHosts 会更快重试）
                 glassRetryPending = true
+                scheduleGlassRetry()
                 logRenderMode(id, "BLUR", "no map or source", drawable, bounds)
                 return false
             }
         } catch (t: Throwable) {
             glassRetryPending = true
+            scheduleGlassRetry()
             logRenderMode(id, "BLUR", "buildLiquidShader exception", drawable, bounds)
             Log.w(TAG, "render: buildLiquidShader exception (id=$id)", t)
             return false
@@ -8315,11 +8151,11 @@ object BlurDrawHook {
      *   spec/56 追加）——本方法入队 [scheduleElementCaptures] → [enqueueElementCapture] +
      *   [kickElementCaptureWorker]：captureDisplay 在 worker 线程同步执行，**主线程零阻塞**（spec/56 ANR
      *   取舍解除，下拉动画逐帧触发不再每帧主线程同步 captureDisplay）。
-     * - **静止零抓屏**：无内容变化事件即不调用本方法（trackHostViewMotion 每帧触发已移除），静止不抓。
+     * - **静止零抓屏**：无内容变化事件即不调用本方法（原逐帧追踪器触发已于 2026-09-17 移除），静止不抓。
      * - **[doc/spec/49]** contentChange=true（默认）同时记录内容变化信号（[markContentChanged]），供周期抓屏
      *   判断空闲/活动；周期抓屏自身调用时传 false（周期不是内容变化，不得污染时间戳）。
      * 主线程调用（registerScreenRegionCore / recordNotificationCardRegion / mountPanelExpansion /
-     * captureOriginalFrame）。**不再由 trackHostViewMotion 每帧触发**（移动只更新 srcRect 折算，不重抓背景）。
+     * captureOriginalFrame）。**不由元素移动触发**（移动只更新 srcRect 折算，不重抓背景）。
      */
     private fun triggerBackgroundCapture(contentChange: Boolean = true) {
         // [spec/55 诊断日志] 触发时间戳（t2）——「hook 触发 → 抓屏请求」延迟（hook 可靠否）；contentChange 附带调用来源
@@ -9171,7 +9007,7 @@ object BlurDrawHook {
     }
 
     /**
-     * 解析 shade 窗口根 SurfaceControl：优先缓存；否则遍历已登记宿主 View（trackHostViewMotion 追踪的
+     * 解析 shade 窗口根 SurfaceControl：优先缓存；否则遍历已登记宿主 View（registerHostView 登记的
      * tile/卡片），取 attach 宿主 rootView（= NotificationShadeWindowView）→
      * ViewRootImpl.getSurfaceControl()（shade 窗口根）。@SystemApi 反射调用，失败返回 null（静默）。
      *
@@ -9180,7 +9016,7 @@ object BlurDrawHook {
      * 命中而误当 shade → 快照排除错窗口、玻璃自采样。shade 与 heads-up 两个窗口 surface 分开解析
      * （[resolveHeadsUpSfc]）、分别进 exclude 数组（见 [captureElementBackground]）。
      *
-     * @Synchronized：主线程（registerHostView/trackHostViewMotion）与抓屏 worker 线程并发调用，
+     * @Synchronized：主线程（registerHostView 等）与抓屏 worker 线程并发调用，
      * 防 registeredHostViews（LinkedHashSet）遍历 CME。
      */
     @Synchronized
@@ -9207,8 +9043,8 @@ object BlurDrawHook {
                 }
             }
         }
-        // 只遍历不 remove（可能在 trackHostViewMotion 外层迭代中调用，内层 remove 会触发 CME；
-        // 失效弱引用由 registerHostView / trackHostViewMotion 的正常清理路径负责）
+        // 只遍历不 remove（可能在 registerHostView 等外层迭代中调用，内层 remove 会触发 CME；
+        // 失效弱引用由 registerHostView / invalidateRegisteredHostViews 的正常清理路径负责）
         for (entry in registeredHostViews) {
             val v = entry.ref.get() ?: continue
             if (!v.isAttachedToWindow) continue

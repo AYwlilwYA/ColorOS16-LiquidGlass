@@ -22,8 +22,10 @@ import androidx.appcompat.app.AppCompatActivity
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.update.UpdateChecker
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.github.libxposed.service.XposedService
 import kotlin.math.roundToInt
 
@@ -54,6 +56,9 @@ class SettingsActivity : AppCompatActivity() {
 
     /** [spec/64] 当前所在三级「桌面动画参数」组（null = 不在三级页）。 */
     private var currentAnimGroup: String? = null
+
+    /** [2026-09-17 升级提示] 本次启动是否已触发过检查（防重复起线程）。 */
+    private var updateCheckStarted = false
 
     /** [spec/64] 一键预设档位：刚度 / 阻尼 / 透明度时长（ms）；null = 取该组默认值。 */
     private data class AnimPreset(val labelRes: Int, val stiffness: Int?, val damping: Int?, val fade: Int?)
@@ -91,7 +96,7 @@ class SettingsActivity : AppCompatActivity() {
         // [spec/65] iOS 动态倾斜/透视（实验性，默认关）
         Category("tilt", R.string.cat_tilt, R.string.cat_tilt_desc, R.layout.view_cat_tilt),
         Category("desktop", R.string.cat_desktop, R.string.cat_desktop_desc, R.layout.view_cat_desktop),
-        Category("tracker", R.string.cat_tracker, R.string.cat_tracker_desc, R.layout.view_cat_tracker),
+        // [2026-09-17] 追踪器分类页已删除（追踪器整体移除，无存活控件）
         Category("log", R.string.cat_log, R.string.cat_log_desc, R.layout.view_cat_log),
         Category("about", R.string.cat_about, R.string.cat_about_desc, R.layout.view_cat_about),
     )
@@ -128,6 +133,61 @@ class SettingsActivity : AppCompatActivity() {
         }, false)
 
         showCategories()
+
+        // [2026-09-17 升级提示] 应用启动即后台查一次最新版本，有新版本弹提示（不阻塞界面）
+        checkUpdateOnLaunch()
+    }
+
+    // ------------------------------------------------------------ [2026-09-17] 启动升级提示 ------------------------------------------------------------
+
+    /**
+     * 启动时检查 GitHub Releases 最新版本，比当前 [appVersionName] 新则弹提示。
+     *
+     * 网络在子线程（[UpdateChecker.fetchLatest] 阻塞），结果回主线程弹窗；
+     * 检查失败/无新版本/该版本已被「忽略此版本」→ 全程静默，不打扰用户。
+     */
+    private fun checkUpdateOnLaunch() {
+        if (updateCheckStarted) return
+        updateCheckStarted = true
+        Thread {
+            val latest = UpdateChecker.fetchLatest() ?: return@Thread
+            val current = appVersionName() ?: return@Thread
+            if (!UpdateChecker.isNewer(latest.version, current)) return@Thread
+            if (xmlPrefs.getString(XML_KEY_IGNORED_UPDATE, null) == latest.version) return@Thread
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) showUpdateDialog(current, latest)
+            }
+        }.start()
+    }
+
+    /** 当前安装版本名（如 "0.1.1"）；读取失败返回 null（则本次不提示）。 */
+    private fun appVersionName(): String? = try {
+        packageManager.getPackageInfo(packageName, 0).versionName
+    } catch (t: Throwable) {
+        Log.w(TAG, "read versionName failed", t)
+        null
+    }
+
+    /** 升级提示弹窗：去下载（跳 release 页/APK 直链）/ 忽略此版本（记本地，不再提示该版本）/ 以后再说。 */
+    private fun showUpdateDialog(current: String, latest: UpdateChecker.Release) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.update_dialog_title)
+            .setMessage(getString(R.string.update_dialog_message, current, latest.version))
+            .setPositiveButton(R.string.update_dialog_download) { _, _ ->
+                // 优先 APK 直链（一键下载）；无资产则退到 release 页面
+                val target = latest.apkUrl ?: latest.pageUrl
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "open update url failed: $target", t)
+                    Toast.makeText(this, R.string.update_dialog_open_failed, Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton(R.string.update_dialog_ignore) { _, _ ->
+                xmlPrefs.edit().putString(XML_KEY_IGNORED_UPDATE, latest.version).apply()
+            }
+            .setNegativeButton(R.string.update_dialog_later, null)
+            .show()
     }
 
     // ------------------------------------------------------------ 一级 / 二级导航 ------------------------------------------------------------
@@ -198,7 +258,6 @@ class SettingsActivity : AppCompatActivity() {
             "anim" -> bindAnim(view)
             "tilt" -> bindTilt(view)
             "desktop" -> bindDesktop(view)
-            "tracker" -> bindTracker(view)
             "log" -> bindLog(view)
             "about" -> bindAbout(view)
         }
@@ -764,41 +823,7 @@ class SettingsActivity : AppCompatActivity() {
         )
     }
 
-    /** 追踪器：通用运动追踪 + 遍历间隔 + 回退恢复节流（假控件标注）。 */
-    private fun bindTracker(view: View) {
-        // 通用运动追踪器开关（默认开，任务 G+ 区域冻结根治；改动即时生效）
-        val switchTrack = view.findViewById<Switch>(R.id.switchTrackHostMotion)
-        val trackListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_TRACK_HOST_MOTION, checked)
-        }
-        switchTrack.setOnCheckedChangeListener(trackListener)
-        refreshBooleanSwitch(
-            switchTrack, trackListener,
-            Prefs.KEY_TRACK_HOST_MOTION, Prefs.DEFAULT_TRACK_HOST_MOTION
-        )
-
-        // 追踪器最小遍历间隔：1~4 帧（默认 1=每帧）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekTrackerMinInterval), valueText = view.findViewById(R.id.trackerMinIntervalValue),
-            key = Prefs.KEY_TRACKER_MIN_INTERVAL_FRAMES, default = Prefs.DEFAULT_TRACKER_MIN_INTERVAL_FRAMES,
-            max = 3, step = 1, offset = 1,
-            format = { v -> getString(R.string.settings_tracker_min_interval_value, v) },
-        )
-        // 追踪器空闲遍历间隔：1~30 帧（默认 12）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekTrackerIdleInterval), valueText = view.findViewById(R.id.trackerIdleIntervalValue),
-            key = Prefs.KEY_TRACKER_IDLE_INTERVAL_FRAMES, default = Prefs.DEFAULT_TRACKER_IDLE_INTERVAL_FRAMES,
-            max = 29, step = 1, offset = 1,
-            format = { v -> getString(R.string.settings_tracker_idle_interval_value, v) },
-        )
-        // 追踪器空闲判定：10~90 帧（默认 30）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekTrackerIdleAfter), valueText = view.findViewById(R.id.trackerIdleAfterValue),
-            key = Prefs.KEY_TRACKER_IDLE_AFTER_FRAMES, default = Prefs.DEFAULT_TRACKER_IDLE_AFTER_FRAMES,
-            max = 80, step = 1, offset = 10,
-            format = { v -> getString(R.string.settings_tracker_idle_after_value, v) },
-        )
-    }
+    // [2026-09-17] bindTracker 已删除：追踪器（通用运动追踪开关 + 三个遍历间隔 SeekBar）整体移除。
 
     /** 日志与诊断。 */
     private fun bindLog(view: View) {
@@ -829,7 +854,7 @@ class SettingsActivity : AppCompatActivity() {
         val githubRow = view.findViewById<View>(R.id.aboutGithubRow)
         githubRow.setOnClickListener {
             try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AYwlilwYA")))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AYwlilwYA/ColorOS16-LiquidGlass")))
             } catch (t: Throwable) {
                 Log.w(TAG, "about open github failed, fallback copy", t)
                 bindCopyRow(githubRow, getString(R.string.about_github))
@@ -1153,5 +1178,8 @@ class SettingsActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "LiquidGlassSettings"
+
+        /** [2026-09-17] 已「忽略此版本」的版本号（本地 XML 存储，不写框架侧——纯 UI 本地状态）。 */
+        private const val XML_KEY_IGNORED_UPDATE = "ignored_update_version"
     }
 }

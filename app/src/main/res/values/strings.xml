@@ -129,19 +129,7 @@
     <string name="settings_lockscreen_clock_blur">时钟玻璃数字磨砂（px，0=清晰透镜）</string>
     <string name="settings_lockscreen_clock_blur_value">%1$.0f px</string>
 
-    <!-- 追踪器 -->
-    <string name="settings_track_host_motion">通用运动追踪（区域跟随，默认开）</string>
-    <string name="settings_track_host_motion_desc">逐帧检测控件移动并跟随，关闭则靠系统事件兜底更省电。</string>
-    <string name="settings_tracker_params_section">追踪器（区域跟随）</string>
-    <string name="settings_tracker_min_interval">追踪器最小遍历间隔（帧，1=每帧）</string>
-    <string name="settings_tracker_min_interval_value">%1$d 帧</string>
-    <string name="settings_tracker_min_interval_desc">检测频率，1 每帧最跟手，2-3 隔帧省电。</string>
-    <string name="settings_tracker_idle_interval">空闲时遍历间隔（帧）</string>
-    <string name="settings_tracker_idle_interval_value">%1$d 帧</string>
-    <string name="settings_tracker_idle_interval_desc">控件静止后降低的检测间隔，越大越省电。</string>
-    <string name="settings_tracker_idle_after">空闲判定（连续无变化帧数）</string>
-    <string name="settings_tracker_idle_after_value">%1$d 帧</string>
-    <string name="settings_tracker_idle_after_desc">连续多少帧位置无变化判定为静止，进入低频检测。</string>
+    <!-- [2026-09-17] 追踪器相关字符串已随追踪器整体移除 -->
 
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">模块日志（默认开）</string>
@@ -155,7 +143,7 @@
     <string name="about_tg">Telegram：https://t.me/c16lg666</string>
     <string name="about_qq">QQ 群：1102985644</string>
     <string name="about_developer">开发者：AlanYan</string>
-    <string name="about_github">GitHub：https://github.com/AYwlilwYA</string>
+    <string name="about_github">GitHub：https://github.com/AYwlilwYA/ColorOS16-LiquidGlass</string>
     <string name="about_copy_hint">点击条目复制</string>
 
     <!-- 一级大类（SettingsActivity 二级菜单） -->
@@ -173,8 +161,6 @@
     <string name="cat_seedling_desc">灵动岛展开卡片液态玻璃</string>
     <string name="cat_lockscreen">锁屏时钟</string>
     <string name="cat_lockscreen_desc">锁屏大时钟液态玻璃</string>
-    <string name="cat_tracker">追踪器</string>
-    <string name="cat_tracker_desc">区域跟随 / 遍历间隔</string>
     <string name="cat_log">日志与诊断</string>
     <string name="cat_log_desc">模块日志开关</string>
 
@@ -237,5 +223,13 @@
     <string name="settings_anim_tilt_perspective_desc" formatted="false">调节上下宽度差；0% 无近大远小效果，数值越大透视越明显（倾斜强度为 0% 时此项无效）。</string>
     <string name="settings_anim_tilt_perspective_value">%1$d%%</string>
     <string name="settings_anim_tilt_restart_note">提示：本功能为实验性，改动需重启桌面进程生效。</string>
+
+    <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
+    <string name="update_dialog_title">发现新版本</string>
+    <string name="update_dialog_message">当前版本 %1$s，最新版本 %2$s。\n\n是否前往下载？</string>
+    <string name="update_dialog_download">去下载</string>
+    <string name="update_dialog_ignore">忽略此版本</string>
+    <string name="update_dialog_later">以后再说</string>
+    <string name="update_dialog_open_failed">无法打开链接，请手动访问 GitHub Releases 页下载</string>
 
 </resources>
