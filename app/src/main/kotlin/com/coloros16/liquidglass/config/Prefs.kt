@@ -57,30 +57,30 @@ object Prefs {
     // 新管线（2026-08-12 Kyant 分层：清晰内部透镜 + 内侧折射环带 + vibrancy + 高光）默认值
     /** 内部可选轻模糊半径 px（0=清晰透镜；>0 仅作用内部，不糊折射环带）。
      *  [2026-09-16] 0f → 8f：原 0 使每块玻璃成完全清晰透镜（用户反馈「横幅太透、看得见背后文字」）。 */
-    const val DEFAULT_BLUR_RADIUS = 8f
+    const val DEFAULT_BLUR_RADIUS = 13f
     /** 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变） */
-    const val DEFAULT_VIBRANCY = 1.5f
+    const val DEFAULT_VIBRANCY = 1.54f
     /** 高光方向衰减指数（Kyant ControlCenter=2；越大越聚光） */
-    const val DEFAULT_HIGHLIGHT_FALLOFF = 2f
+    const val DEFAULT_HIGHLIGHT_FALLOFF = 4f
     /** ⚠️ 已废弃（2026-08-14 折射自适应）：折射环带高度不再可配置，恒 = 元素实际区域短边一半。 */
     const val DEFAULT_REFRACTION_HEIGHT = 48f
     /** 折射强度默认 px（边缘最大位移，正值；= LiquidGlassShader.Params 默认） */
-    const val DEFAULT_REFRACTION_AMOUNT = 28f
+    const val DEFAULT_REFRACTION_AMOUNT = 100f
     // 2026-08-15 材质参数默认值（= LiquidGlassShader.Params 默认，readMaterialParams 兜底同源；
     // 设置界面 bindFloatSeekBar 回显用）
     /** 深度默认（法线径向分量，Kyant depthEffect=true → 1） */
-    const val DEFAULT_DEPTH = 1f
+    const val DEFAULT_DEPTH = 0.72f
     /** 色散默认（0 = 关闭；0.05~0.3 彩虹边） */
-    const val DEFAULT_DISPERSION = 0f
+    const val DEFAULT_DISPERSION = 0.3f
     /** 高光强度默认（加性≈Kyant 白色 0.5 Plus 混合） */
-    const val DEFAULT_HIGHLIGHT = 0.5f
+    const val DEFAULT_HIGHLIGHT = 0.56f
     /** 高光带宽度默认 px */
-    const val DEFAULT_HIGHLIGHT_WIDTH = 12f
+    const val DEFAULT_HIGHLIGHT_WIDTH = 8f
     /** [2026-09-16 弧线高光修复] 高光方向因子保底默认值（= LiquidGlassShader.Params 同源）。
      *  0.4 = 弧线处保留 40% 基础高光（直边 0.53→0.72，弧线 0→0.40）。 */
-    const val DEFAULT_HIGHLIGHT_FLOOR = 0.4f
+    const val DEFAULT_HIGHLIGHT_FLOOR = 0.16f
     /** 光角度默认（度） */
-    const val DEFAULT_LIGHT_ANGLE = 45f
+    const val DEFAULT_LIGHT_ANGLE = 51f
     /** 视差 X 默认 px（0 = 关闭视差） */
     const val DEFAULT_PARALLAX_X = 0f
     /** 视差 Y 默认 px（0 = 关闭视差） */
@@ -126,7 +126,7 @@ object Prefs {
     /** 抓屏降采样比例（0.25~1.0），档位 0.25/0.5/0.75/1.0。改动即时生效（captureElementBackground 每次读 Prefs）。 */
     const val KEY_BG_CAPTURE_SCALE = "bg_capture_scale"
     /** 抓屏降采样默认比例（0.5f，现硬编码值） */
-    const val DEFAULT_BG_CAPTURE_SCALE = 0.5f
+    const val DEFAULT_BG_CAPTURE_SCALE = 0.25f
 
     // ---------- 文件夹背景抓屏只抓壁纸层（doc/spec/42，2026-08-13） ----------
     /** Launcher 抓屏 UID 过滤开关：true=CaptureArgs.setUid(壁纸层 UID) 只抓壁纸层。setUid 语义 =
@@ -217,7 +217,7 @@ object Prefs {
      *  文件夹不受影响）。改动需重启 SystemUI 生效（hook 端 install 时读取并缓存）。 */
     const val KEY_MASK_ENABLE = "mask_enable"
     /** 黑遮罩总开关默认值（true = 默认开启：压暗背景保证可读性） */
-    const val DEFAULT_MASK_ENABLE = true
+    const val DEFAULT_MASK_ENABLE = false
 
     /** 黑遮罩不透明度（0~1，clamp；默认 0.45 较明显）。仅 KEY_MASK_ENABLE=true 时生效。
      *  改动需重启 SystemUI 生效（hook 端 install 时读取并缓存）。 */
@@ -247,7 +247,7 @@ object Prefs {
      *  （PlatformBlurDrawable.applyBlurConfig hook）。 */
     const val KEY_CC_BLUR_STRENGTH = "cc_blur_strength"
     /** 系统控制中心模糊力度默认值（100 = 系统原值，不干预） */
-    const val DEFAULT_CC_BLUR_STRENGTH = 100
+    const val DEFAULT_CC_BLUR_STRENGTH = 8
 
     /** 保留系统控制中心背景模糊：true = 恢复系统模糊（力度可调、阻止缩小）；
      *  false = 短路背景模糊链（旧「强制透明」行为，背景透明露壁纸）。
@@ -304,7 +304,7 @@ object Prefs {
      *  改动需重启 SystemUI 生效（install 时读取并缓存）。 */
     const val KEY_SEEDLING_CARD_GLASS_ENABLE = "seedling_card_glass_enable"
     /** 流体云玻璃化默认值（false = 默认关闭） */
-    const val DEFAULT_SEEDLING_CARD_GLASS_ENABLE = false
+    const val DEFAULT_SEEDLING_CARD_GLASS_ENABLE = true
 
     /** [2026-09-16 用户需求变更] 流体云**小胶囊**（迷你种子卡片/小岛）也玻璃化。
      *
@@ -316,7 +316,7 @@ object Prefs {
      *  （小胶囊 min=状态栏高，0.22 比例只会得到小圆角矩形，不是胶囊）。 */
     const val KEY_SEEDLING_CAPSULE_GLASS = "seedling_capsule_glass"
     /** 流体云小胶囊玻璃化默认值（true = 小岛也渲染） */
-    const val DEFAULT_SEEDLING_CAPSULE_GLASS = true
+    const val DEFAULT_SEEDLING_CAPSULE_GLASS = false
 
     /** 展开大卡片判定高度系数：子卡片 View 高度 ≥（容器高度 × 本系数）判定展开大卡片，缩小胶囊跳过。
      *  ⚠️ [2026-08-15 修复] 容器（CapsulePluginContainer）FrameLayout AT_MOST 钳制子 View 高度 = 容器高
@@ -403,19 +403,19 @@ object Prefs {
     fun animKey(group: String, param: String): String = "anim_${group}_$param"
 
     /** 组开关默认值（false = 默认关闭，与原版动画一致） */
-    const val DEFAULT_ANIM_GROUP_ENABLED = false
+    const val DEFAULT_ANIM_GROUP_ENABLED = true
     /** 刚度默认值（open/break：580） */
-    const val DEFAULT_ANIM_STIFFNESS_OPEN = 580
+    const val DEFAULT_ANIM_STIFFNESS_OPEN = 220
     /** 刚度默认值（close：120） */
-    const val DEFAULT_ANIM_STIFFNESS_CLOSE = 120
+    const val DEFAULT_ANIM_STIFFNESS_CLOSE = 220
     /** 阻尼默认值（open/break：140 → 运行时 1.40） */
-    const val DEFAULT_ANIM_DAMPING_OPEN = 140
+    const val DEFAULT_ANIM_DAMPING_OPEN = 100
     /** 阻尼默认值（close：87 → 运行时 0.87） */
-    const val DEFAULT_ANIM_DAMPING_CLOSE = 87
+    const val DEFAULT_ANIM_DAMPING_CLOSE = 100
     /** 图标透明度时长默认值（open/break：340ms） */
-    const val DEFAULT_ANIM_FADE_DURATION_OPEN = 340
+    const val DEFAULT_ANIM_FADE_DURATION_OPEN = 420
     /** 图标透明度时长默认值（close：510ms） */
-    const val DEFAULT_ANIM_FADE_DURATION_CLOSE = 510
+    const val DEFAULT_ANIM_FADE_DURATION_CLOSE = 420
     /** 刚度可调范围下限（UI 滑杆） */
     const val ANIM_STIFFNESS_UI_MIN = 1
     /** 刚度可调范围上限（UI 滑杆；运行时 clamp 上限 5000） */
@@ -458,7 +458,7 @@ object Prefs {
      *  **实验性功能**，默认 false；关闭时完全不干预（零影响）。改动需重启桌面进程生效。 */
     const val KEY_ANIM_TILT_ENABLED = "anim_tilt_enabled"
     /** 倾斜总开关默认值（false = 实验性功能默认关闭） */
-    const val DEFAULT_ANIM_TILT_ENABLED = false
+    const val DEFAULT_ANIM_TILT_ENABLED = true
 
     /** 倾斜强度（%，0~200，默认 100）。0 = 不倾斜；200 = 两倍角度。运行时 ÷100 作倍率。 */
     const val KEY_ANIM_TILT_STRENGTH = "anim_tilt_strength_percent"
