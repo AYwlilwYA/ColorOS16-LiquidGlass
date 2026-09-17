@@ -69,6 +69,14 @@ gradle -p . :app:assembleDebug
 
 - [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) —— 液态玻璃着色算法来源（Apache-2.0）
 
+## 赞助
+
+如果这个模块对你有帮助，欢迎扫码请作者喝杯咖啡 ☕
+
+<p align="center">
+  <img src="screenshots/sponsor-qr.png" width="260" alt="微信收款二维码">
+</p>
+
 ## 许可证
 
 [GNU General Public License v3.0](LICENSE)
