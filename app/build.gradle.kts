@@ -19,7 +19,7 @@ android {
         // 改用构建时间戳（秒）保证每次构建都递增，框架必然走 `module apk changed: rebuilding cache`
         // 重新解析。注：秒级时间戳 2038-01 起溢出 Int，本项目调试期足够。
         versionCode = (System.currentTimeMillis() / 1000L).toInt()
-        versionName = "0.1.1"
+        versionName = "0.1.2"
     }
 
     buildTypes {
