@@ -6134,6 +6134,8 @@ object BlurDrawHook {
      */
     private val periodicCaptureRunnable = Runnable {
         periodicCapturePosted = false
+        // [2026-09-17 用户要求·三种瞬态场景强制抓] 本 tick 是否处于「强制抓」场景（决定续跑间隔）
+        var forceCaptureScene = false
         try {
             if (isPeriodicCaptureEnabled()) {
                 // [spec/62 锁屏耗电优化 2026-08-26] 锁屏跳过：锁屏且无 heads-up 通知、面板未展开 → 无玻璃元素
@@ -6142,25 +6144,44 @@ object BlurDrawHook {
                 if (isKeyguardLockedNow() && !isHeadsUpHostActive() && !panelExpansionActive) {
                     logThrottled("lg-batt-periodic-lock-skip", Log.DEBUG) { "lg-batt: periodic lock-screen skip" }
                 } else {
-                    val now = SystemClock.uptimeMillis()
-                    val idleMs = now - lastContentChangeTimeMs
-                    // [spec/62 首次兜底] 内容变化信号从未到来（lastContentChangeTimeMs==0）且已运行超 IDLE_SKIP
-                    // → 放行一次抓屏（防「从未收到内容变化信号 → 周期兜底永不抓第一帧」回归）；置时间戳防后续
-                    // 重复放行（此后按正常 idle-skip 判定，内容变化会再次 re-arm）。
-                    if (lastContentChangeTimeMs == 0L && idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
-                        lastContentChangeTimeMs = now
+                    // [2026-09-17 用户要求·三种瞬态场景强制抓] heads-up 横幅 / 流体云展开卡 /
+                    // simple-banner 活跃期间，**绕过 idle-skip 无条件抓屏**，并以高频
+                    // （continuousCaptureIntervalMs = panel_capture_hz）续跑本 Runnable。
+                    //
+                    // 为什么必须强制：这三种玻璃悬浮在内容之上、底层随时在变，而「内容变化信号」对它们
+                    // 不可靠（横幅不走 onBlurReady —— 反编译实证：heads-up 默认走 BackgroundBlurDrawable
+                    // 且被 excludeRules 拦，posteffect drawable 不注册）→ 静止期零抓屏 → 玻璃背景冻结。
+                    // 用户明确要求：「不要变化率，强制抓」——不看内容变没变，按速率一直抓。
+                    // 非这三种场景仍走下方原 idle-skip（空闲不抓，spec/49 用户原要求，省电）。
+                    forceCaptureScene = isHeadsUpHostActive() ||
+                        isCardBackgroundHostActive() ||
+                        isSimpleBannerHostActive()
+                    if (forceCaptureScene) {
+                        // 面板自身在渲染时让路（面板有它自己的抓屏通道覆盖），其余一律强制抓
                         if (!isShadeRenderingNow()) {
                             triggerBackgroundCapture(contentChange = false)
                         }
-                    } else if (idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
-                        // [doc/spec/49 2026-08-13] 空闲不更新旧帧（内容变化驱动为主，周期仅兜底）。
-                        // [spec/62] 距上次内容变化超过 PERIODIC_CAPTURE_IDLE_SKIP_MS → 跳过抓屏保持旧帧
-                        //（零 captureDisplay 成本）。
-                        logThrottled("lg-batt-periodic-idle-skip", Log.DEBUG) { "lg-batt: periodic idle-skip (idleMs=$idleMs)" }
-                    } else if (!isShadeRenderingNow()) {
-                        // [2026-08-14 用户要求·只用于收起] 展开时面板抓屏 120Hz 已实时覆盖 → 周期兜底只在收起
-                        // （shade 不在渲染）时按用户配置间隔抓一次（强兜底，sfc 拿不到强制全屏）。
-                        triggerBackgroundCapture(contentChange = false)
+                    } else {
+                        val now = SystemClock.uptimeMillis()
+                        val idleMs = now - lastContentChangeTimeMs
+                        // [spec/62 首次兜底] 内容变化信号从未到来（lastContentChangeTimeMs==0）且已运行超 IDLE_SKIP
+                        // → 放行一次抓屏（防「从未收到内容变化信号 → 周期兜底永不抓第一帧」回归）；置时间戳防后续
+                        // 重复放行（此后按正常 idle-skip 判定，内容变化会再次 re-arm）。
+                        if (lastContentChangeTimeMs == 0L && idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
+                            lastContentChangeTimeMs = now
+                            if (!isShadeRenderingNow()) {
+                                triggerBackgroundCapture(contentChange = false)
+                            }
+                        } else if (idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
+                            // [doc/spec/49 2026-08-13] 空闲不更新旧帧（内容变化驱动为主，周期仅兜底）。
+                            // [spec/62] 距上次内容变化超过 PERIODIC_CAPTURE_IDLE_SKIP_MS → 跳过抓屏保持旧帧
+                            //（零 captureDisplay 成本）。
+                            logThrottled("lg-batt-periodic-idle-skip", Log.DEBUG) { "lg-batt: periodic idle-skip (idleMs=$idleMs)" }
+                        } else if (!isShadeRenderingNow()) {
+                            // [2026-08-14 用户要求·只用于收起] 展开时面板抓屏 120Hz 已实时覆盖 → 周期兜底只在收起
+                            // （shade 不在渲染）时按用户配置间隔抓一次（强兜底，sfc 拿不到强制全屏）。
+                            triggerBackgroundCapture(contentChange = false)
+                        }
                     }
                 }
             }
@@ -6168,13 +6189,14 @@ object BlurDrawHook {
             Log.e(TAG, "periodic-capture: triggerBackgroundCapture error", t)
         }
         // 续跑（kickPeriodicCapture 内部检查 enabled + 宿主存活；无场景门控）
-        kickPeriodicCapture()
+        // 强制抓场景 → 高频续跑（面板同款速率），保证背景实时跟手
+        kickPeriodicCapture(forceCaptureScene)
     }
 
     /** 启动/续跑周期性抓屏（主线程调用；宿主全灭 / 功能关闭 → 不续跑）。改动即时生效（每周期重读 Prefs）。
      *  [2026-08-13 回退 spec/49 场景门控] 不再按面板展开/heads-up 停周期（误拦锁屏）；「收起零抓屏」由
      *  periodicCaptureRunnable 的 idle-skip 空闲判定保证（内容没变不抓，Runnable 空转成本可忽略）。 */
-    private fun kickPeriodicCapture() {
+    private fun kickPeriodicCapture(highRate: Boolean = false) {
         if (!isPeriodicCaptureEnabled()) return
         if (periodicCapturePosted) return
         var hasLive = false
@@ -6184,11 +6206,15 @@ object BlurDrawHook {
             }
         }
         if (!hasLive) return
-        val interval = periodicCaptureIntervalMs()
-        if (interval <= 0) return
+        // [2026-09-17 用户要求·三种瞬态场景强制抓] highRate=true（heads-up 横幅 / 流体云展开卡 /
+        // simple-banner 活跃）→ 用**面板同款速率**续跑（continuousCaptureIntervalMs，panel_capture_hz，
+        // 默认 120Hz），保证这三种悬浮玻璃的背景实时跟手；否则用普通周期间隔
+        // （periodic_capture_interval_ms，默认 500ms 兜底）。
+        val interval = if (highRate) continuousCaptureIntervalMs() else periodicCaptureIntervalMs().toLong()
+        if (interval <= 0L) return
         periodicCapturePosted = true
         try {
-            mainHandler().postDelayed(periodicCaptureRunnable, interval.toLong())
+            mainHandler().postDelayed(periodicCaptureRunnable, interval)
         } catch (t: Throwable) {
             periodicCapturePosted = false
             Log.e(TAG, "periodic-capture: postDelayed failed", t)
@@ -8739,7 +8765,16 @@ object BlurDrawHook {
         // 下拉/通知首帧主线程同步路径（worker 路径 source="worker" 不打 lg-first，防刷屏）
         val mainThreadSync = source.endsWith("-main-thread")
         if (mainThreadSync) diagFirstLog("sfc-start", " source=$source")
-        val shade = resolveShadeSfcOrFallback()
+        // [2026-09-17 修复·强制抓被「让路」逻辑吃掉] **区分「真 shade」与「fallback 兜底层」**：
+        // resolveShadeSfcOrFallback 在真 shade 解析不到时，会用 fallback（heads-up / simple-banner 等
+        // 玻璃窗口）顶替。若拿它去更新 lastValidSfcCaptureMs，则 isShadeRenderingNow() 会在
+        // **面板其实已收起**时恒为 true → periodicCaptureRunnable 的三种场景强制抓被
+        // 「if (!isShadeRenderingNow())」全部吃掉（真机实证：lg-scene 打出 force=true 但
+        // shadeRendering=true，横幅活跃期间一次都没抓）。
+        // 故先探真 shade，只有**真 shade** 有效才算「shade 在渲染」。
+        val realShade = resolveShadeSfc()
+        val realShadeValid = realShade != null && realShade.isValid
+        val shade = if (realShadeValid) realShade else resolveShadeSfcOrFallback()
         if (mainThreadSync) diagFirstLog("sfc-done", if (shade != null && shade.isValid) " valid" else " null/invalid")
         // [2026-08-14 用户要求·sfc 拿不到强制抓全屏] shade 可空传入 captureScreenSnapshot：有效 → exclude shade
         // 抓（防自采样）；null/invalid（shade 不在渲染）→ 无 exclude 强制抓全屏——快照天然不含 shade（干净），
@@ -8752,7 +8787,8 @@ object BlurDrawHook {
             elementCaptureQuitAt.remove(SNAPSHOT_ID)
             // [2026-08-14 CPU 修复] shade sfc 有效 = shade 在渲染（面板展开）→ 记录时刻，持续抓屏据此
             // 判断是否该停（sfc 长期无效 = 收起 → 停止 120Hz 空转）
-            if (shade?.isValid == true) lastValidSfcCaptureMs = SystemClock.uptimeMillis()
+            // [2026-09-17 修复] 只用**真 shade** 更新（fallback 兜底层不算「shade 在渲染」，见上方说明）
+            if (realShadeValid) lastValidSfcCaptureMs = SystemClock.uptimeMillis()
             if (mainThreadSync) diagFirstLog("snapshot-replace", " source=$source")
             if (textContrastEnabled && !isMotionActive) {
                 runTextContrastScanAsync(bg)
@@ -9007,10 +9043,42 @@ object BlurDrawHook {
                 null
             }
             if (rootView == null) continue
+            // [2026-09-17 修复·玻璃内容冻结/不跟手] **只认「玻璃自身窗口」**。
+            // 原实现取「第一个 attached 宿主」的 rootView surface 且**不判类名**，而 registeredHostViews
+            // 里登记着桌面（Launcher）等无关窗口 → 一旦它排在前面，返回的 sfc 就是桌面窗口根 →
+            // 被 captureElementBackground 塞进 excludes → **抓屏把桌面挖掉** → 玻璃里没有底层内容，
+            // 滑桌面也永远不变（真机实证：滑桌面时 chg 仍≈0，玻璃冻结/更新慢）。
+            // 本函数的设计意图（见上方注释）是「shade 折叠期用 heads-up 窗口当排除层防自采样」，
+            // 只有玻璃自己的窗口才是合法排除对象；其余一律跳过，让抓屏抓全屏。
+            if (!isGlassOwnWindowRoot(rootView)) {
+                logThrottled("anyhost-skip", Log.INFO) {
+                    "bg-element: any-host fallback skip ${rootView.javaClass.simpleName} (not a glass window)"
+                }
+                continue
+            }
             val sfc = reflectViewRootSurfaceControl(rootView)
-            if (sfc != null && sfc.isValid) return sfc
+            if (sfc != null && sfc.isValid) {
+                Log.i(TAG, "bg-element: fallback sfc from attached host root, root=${rootView.javaClass.name}")
+                return sfc
+            }
         }
         return null
+    }
+
+    /** [2026-09-17] 「玻璃自身窗口」判定：只有这些窗口允许作为抓屏排除层（防玻璃自采样）。
+     *  非玻璃窗口（Launcher / 其他 app 窗口）被误排除 → 抓回来的画面缺失该层 → 玻璃内容冻结/不跟手。
+     *  命中现有判定：[isHeadsUpRootView]（HeadsUpLayout/HeadsUpContainerWindow/type 2017）、
+     *  [isSimpleBannerRootView]（FullScreenBanner/SimpleBanner/标题含 Simple Banner Window），
+     *  外加 shade 窗口根 `NotificationShadeWindowView`。 */
+    private fun isGlassOwnWindowRoot(rootView: View): Boolean {
+        return try {
+            if (rootView.javaClass.name.contains("NotificationShadeWindowView")) return true
+            if (isHeadsUpRootView(rootView)) return true
+            if (isSimpleBannerRootView(rootView)) return true
+            false
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     /** 主线程 Handler（惰性创建一次；worker → 主线程 post invalidate 用） */
