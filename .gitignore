@@ -17,7 +17,11 @@ Thumbs.db
 
 # 日志 / JVM 崩溃
 *.log
+*.log.err
 hs_err_pid*.log
+
+# 本地抓取/采样脚本（个人工具，不入库）
+/*.ps1
 
 # 临时数据库
 mc.db

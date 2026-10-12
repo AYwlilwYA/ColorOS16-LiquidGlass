@@ -12,6 +12,9 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Collections
 import java.util.WeakHashMap
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
 
 /**
  * [doc/spec/65 iOS 动态倾斜/透视 2026-09-16] Launcher 进程：应用启动/退出/打断动画期间的 3D 倾斜。
@@ -115,6 +118,12 @@ object LauncherTiltHook {
     private const val CARRY_TIMEOUT_MS = 1000L
     private const val CARRY_FADE_MS = 220f
     private const val CONFIG_TTL_MS = 250L
+
+    // ---- [doc/spec/84] 方位倾斜（不强制角度） ----
+    /** 中心死区：打开位置相对屏幕中心的归一化方位模长小于此值 = 「屏幕中心打开」→ 不倾斜。 */
+    private const val TILT_CENTER_DEADZONE = 0.08f
+    /** 倾斜轴换算的角度阈值（rad）：小于它按纯垂直方位走原矩阵，避免无谓的矩阵乘法。 */
+    private const val TILT_AXIS_EPS = 1.0E-4f
 
     // ---- 运行态 ----
     @Volatile
@@ -317,6 +326,10 @@ object LauncherTiltHook {
             "\$rectFSpringAnim",
         ),
         // IntegrationRemoteAnimManager 两处：修改版只 configureTilt、不 watch（保持一致）
+        // [doc/spec/84] 参数顺序按参考 smali `zuyqaConfigureTilt(rect1, rect2, params)` 校准：
+        // launch 点 = ($startRectF=图标, $targetRectF=窗口/屏幕) —— 参考实测
+        // `getRadiusWeight(..., $startRectF, $targetRectF)` ↔ 反编译 `(iconRectF, 窗口bounds)`；
+        // close 点 = ($targetRectF=图标, $startRectF=窗口)。两处统一为 (图标, 屏幕) 供方位折算。
         ConfigureSite(
             "com.oplus.quickstep.integration.IntegrationRemoteAnimManager\$startAppLaunchAnim\$4",
             "\$rectTransformHelper", "\$startRectF", "\$targetRectF", "\$transformParams", false, null,
@@ -881,15 +894,63 @@ object LauncherTiltHook {
         if (logEnabled) Log.d(TAG, msg())
     }
 
+    // ------------------------------------------------------------ [doc/spec/84] 方位轴矩阵合成
+
+    /**
+     * 填 Rz(θ)：绕矩形中心 (cx,cy) 的**屏幕内旋转**（4×4 齐次，row-major）。
+     * ```
+     * [ c -s 0 cx(1-c)+cy s ]
+     * [ s  c 0 cy(1-c)-cx s ]
+     * [ 0  0 1 0            ]
+     * [ 0  0 0 1            ]
+     * ```
+     */
+    private fun fillRotZ(m: FloatArray, theta: Float, cx: Float, cy: Float) {
+        val c = Math.cos(theta.toDouble()).toFloat()
+        val s = Math.sin(theta.toDouble()).toFloat()
+        java.util.Arrays.fill(m, 0f)
+        m[0] = c
+        m[1] = -s
+        m[3] = cx * (1f - c) + cy * s
+        m[4] = s
+        m[5] = c
+        m[7] = cy * (1f - c) - cx * s
+        m[10] = 1f
+        m[15] = 1f
+    }
+
+    /** row-major 4×4 相乘 `out = a × b`。**out 不可与 a/b 别名**（调用方保证）。 */
+    private fun mul4(out: FloatArray, a: FloatArray, b: FloatArray) {
+        for (r in 0..3) {
+            val r4 = r * 4
+            for (c in 0..3) {
+                out[r4 + c] =
+                    a[r4] * b[c] +
+                        a[r4 + 1] * b[4 + c] +
+                        a[r4 + 2] * b[8 + c] +
+                        a[r4 + 3] * b[12 + c]
+            }
+        }
+    }
+
     // ------------------------------------------------------------ 倾斜状态机（ZuyqaWindowTilt 等价移植）
 
     /**
      * 单个动画的倾斜状态（等价修改版 `ZuyqaWindowTilt` 实例）。
-     * 角度/矩阵算法与原版逐行一致（见 doc/spec/65）。
+     * 角度/矩阵算法与原版逐行一致（见 doc/spec/65）；
+     * **方向与角度按 doc/spec/84 改为「方位驱动 + 中心不倾斜」**（见 [dirX]/[dirY] 与 [updateLocked]）。
      */
     private class WindowTilt(startRect: RectF?, screenRect: RectF?) {
 
-        private var direction = 0f
+        /**
+         * 打开位置相对屏幕中心的归一化方位（x，[-1,1]，右为正；按 screenRect 半宽归一）。
+         * 轻动画通用通道只有 y 方向，此时 x 恒 0。
+         */
+        private var dirX = 0f
+
+        /** 同 [dirX] 的 y 分量（下为正；按 screenRect 半高归一）。 */
+        private var dirY = 0f
+
         private var directionKnown = false
 
         private var carryActive = false
@@ -922,11 +983,30 @@ object LauncherTiltHook {
 
         private val matrix = FloatArray(16)
 
+        /** [spec/84] 基础矩阵（绕水平轴的原始倾斜）与方位轴合成用的临时矩阵。 */
+        private val baseMatrix = FloatArray(16)
+        private val rotA = FloatArray(16)
+        private val rotB = FloatArray(16)
+        private val mulTmp = FloatArray(16)
+
+        /**
+         * [doc/spec/84] 方位初始化：方向完全由**端点（图标）矩形中心相对屏幕中心的二维方位**决定，
+         * x 按半宽、y 按半高归一到 [-1,1]。屏幕中心（方位≈0）→ [TILT_CENTER_DEADZONE] 死区内不倾斜。
+         * 只给 y 的旧式折算（相对 screenRect.top 的归一化位置）在 y==0 时被 shapeDirection 强制成
+         * -0.5 → 屏幕中心也强制倾斜，本次去掉该强制。
+         */
         init {
-            if (startRect != null && screenRect != null && !startRect.isEmpty && screenRect.height() > 0f) {
-                var d = ((startRect.centerY() - screenRect.top) / screenRect.height()) * 2f - 1f
-                if (d < -1f) d = -1f
-                direction = if (d > 1f) 1f else d
+            if (startRect != null && screenRect != null && !startRect.isEmpty &&
+                screenRect.width() > 0f && screenRect.height() > 0f
+            ) {
+                val halfW = screenRect.width() * 0.5f
+                val halfH = screenRect.height() * 0.5f
+                var dx = (startRect.centerX() - screenRect.centerX()) / halfW
+                var dy = (startRect.centerY() - screenRect.centerY()) / halfH
+                if (dx < -1f) dx = -1f else if (dx > 1f) dx = 1f
+                if (dy < -1f) dy = -1f else if (dy > 1f) dy = 1f
+                dirX = dx
+                dirY = dy
                 directionKnown = true
             }
         }
@@ -939,10 +1019,15 @@ object LauncherTiltHook {
             synchronized(this) { updateLocked(props, rect, progress) }
         }
 
-        /** 等价修改版 `updateWithDirection`：先定方向再更新（轻动画通用通道用）。 */
+        /**
+         * 等价修改版 `updateWithDirection`：先定方向再更新（轻动画通用通道用）。
+         * [doc/spec/84] 该通道只有窗口 y 一个方向量 → 方位退化为纯垂直（x=0），
+         * y 过零（屏幕中心）即 [TILT_CENTER_DEADZONE] 死区，不倾斜。
+         */
         fun updateWithDirection(props: Any?, rect: Rect?, progress: Float, dir: Float) {
             synchronized(this) {
-                direction = dir
+                dirX = 0f
+                dirY = dir
                 directionKnown = true
                 updateLocked(props, rect, progress)
             }
@@ -1063,9 +1148,24 @@ object LauncherTiltHook {
             val height = rect.height()
             if (height <= 0) return
 
-            var dir = direction
-            if (directionKnown) dir = shapeDirection(dir)
-            var angle = (1f - progress) * progress * TILT_ARC_SCALE * dir * c.strength
+            // [doc/spec/84] 方位驱动：模长 = 打开位置到屏幕中心的距离（已归一），倾斜轴 = 方位的垂线。
+            // 中心死区内（无明确方位）角度恒 0 → 不倾斜；不再 shapeDirection 强制最小角度 ±0.5。
+            var bx = 0f
+            var by = 0f
+            if (directionKnown) {
+                bx = dirX
+                by = dirY
+            }
+            val mag = hypot(bx, by).coerceAtMost(1f)
+            val centered = mag < TILT_CENTER_DEADZONE
+            // 方位 b=(bx,by) 的垂线方向 u=(by,-bx) → 轴角 φ=atan2(-bx,by)：
+            // 纯垂直方位 φ=0（= 原实现的水平轴），纯水平方位 φ=±π/2（绕竖直轴左右倾）。
+            val phi = if (centered) 0f else atan2(-bx, by)
+            var angle = if (centered) {
+                0f
+            } else {
+                (1f - progress) * progress * TILT_ARC_SCALE * mag * c.strength
+            }
             if (closingBoost) angle *= CLOSING_BOOST
             angle = continuousAngle(angle, progress)
             if (angle > -1.0E-6f && angle < 1.0E-6f) {
@@ -1088,7 +1188,7 @@ object LauncherTiltHook {
             val persp = (c.perspective * PERSPECTIVE_BASE) / height.toFloat()
             val cx = rect.exactCenterX()
             val cy = rect.exactCenterY()
-            val m = matrix
+            val m = baseMatrix
             java.util.Arrays.fill(m, 0f)
             m[0] = 1f
             val a = cx * persp * sin
@@ -1105,7 +1205,17 @@ object LauncherTiltHook {
             m[11] = -(cy * sin)
             m[13] = persp * sin
             m[14] = persp * cos
-            applyTilt(props, m, this)
+            // [doc/spec/84] 非纯垂直方位：把「绕水平轴」的基础矩阵共轭到方位垂轴上
+            // M(φ) = Rz(φ)·M0·Rz(-φ)（Rz = 绕 rect 中心的屏幕内旋转，行列 row-major）。
+            if (abs(phi) > TILT_AXIS_EPS) {
+                fillRotZ(rotA, phi, cx, cy)
+                fillRotZ(rotB, -phi, cx, cy)
+                mul4(mulTmp, rotA, m)
+                mul4(matrix, mulTmp, rotB)
+            } else {
+                System.arraycopy(m, 0, matrix, 0, 16)
+            }
+            applyTilt(props, matrix, this)
         }
 
         /** 照抄修改版 `continuousAngle`：接力角度的 220ms 平滑过渡 + NaN 防护 + ±0.628 钳制。 */
@@ -1149,11 +1259,6 @@ object LauncherTiltHook {
             lastAngle = angle
             lastTime = now
             return angle
-        }
-
-        private fun shapeDirection(d: Float): Float {
-            val v = (Math.min(Math.abs(d), 1f) * 0.5f) + 0.5f
-            return if (d <= 0f) -v else v
         }
     }
 }

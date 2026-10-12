@@ -2,6 +2,8 @@ package com.coloros16.liquidglass.config
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.SystemClock
+import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.service.XposedService
 
@@ -38,8 +40,20 @@ object Prefs {
     /** 模糊半径 UI 上限（px）：shader 为固定 5×5 tap，间隔 = spread/2，过大将出采样条带 */
     const val BLUR_RADIUS_UI_MAX = 32
     const val KEY_REFRACTION_AMOUNT = "refraction_amount"
-    // [2026-09-17 死键清理] KEY_REFRACTION_HEIGHT 已删除：折射环带高度恒 = 元素短边一半
-    //（BlurDrawHook/LauncherHook buildParams 内 minOf(width,height)/2f），本键零调用方。
+    /** [2026-09-17 死键清理] 旧键 KEY_REFRACTION_HEIGHT（"refraction_height"，绝对 px）已删除、勿复活。
+     *  [doc/spec/95 2026-10-10] 改为**新键 + 新语义**：折射环带高度 = 元素短边 × 本比例
+     *  （相对比例，非绝对 px，故键名/语义均与旧键不冲突）。clamp [REFRACTION_HEIGHT_RATIO_MIN,
+     *  [REFRACTION_HEIGHT_RATIO_MAX]]；默认 [DEFAULT_REFRACTION_HEIGHT_RATIO] = 短边一半 = 改动前恒等式，
+     *  默认零视觉变化。 */
+    const val KEY_REFRACTION_HEIGHT_RATIO = "refraction_height_ratio"
+    /** [doc/spec/96 2026-10-10] 折射区域计算方式：0=相对（短边比例，默认，现行为零变化）1=绝对（像素）。
+     *  ⚠️ 与历史死键 `refraction_height`（spec/74 已删，绝对 px 语义）**不是一回事**：
+     *  本键只存「模式」，绝对像素值另存 [KEY_REFRACTION_HEIGHT_PX]，键名互不冲突。 */
+    const val KEY_REFRACTION_HEIGHT_MODE = "refraction_height_mode"
+    /** [doc/spec/96] 折射区域绝对像素值（仅 [KEY_REFRACTION_HEIGHT_MODE]=1 时生效）。
+     *  ⚠️ 新键 `refraction_height_px` ≠ 死键 `refraction_height`（旧默认 48f，spec/74 已清理），
+     *  语义与键名都不冲突，勿合并。clamp [REFRACTION_HEIGHT_PX_MIN]~[REFRACTION_HEIGHT_PX_MAX]。 */
+    const val KEY_REFRACTION_HEIGHT_PX = "refraction_height_px"
     const val KEY_DEPTH = "depth"
     const val KEY_DISPERSION = "dispersion"
     const val KEY_HIGHLIGHT = "highlight"
@@ -62,10 +76,28 @@ object Prefs {
     const val DEFAULT_VIBRANCY = 1.54f
     /** 高光方向衰减指数（Kyant ControlCenter=2；越大越聚光） */
     const val DEFAULT_HIGHLIGHT_FALLOFF = 4f
-    /** ⚠️ 已废弃（2026-08-14 折射自适应）：折射环带高度不再可配置，恒 = 元素实际区域短边一半。 */
-    const val DEFAULT_REFRACTION_HEIGHT = 48f
+    // [2026-09-17 死键清理遗留] DEFAULT_REFRACTION_HEIGHT（48f 绝对 px）已随旧键语义一并删除，
+    // 见 doc/spec/95 —— 新语义是短边比例（DEFAULT_REFRACTION_HEIGHT_RATIO），两者不可混用。
     /** 折射强度默认 px（边缘最大位移，正值；= LiquidGlassShader.Params 默认） */
     const val DEFAULT_REFRACTION_AMOUNT = 100f
+    /** [doc/spec/95] 折射环带高度比例默认值（0.5 = 元素短边一半，与改动前 `min(w,h)/2f` 完全一致） */
+    const val DEFAULT_REFRACTION_HEIGHT_RATIO = 0.5f
+    /** [doc/spec/95] 折射环带高度比例下限（0.1，clamp；过小会让折射带细到看不出效果） */
+    const val REFRACTION_HEIGHT_RATIO_MIN = 0.1f
+    /** [doc/spec/95] 折射环带高度比例上限（1.0 = 短边整条都是折射带） */
+    const val REFRACTION_HEIGHT_RATIO_MAX = 1.0f
+    /** [doc/spec/96] 模式取值：相对（短边比例）——默认，与 spec/95 现行为逐像素一致 */
+    const val REFRACTION_HEIGHT_MODE_RATIO = 0
+    /** [doc/spec/96] 模式取值：绝对（像素） */
+    const val REFRACTION_HEIGHT_MODE_ABS = 1
+    /** [doc/spec/96] 模式默认：相对（0），保证升级后零视觉变化 */
+    const val DEFAULT_REFRACTION_HEIGHT_MODE = REFRACTION_HEIGHT_MODE_RATIO
+    /** [doc/spec/96] 绝对模式默认 64px */
+    const val DEFAULT_REFRACTION_HEIGHT_PX = 64f
+    /** [doc/spec/96] 绝对模式下限（px）：再小折射带看不出效果 */
+    const val REFRACTION_HEIGHT_PX_MIN = 8f
+    /** [doc/spec/96] 绝对模式上限（px）：超过常见元素短边没有意义 */
+    const val REFRACTION_HEIGHT_PX_MAX = 400f
     // 2026-08-15 材质参数默认值（= LiquidGlassShader.Params 默认，readMaterialParams 兜底同源；
     // 设置界面 bindFloatSeekBar 回显用）
     /** 深度默认（法线径向分量，Kyant depthEffect=true → 1） */
@@ -250,11 +282,11 @@ object Prefs {
     const val DEFAULT_CC_BLUR_STRENGTH = 8
 
     /** 保留系统控制中心背景模糊：true = 恢复系统模糊（力度可调、阻止缩小）；
-     *  false = 短路背景模糊链（旧「强制透明」行为，背景透明露壁纸）。
-     *  默认 true（用户需求：不阻止模糊只调力度）。改动需重启 SystemUI 生效。 */
+     *  false = 短路背景模糊链（背景透明露壁纸）。
+     *  默认 **false**（2026-10-10 用户拍板「把关闭系统模糊默认开」，原默认 true）。改动需重启 SystemUI 生效。 */
     const val KEY_KEEP_SYSTEM_CC_BLUR = "keep_system_cc_blur"
-    /** 保留系统控制中心模糊默认值（true = 恢复系统模糊） */
-    const val DEFAULT_KEEP_SYSTEM_CC_BLUR = true
+    /** 保留系统控制中心模糊默认值（false = 默认关闭系统模糊，背景透明露壁纸） */
+    const val DEFAULT_KEEP_SYSTEM_CC_BLUR = false
 
     /** [2026-09-16 面板材质底色] 移除系统面板背景的 MixColor 材质底色（用户反馈的"一层灰遮罩"）。
      *
@@ -301,10 +333,12 @@ object Prefs {
     // ---------- 流体云（灵动岛）展开卡片玻璃化（doc/spec/44，2026-08-13） ----------
     /** 流体云（Seedling）液态玻璃化总开关：true=开启（大卡片 + 小胶囊都玻璃化）；
      *  false=默认关闭（配置默认全关原则，用户手动开启）。仅 SystemUI 进程生效。
-     *  改动需重启 SystemUI 生效（install 时读取并缓存）。 */
+     *  改动需重启 SystemUI 生效（install 时读取并缓存）。
+     *  ⚠️ 原常量误为 true（与本注释及 6 处调用点注释「默认关」矛盾，spec/90 审计发现），
+     *  2026-10-10 用户拍板修复为 false。 */
     const val KEY_SEEDLING_CARD_GLASS_ENABLE = "seedling_card_glass_enable"
     /** 流体云玻璃化默认值（false = 默认关闭） */
-    const val DEFAULT_SEEDLING_CARD_GLASS_ENABLE = true
+    const val DEFAULT_SEEDLING_CARD_GLASS_ENABLE = false
 
     /** [2026-09-16 用户需求变更] 流体云**小胶囊**（迷你种子卡片/小岛）也玻璃化。
      *
@@ -315,7 +349,7 @@ object Prefs {
      *  **小胶囊用全圆角**（`min(w,h)/2`，胶囊形），不复用大卡片的 `corner_ratio` 比例
      *  （小胶囊 min=状态栏高，0.22 比例只会得到小圆角矩形，不是胶囊）。 */
     const val KEY_SEEDLING_CAPSULE_GLASS = "seedling_capsule_glass"
-    /** 流体云小胶囊玻璃化默认值（true = 小岛也渲染） */
+    /** 流体云小胶囊玻璃化默认值（**false = 默认关**，2026-10-10 用户拍板；与 BlurDrawHook 侧注释已统一） */
     const val DEFAULT_SEEDLING_CAPSULE_GLASS = false
 
     /** 展开大卡片判定高度系数：子卡片 View 高度 ≥（容器高度 × 本系数）判定展开大卡片，缩小胶囊跳过。
@@ -498,6 +532,233 @@ object Prefs {
     }
 
     fun masterEnabled(api: XposedInterface): Boolean = read(api).getBoolean(KEY_MASTER, false)
+
+    // ---------- 折射区域可调（doc/spec/95，2026-10-10） ----------
+
+    /** 热路径重读 TTL（ms）：照抄 [KEY_DOCK_GLASS_ENABLE] 的 500ms 模式 —— 改动 ≤0.5s 生效，
+     *  TTL 内直接返回 @Volatile 缓存，渲染热路径零 IPC。 */
+    private const val REFRACTION_RATIO_TTL_MS = 500L
+
+    private const val TAG = "LiquidGlass"
+
+    @Volatile
+    private var refractionRatioCache: Float = DEFAULT_REFRACTION_HEIGHT_RATIO
+
+    @Volatile
+    private var refractionRatioCacheAtMs = 0L
+
+    /**
+     * 折射环带高度比例（元素短边 × 本值 = uRefractionHeight）。[TTL][REFRACTION_RATIO_TTL_MS] 节流缓存，
+     * 供 BlurDrawHook / LauncherHook 的 buildParams 在渲染热路径调用：TTL 内零 IPC，超时才重读一次框架侧
+     * Prefs 并回写缓存。读取失败 / api 不可用 → 保持默认 0.5（= 改动前 `min(w,h)/2f`）。
+     *
+     * 返回值恒已 clamp 到 [REFRACTION_HEIGHT_RATIO_MIN]~[REFRACTION_HEIGHT_RATIO_MAX]。
+     * 缓存按对象级共享（SystemUI 进程一份、Launcher 进程一份），两端各自计时互不影响。
+     */
+    fun refractionHeightRatio(api: XposedInterface?): Float {
+        if (api == null) return DEFAULT_REFRACTION_HEIGHT_RATIO
+        val now = SystemClock.uptimeMillis()
+        if (now - refractionRatioCacheAtMs < REFRACTION_RATIO_TTL_MS) return refractionRatioCache
+        refractionRatioCacheAtMs = now
+        val raw = try {
+            read(api).getFloat(KEY_REFRACTION_HEIGHT_RATIO, DEFAULT_REFRACTION_HEIGHT_RATIO)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read refraction_height_ratio failed, default $DEFAULT_REFRACTION_HEIGHT_RATIO", t)
+            DEFAULT_REFRACTION_HEIGHT_RATIO
+        }
+        val v = raw.coerceIn(REFRACTION_HEIGHT_RATIO_MIN, REFRACTION_HEIGHT_RATIO_MAX)
+        if (v != raw) {
+            Log.w(TAG, "refraction_height_ratio=$raw out of range, clamp to $v")
+        }
+        refractionRatioCache = v
+        return v
+    }
+
+    // ---------- 折射区域双模式：相对（短边比例）/ 绝对（像素）（doc/spec/96，2026-10-10） ----------
+
+    @Volatile
+    private var refractionModeCache: Int = DEFAULT_REFRACTION_HEIGHT_MODE
+
+    @Volatile
+    private var refractionModeCacheAtMs = 0L
+
+    @Volatile
+    private var refractionAbsPxCache: Float = DEFAULT_REFRACTION_HEIGHT_PX
+
+    @Volatile
+    private var refractionAbsPxCacheAtMs = 0L
+
+    /**
+     * 折射区域模式：[REFRACTION_HEIGHT_MODE_RATIO] 相对（短边比例）/ [REFRACTION_HEIGHT_MODE_ABS] 绝对（像素）。
+     * [TTL][REFRACTION_RATIO_TTL_MS] 节流缓存（与 [refractionHeightRatio] 同一 TTL，两进程各一份）。
+     * 读失败 / 越界 → 回默认 0（相对，= spec/95 现行为）。
+     */
+    fun refractionHeightMode(api: XposedInterface?): Int {
+        if (api == null) return DEFAULT_REFRACTION_HEIGHT_MODE
+        val now = SystemClock.uptimeMillis()
+        if (now - refractionModeCacheAtMs < REFRACTION_RATIO_TTL_MS) return refractionModeCache
+        refractionModeCacheAtMs = now
+        val raw = try {
+            readIntCompat(read(api), KEY_REFRACTION_HEIGHT_MODE, DEFAULT_REFRACTION_HEIGHT_MODE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read refraction_height_mode failed, default $DEFAULT_REFRACTION_HEIGHT_MODE", t)
+            DEFAULT_REFRACTION_HEIGHT_MODE
+        }
+        val v = if (raw == REFRACTION_HEIGHT_MODE_ABS) REFRACTION_HEIGHT_MODE_ABS else REFRACTION_HEIGHT_MODE_RATIO
+        if (v != raw) Log.w(TAG, "refraction_height_mode=$raw unknown, fallback to $v")
+        refractionModeCache = v
+        return v
+    }
+
+    /**
+     * 折射区域绝对像素值（仅 [REFRACTION_HEIGHT_MODE_ABS] 模式生效）。[TTL][REFRACTION_RATIO_TTL_MS] 节流缓存，
+     * 返回值恒已 clamp 到 [REFRACTION_HEIGHT_PX_MIN]~[REFRACTION_HEIGHT_PX_MAX]。
+     */
+    fun refractionHeightAbsolutePx(api: XposedInterface?): Float {
+        if (api == null) return DEFAULT_REFRACTION_HEIGHT_PX
+        val now = SystemClock.uptimeMillis()
+        if (now - refractionAbsPxCacheAtMs < REFRACTION_RATIO_TTL_MS) return refractionAbsPxCache
+        refractionAbsPxCacheAtMs = now
+        val raw = try {
+            read(api).getFloat(KEY_REFRACTION_HEIGHT_PX, DEFAULT_REFRACTION_HEIGHT_PX)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read refraction_height_px failed, default $DEFAULT_REFRACTION_HEIGHT_PX", t)
+            DEFAULT_REFRACTION_HEIGHT_PX
+        }
+        val v = raw.coerceIn(REFRACTION_HEIGHT_PX_MIN, REFRACTION_HEIGHT_PX_MAX)
+        if (v != raw) Log.w(TAG, "refraction_height_px=$raw out of range, clamp to $v")
+        refractionAbsPxCache = v
+        return v
+    }
+
+    /**
+     * **统一出口**：折射环带高度（px，= `uRefractionHeight`）。SystemUI（BlurDrawHook）、桌面（LauncherHook）
+     * 与设置页预览三处一律走本函数，保证同一条恒等式：
+     *
+     * - 相对模式：`元素短边 × refractionHeightRatio`（= spec/95 原式，默认 0.5 → 零变化）
+     * - 绝对模式：`refractionHeightAbsolutePx`（固定 px，不随元素大小变）
+     *
+     * 模式或值变化都会改变返回值 → 参与 `Params.hashCode()` / `AppliedKey` 比对 → 触发 uniform 重设。
+     * 热路径调用安全：三项各自带 500ms TTL，TTL 内零 IPC。
+     */
+    fun refractionHeightPx(shortSide: Float, api: XposedInterface?): Float {
+        return if (refractionHeightMode(api) == REFRACTION_HEIGHT_MODE_ABS) {
+            refractionHeightAbsolutePx(api)
+        } else {
+            shortSide * refractionHeightRatio(api)
+        }
+    }
+
+    // ---------- 统一界面圆角（doc/spec/101，2026-10-11） ----------
+    //
+    // 需求（用户原话）：「有人反馈统一圆角好看，建议加一个统一界面圆角，打开以后控制中心和通知中心
+    // 都使用同一个圆角，只有这两页，和通知卡片，其他的不要误伤。」
+    //
+    // ⚠️ 键名/语义与以下历史项**均无关**，勿合并、勿联想：
+    // - 与 doc/spec/91 的「锁屏岛圆角回退」无关（那是反射 BlurConfig 失败后的兜底策略，不涉配置键）；
+    // - 与已删除死键 `refraction_height`（spec/74 清理）无关（那是折射环带高度，不是本体圆角）；
+    // - 与 [KEY_SEEDLING_CARD_CORNER_RATIO] 无关（流体云大卡启发式系数，本键不作用于流体云）。
+    //
+    // 默认 **false** = 完全不生效（[BlurDrawHook.RegionEntry.unifiedScope] 恒 false 的元素 +
+    // 开关关时 computeGeometry 走原路径）→ 升级后逐像素零变化。
+
+    /** 统一界面圆角开关：true=作用域内元素本体圆角统一为 [KEY_UNIFIED_CORNER_PX]（仍受短边一半封顶）；
+     *  false（默认）= 不干预，全部走元素自身已解析圆角（= 改动前行为，零变化）。
+     *  作用域白名单在注册期判定（BlurDrawHook.isUnifiedCornerScope → RegionEntry.unifiedScope），
+     *  只覆盖：通知中心/控制中心面板层 + 通知卡片 + 音量/亮度滑杆宿主；
+     *  Launcher / 锁屏胶囊系 / 侧滑按钮 / 文件夹 / Taskbar 一律不进白名单（防误伤）。
+     *  改动 ≤1s 生效（TTL 500ms 重读 + geometryCache 1s 强制重算，无需重启 SystemUI）。 */
+    const val KEY_UNIFIED_CORNER_ENABLE = "unified_corner_enable"
+    /** 统一界面圆角开关默认值（false = 默认关闭，防误伤；符合「默认全关」原则） */
+    const val DEFAULT_UNIFIED_CORNER_ENABLE = false
+
+    /** 统一圆角半径（px）。仅 [KEY_UNIFIED_CORNER_ENABLE]=true 时生效。
+     *  clamp [UNIFIED_CORNER_PX_MIN]~[UNIFIED_CORNER_PX_MAX]。
+     *  ⚠️ 这是**半径**（shader 侧 uCornerRadius 语义）；滑杆文案亦为「统一圆角（px）」。 */
+    const val KEY_UNIFIED_CORNER_PX = "unified_corner_px"
+    /** 统一圆角默认半径（48f px ≈ 13dp@3x，通知/控制中心卡片观感接近的中值） */
+    const val DEFAULT_UNIFIED_CORNER_PX = 48f
+    /** 统一圆角下限（8f px：再小看不出与默认的差别） */
+    const val UNIFIED_CORNER_PX_MIN = 8f
+    /** 统一圆角上限（200f px：超过常见元素短边一半后会被短边封顶，再大无意义） */
+    const val UNIFIED_CORNER_PX_MAX = 200f
+
+    /**
+     * [doc/spec/101] 统一圆角半径规则（防误伤核心，纯函数、无副作用）：
+     *
+     *     最终圆角 = min( max(统一半径, 元素自身已解析圆角), min(w, h) / 2 )
+     *
+     * 三类元素代入验证（统一半径 U=48）：
+     * - 矩形卡片（自身角 r=40 < U，短边一半=50）→ min(max(48,40),50) = **48** ✓ 抬到统一值
+     * - 圆形磁贴（自身角 r = min/2 = 50）→ min(max(48,50),50) = **50** ✓ 保持圆形，不被压扁
+     * - 药丸滑杆（自身角 r = 半高 20，min(w,h)/2 = 20）→ min(max(48,20),20) = **20** ✓ 保持药丸
+     * - 小元素封顶（U=200，min/2=30，自身 10）→ min(max(200,10),30) = **30** ✓ 不越几何上限
+     * - 反射失败的方角元素（自身 r=0）→ min(max(48,0),min/2) = min(48, min/2) ✓ 方角也被统一
+     *
+     * @param unifiedPx 统一半径（已 clamp 过的 [KEY_UNIFIED_CORNER_PX]）
+     * @param ownRadius 元素自身已解析圆角（RegionEntry.cornerRadius，可为 0=方角）
+     * @param w / @param h 元素 viewport 宽高 px（>0，调用方已保证）
+     */
+    fun unifiedCornerRadius(unifiedPx: Float, ownRadius: Float, w: Float, h: Float): Float {
+        val cap = minOf(w, h) * 0.5f
+        return minOf(maxOf(unifiedPx, ownRadius), cap)
+    }
+
+    /** 热路径重读 TTL（ms）：沿用 [refractionHeightRatio] 的 500ms 模式 —— 改动 ≤0.5s 生效，
+     *  TTL 内直接返回 @Volatile 缓存，渲染热路径零 IPC。 */
+    private const val UNIFIED_CORNER_TTL_MS = 500L
+
+    @Volatile
+    private var unifiedCornerEnableCache: Boolean = DEFAULT_UNIFIED_CORNER_ENABLE
+
+    @Volatile
+    private var unifiedCornerEnableCacheAtMs = 0L
+
+    @Volatile
+    private var unifiedCornerPxCache: Float = DEFAULT_UNIFIED_CORNER_PX
+
+    @Volatile
+    private var unifiedCornerPxCacheAtMs = 0L
+
+    /**
+     * 统一界面圆角开关（[TTL][UNIFIED_CORNER_TTL_MS] 节流缓存，与 [refractionHeightRatio] 同款骨架，
+     * 两进程各一份）。读取失败 / api 不可用 → 默认 false（= 不干预，零变化）。
+     */
+    fun unifiedCornerEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_UNIFIED_CORNER_ENABLE
+        val now = SystemClock.uptimeMillis()
+        if (now - unifiedCornerEnableCacheAtMs < UNIFIED_CORNER_TTL_MS) return unifiedCornerEnableCache
+        unifiedCornerEnableCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_UNIFIED_CORNER_ENABLE, DEFAULT_UNIFIED_CORNER_ENABLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read unified_corner_enable failed, default $DEFAULT_UNIFIED_CORNER_ENABLE", t)
+            DEFAULT_UNIFIED_CORNER_ENABLE
+        }
+        unifiedCornerEnableCache = v
+        return v
+    }
+
+    /**
+     * 统一圆角半径 px（[TTL][UNIFIED_CORNER_TTL_MS] 节流缓存）。
+     * 返回值恒已 clamp 到 [UNIFIED_CORNER_PX_MIN]~[UNIFIED_CORNER_PX_MAX]。
+     */
+    fun unifiedCornerPx(api: XposedInterface?): Float {
+        if (api == null) return DEFAULT_UNIFIED_CORNER_PX
+        val now = SystemClock.uptimeMillis()
+        if (now - unifiedCornerPxCacheAtMs < UNIFIED_CORNER_TTL_MS) return unifiedCornerPxCache
+        unifiedCornerPxCacheAtMs = now
+        val raw = try {
+            read(api).getFloat(KEY_UNIFIED_CORNER_PX, DEFAULT_UNIFIED_CORNER_PX)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read unified_corner_px failed, default $DEFAULT_UNIFIED_CORNER_PX", t)
+            DEFAULT_UNIFIED_CORNER_PX
+        }
+        val v = raw.coerceIn(UNIFIED_CORNER_PX_MIN, UNIFIED_CORNER_PX_MAX)
+        if (v != raw) Log.w(TAG, "unified_corner_px=$raw out of range, clamp to $v")
+        unifiedCornerPxCache = v
+        return v
+    }
 
     // [2026-09-17 死键清理] backgroundMode / isSceneFilterEnabled / sceneWhitelist 三个读取辅助
     // 已随对应死键一并删除（零调用方）。

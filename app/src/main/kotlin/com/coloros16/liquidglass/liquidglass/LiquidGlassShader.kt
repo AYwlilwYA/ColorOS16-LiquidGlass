@@ -40,6 +40,9 @@ object LiquidGlassShader {
         // - 结构：清晰内部透镜（早退等价）+ 内侧折射环带（+可选光谱色散）+ vibrancy + 定向边缘高光
         // - 折射方向：采样点向元素【内侧】位移（= Kyant Lens.kt 对 refractionAmount 取负的语义；
         //   旧版向外位移导致边缘"漏背景"，非透镜弯折，已废弃）
+        // - [2026-10-10 doc/spec/97] 折射方向场改走 gradRefract（最近边界特征法线 soft-min）：
+        //   旧的 gradSdRoundedRect(mix)+球面径向在宽元素内部转成"从中心径向"（偏离局部法线 70~80°）
+        //   → 玻璃内部出现奇怪扭曲图案；gradSdRoundedRect 自本版起**只喂高光 hl**。
         // - 高斯模糊：自研 5x5 可分离，仅作内部可选轻效果（uBlurRadius=0 时完全不采样 uSourceLowRes）
         // - MixColor：ColorOS 反编译 BlendMode 语义（BlurDrawableShaderStringKt，GLSL→AGSL），默认透明无操作
         // ============================================================================
@@ -57,7 +60,7 @@ object LiquidGlassShader {
         uniform float uCornerConicBlend; // [2026-08-13] 本体角 CONIC↔圆弧平滑过渡权重（0=纯圆弧 sdRoundedRect，1=纯 CONIC sdBezierDistance；
                                          // 运动态=0 → 跳过贝塞尔省 CONIC 迭代；复位时 Kotlin 侧动画 0→1 平滑恢复，防角形状瞬间突变闪）
         uniform float uBlurRadius;       // 内部可选轻模糊半径 px（0=清晰透镜；>0 仅作用内部，不糊折射环带）
-        uniform float uRefractionHeight; // 折射区高度 px（自边缘向内）
+        uniform float uRefractionHeight; // 折射区高度 px（自边缘向内；= 元素短边 × refraction_height_ratio，默认 0.5=短边一半，见 doc/spec/95）
         uniform float uRefractionAmount; // 折射强度 px（边缘最大位移；正值，AGSL 侧向内侧采样）
         uniform float uDepth;            // 深度：法线的径向分量强度（Kyant depthEffect，0 或 1）
         uniform float uDispersion;       // 色散强度（光谱采样缩放；0=关闭，建议 0~0.3）
@@ -86,6 +89,19 @@ object LiquidGlassShader {
                                          // BlurDrawHook 兼容传参，shader 不再使用（原为遮罩颜色 straight rgba，
                                          // 默认纯黑；曾参与步骤 2.5 的压暗 mix）。
 
+        // ---------- [doc/spec/100 方案2] 系统 metaball 黏连桥 uniform（全部带默认值） ----------
+        // uMetaballEnable 默认 0 → 下方融合段整段不执行 → 非 metaball 元素（普通通知卡/QS/文件夹）
+        // 逐像素零变化（回归基准）。值由 BlurDrawHook 从系统 MetaBallBlurDrawable 的 metaBallParams
+        // （MetaBallBlurDrawable.syncToShader 已同步好的那份）反射喂入。
+        uniform float uMetaballEnable; // 0=关（默认）；1=启用 metaball 融合
+        uniform vec4  uBodyRect;       // 主球（= 本体）：xy=中心（viewport 局部）, zw=半尺寸
+        uniform vec4  uBall1;          // 伴球 1：xy=中心（viewport 局部）, zw=半尺寸；半尺寸<0.001=无此球
+        uniform vec4  uBall2;          // 伴球 2（同上）
+        uniform vec4  uBall3;          // 伴球 3（同上；系统 MAX_METABALL_COUNT=3 含主球，故至多 2 颗伴球）
+        uniform vec4  uMetaballParam;  // x=blendShape（主体/伴球同值，见 spec/100 §2.2）
+                                       // y=blendStrength（系统 shader 常量 BLEND_STRENGTH=15.0）
+                                       // z=blendMode（0=横向扩张 / 1=纵向扩张） w=保留
+
         // ---------- SDF 圆角矩形（Kyant0 RoundedRectSDF 移植） ----------
         // 元素局部 coord → bitmap 像素坐标（uViewport=元素尺寸；不依赖 BitmapShader localMatrix，
         // AGSL shader.eval 忽略 localMatrix，直接以 coord 为像素索引，故采样坐标须手动折算）
@@ -101,6 +117,11 @@ object LiquidGlassShader {
         }
 
         // 归一化 SDF 梯度：边缘/角部指向外，内部为方向场。**全定义域连续**（见下）。
+        // ★ [2026-10-10 spec/97] 本函数自本版起**只喂高光 hl**（`dot(sdfGrad, lightDir)`）——
+        //   折射方向已改走下面的 [gradRefract]。原因：折射带宽 = 0.5×短边（spec/95），带深入到
+        //   元素内部，而本函数内部取「径向」（离局部边界法线最远 70~80°）→ 内部扭曲图案；
+        //   高光带只有 uHighlightWidth（12px）宽、恒在边界附近（t≈1 → 精确边缘法线），不受影响。
+        //   spec/67 的 floor 与 spec/71 的「深度用 SDF 真值」两条修复**原样保留**。
         // [2026-09-16 错位/分界线修复] 原实现是 if/else 硬切换：
         //   边缘/角区 → normalize(max(cornerCoord,0))；内部 → 轴向 (1,0)/(0,1)。
         // 两处硬分界（内部方块边界 + 对角线）都会**突变**，而该梯度经
@@ -126,6 +147,67 @@ object LiquidGlassShader {
             float depth = sdRoundedRect(coord, halfSize, radius);
             float t = smoothstep(-max(radius, 1.0) * 0.5, 0.0, depth);
             return sign(coord) * normalize(mix(dirInner, dirEdge, t));
+        }
+
+        // ---------- 折射方向场 [2026-10-10 doc/spec/97]：最近边界特征法线的 soft-min 加权平均 ----------
+        // 为什么换：折射带宽 = 短边一半（uRefractionHeight，spec/95），带会深入元素内部；旧场
+        // （上面的 gradSdRoundedRect 内部径向 + uDepth×球面径向）在宽元素内部给出的几乎是
+        // 「从元素中心指向外」的方向，与局部边界法线能差 70~80° —— 1312×248 上边 x=500、深度 30px 处
+        // 旧方向离水平仅 10.6°（=离竖直 79°，实测位移 横向 9.6px / 竖向 1.8px），内容被朝中心横向拽 →
+        // 用户实证「分界线没了，但效果奇怪、不是玻璃该有的效果」。
+        // 真玻璃（边缘倒角 / 平板玻璃）观感 = **边缘法线折射为主、越往中心越平缓**，故改为：
+        //   三条边界特征（abs 对称，只需算第一象限）——
+        //     ① 上/下直边：线段法线 (0,1)   ② 左/右直边：线段法线 (1,0)   ③ 角弧：圆心径向
+        //   权重 w = 1/(d+k)^3（幂律 soft-min，k=3px）——
+        //     · 近边界：最近特征权重压倒性占优 → 等于**精确边界法线**（高光带/最大位移区不变形）；
+        //     · 内部：多特征竞争 → 连续平均，方向被限制在「最近几个真实墙面法线」的凸包内，
+        //       不会再甩到径向那种离谱方向；
+        //   **返回值的幅值 = 方向可信度 |v/z| ∈ [0,1]**：medial axis（中轴线）上两墙面法线反向相消
+        //   → 幅值→0 → 位移同步→0，中轴处的 180° 方向翻转被幅值归零掩盖，不产生撕裂。
+        // 两个仿真抓出来的病态点（必须处理，否则内部打旋）：
+        //   · 角弧只在自己的角象限有效（q.x>=0 && q.y>=0，即径向投影落在弧段内）；否则该处最近特征
+        //     是直边，用 |q|-radius 会给出偏小的假距离 → 方向被弧带偏；
+        //   · |q|→0（角弧圆心 = 三特征重合的 medial axis）时 normalize(q) 不可导、方向随 1px 任意转
+        //     → smoothstep(0, radius*0.5, |q|) 淡出，交回直边特征（|q|→0 时弧权重→0，方向由直边接管）。
+        // 仿真 4 种几何（宽/方/高/胶囊）实测：相邻像素最大方向角跳 14.3°，全部落在位移 ~1px 的中轴区；
+        // 位移向量最大相邻跳变 5.0~5.7px，与旧场同几何差 ≤0.01px（该跳变本就来自 circleMap 边界陡坡）
+        // → 无新增撕裂、零 NaN。
+        float2 gradRefract(float2 coord, float2 halfSize, float radius) {
+            float2 a = abs(coord);
+            float2 c = halfSize - float2(radius);      // 角弧圆心（core 角点）
+            float2 q = a - c;                          // 指向角弧圆心的偏移（a-space）
+            // 到线段的距离：角区外投影到线段端点（线段端点 = 角弧切点，两者天然衔接）
+            float dy = (a.x > c.x) ? length(float2(q.x, a.y - halfSize.y)) : (halfSize.y - a.y);
+            float dx = (a.y > c.y) ? length(float2(a.x - halfSize.x, q.y)) : (halfSize.x - a.x);
+            float dc = length(q);
+            float k = 3.0;
+            float ty = max(dy, 0.0) + k;
+            float tx = max(dx, 0.0) + k;
+            float ta = abs(dc - radius) + k;
+            bool arcValid = (q.x >= 0.0 && q.y >= 0.0 && dc > 0.0001);
+            // 权重写成 (tmin/t)^3 ∈ (0,1]（tmin = 最近特征的 d+k）：尺度在 v 与 z 中相消、
+            // 结果与直接用 1/(d+k)^3 完全相同，但全程不产生 1e-9 级极小量（免精度/NaN 风险），
+            // 且 z ≥ ~1。**不能**用 1e-20 这类下限兜底：fp16 会把它冲成 0 → 除零。
+            float tmin = min(ty, tx);
+            if (arcValid && ta < tmin) {
+                tmin = ta;
+            }
+            float sy = tmin / ty;
+            float wy = sy * sy * sy;
+            float sx = tmin / tx;
+            float wx = sx * sx * sx;
+            float wa = 0.0;
+            if (arcValid) {
+                float fade = smoothstep(0.0, max(radius, 1.0) * 0.5, dc);
+                float sav = tmin / ta;
+                wa = fade * sav * sav * sav;
+            }
+            float2 v = float2(wx, wy);
+            if (wa > 0.0) {
+                v += wa * (q / dc);
+            }
+            float z = max(wy + wx + wa, 1e-4);
+            return sign(coord) * (v / z);
         }
 
         // ---------- CONIC（三次贝塞尔）圆角 SDF（系统 BlurDrawableShaderCornerStringKt.sdBezierDistance 移植） ----------
@@ -175,6 +257,202 @@ object LiquidGlassShader {
                     float2(cc, 0.0), float2(cc, point), float2(point, cc), float2(0.0, cc));
             }
             return sdf;
+        }
+
+        // ================= [doc/spec/100 方案2] 系统 metaball 黏连桥（smooth-min 移植） =================
+        // 移植对象：reference/systemui-16.99.12 的
+        //   com/oplus/posteffect/agsl/BlurDrawableShaderMetaBallStringKt.java
+        //   · :22 平滑并集   h = clamp(0.5 + 0.5*(d1-d2)/k, 0, 1); d = mix(d1,d2,h) - k*h*(1-h)
+        //   · :5  强度公式   k = BLEND_STRENGTH * gain(smoothstep(0,1,diff_between), BLEND_PROCESS_CONTROL) * mask
+        //   · PART_3/4      shape-change 外扩：本体与伴球各自朝对方平移 blendShape*range_d → 沙漏收腰
+        //   · :23 常量表（BLEND_SHAPE_CHANGE=6 / STRENGTH_SMOOTH=1 / PROCESS_CONTROL=0.3 /
+        //         EDGE_FADE=20 / ARC_START=1 / ARC_END=0.85 / ARC_RANGE=5）
+        //   · rectProessX/Y（RECT_PROCESS_X/Y :2-:43）：shortLen / 点_c / 方向 / dis
+        // shapeRangeFactorX/Y = 1.2 / 2.0（MetaBallBlurDrawable 构造常量，:61/:62 与
+        // MetaBallBlendManager:97/:104 实证）。
+        // **uMetaballEnable == 0（默认）时本段完全不执行** → 非 metaball 元素逐像素零变化。
+        const float MB_SHAPE_CHANGE = 6.0;
+        const float MB_STRENGTH_SMOOTH = 1.0;
+        const float MB_PROCESS_CONTROL = 0.3;
+        const float MB_EDGE_FADE = 20.0;
+        const float MB_ARC_START = 1.0;
+        const float MB_ARC_END = 0.85;
+        const float MB_ARC_RANGE = 5.0;
+        const float MB_SRFX = 1.2;
+        const float MB_SRFY = 2.0;
+
+        // 系统 BLUR_DRAWABLE_SHADER_GAIN_METHOD（:11）
+        float mbGain(float x, float k) {
+            float a = 0.5 * pow(2.0 * ((x < 0.5) ? x : (1.0 - x)), k);
+            return (x < 0.5) ? a : (1.0 - a);
+        }
+
+        // 本体 / 伴球共用的圆角矩形 SDF —— 与 main() 改动前的 sdRaw 段**逐行等价**
+        // （[spec/18] 本体角 CONIC：cc=1.5×radius、圆弧↔CONIC 平滑过渡、半径≥短边一半退化为胶囊）。
+        // 抽成函数是为了让伴球用与本体**完全同一套角模型**（主体与伴球在系统里同源于 setCornerParams）。
+        float mbShapeSDF(float2 p, float2 hs) {
+            float r = uCornerRadius;
+            float d = sdRoundedRect(p, hs, r);
+            if (uCornerIsConic > 0.5) {
+                float cc = 1.5 * r;
+                float minHalf = min(hs.x, hs.y);
+                if (r >= minHalf) {
+                    d = sdRoundedRect(p, hs, minHalf);
+                } else {
+                    float blend = clamp(uCornerConicBlend, 0.0, 1.0);
+                    if (blend > 0.001) {
+                        float sdConic = sdBezierDistance(p, hs, cc, uCornerWeight);
+                        d = mix(d, sdConic, blend);
+                    }
+                }
+            }
+            return d;
+        }
+
+        // 单个「本体 ↔ 伴球」pairwise 融合的结果：SDF + 两个方向场（高光 / 折射）
+        struct MbPair {
+            float d;
+            float2 g;
+            float2 r;
+        };
+
+        // 系统 rectProessX/Y + PART_3/4/5 的 pairwise 分支（i=本体、j=伴球）。
+        //   w        viewport 局部坐标（已含 uParallax/uMaskOffset 修正）
+        //   bodyC/H  本体中心 / 半尺寸；ballC/H 伴球中心 / 半尺寸
+        //   corner   圆角（本体与伴球同用 uCornerRadius，见 mbShapeSDF 注释）
+        //   bsBody / bsBall  各自的 blendShape（两个调用方实证同值，Kotlin 侧传同一份）
+        //   strength blendStrength（系统 15）；mode blendMode（0=X 横向 / 1=Y 纵向）
+        //   bodyGradR 本体方向场所需 gradRadius（与 main() 的 gradRadius 同源）
+        // 返回 min(原始伴球, smooth-min(位移后本体, 位移后伴球)) 及其梯度 / 折射方向。
+        // 球不存在（半尺寸 <0.001）→ d=1e6 永不参与 union（系统 `all(greaterThanEqual(...,0.001))` 同义）。
+        MbPair mbFuse(
+            float2 w,
+            float2 bodyC, float2 bodyH,
+            float2 ballC, float2 ballH,
+            float corner, float bsBody, float bsBall,
+            float strength, float mode, float bodyGradR
+        ) {
+            MbPair o;
+            o.d = 1000000.0;
+            o.g = float2(0.0, 1.0);
+            o.r = float2(0.0, 1.0);
+            if (!all(greaterThanEqual(ballH, vec2(0.001)))) {
+                return o;
+            }
+            bool xMode = mode < 0.5;
+
+            // ---- combineRect + shortLen（RECT_PROCESS_X:3-:11 / RECT_PROCESS_Y 同构）----
+            vec2 pl = min(bodyC - bodyH, ballC - ballH);
+            vec2 pr = max(bodyC + bodyH, ballC + ballH);
+            vec2 cC = 0.5 * (pl + pr);
+            vec2 hC = 0.5 * (pr - pl);
+            float shortLen = xMode
+                ? (bodyH.x + ballH.x - hC.x) * 2.0
+                : (bodyH.y + ballH.y - hC.y) * 2.0;
+            float c0 = max(corner, 1.0);   // 防 smoothstep(edge0==edge1) 除零（角=0 时）
+            float axisH = xMode ? hC.x : hC.y;
+            float axisMax = xMode ? max(bodyH.x, ballH.x) : max(bodyH.y, ballH.y);
+            float perpDiff = xMode ? abs(bodyH.y - ballH.y) : abs(bodyH.x - ballH.x);
+            float dualP = smoothstep(-c0, c0, shortLen);
+            float unDualP = smoothstep(c0, 0.0, axisH - axisMax);
+            float pAlign = mix(dualP, unDualP, smoothstep(0.0, c0, perpDiff));
+
+            // ---- 分离量 dis / point_c / dir_c（RECT_PROCESS_X:12-:42；系统 dy 恒 0，本实现同构）----
+            float cmpDeep = xMode ? min(bodyH.x, ballH.x) : min(bodyH.y, ballH.y);
+            vec2 cut = xMode ? vec2(cmpDeep, 0.0) : vec2(0.0, cmpDeep);
+            vec2 aMin = bodyC - (bodyH - cut);
+            vec2 aMax = bodyC + (bodyH - cut);
+            vec2 bMin = ballC - (ballH - cut);
+            vec2 bMax = ballC + (ballH - cut);
+            bool oX = aMax.x >= bMin.x && bMax.x >= aMin.x;
+            bool oY = aMax.y >= bMin.y && bMax.y >= aMin.y;
+            float dis = 0.0;
+            vec2 pointC = vec2(0.0);
+            vec2 dirC = xMode ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+            if (!(oX && oY)) {
+                pointC = vec2(
+                    min(aMax.x, bMax.x) + max(aMin.x, bMin.x),
+                    min(aMax.y, bMax.y) + max(aMin.y, bMin.y)) * 0.5;
+                float sep = 0.0;
+                if (xMode) {
+                    if (aMax.x < bMin.x) { sep = bMin.x - aMax.x; }
+                    else if (bMax.x < aMin.x) { sep = -(aMin.x - bMax.x); }
+                    if (sep != 0.0) { dirC = vec2(sep > 0.0 ? 1.0 : -1.0, 0.0); }
+                } else {
+                    if (aMax.y < bMin.y) { sep = bMin.y - aMax.y; }
+                    else if (bMax.y < aMin.y) { sep = -(aMin.y - bMax.y); }
+                    if (sep != 0.0) { dirC = vec2(0.0, sep > 0.0 ? 1.0 : -1.0); }
+                }
+                dis = abs(sep);
+            }
+
+            // ---- shapeChange + 朝对方外扩位移（系统 PART_3 :24-:58）----
+            float space = max(-shortLen, 0.0);
+            float rangeBlend = bsBody + bsBall;
+            float shapeChange = step(0.0001, dis) *
+                smoothstep(rangeBlend + MB_SHAPE_CHANGE, rangeBlend, space);
+            float2 pL = w - bodyC;
+            float2 qL = w - ballC;
+            if (shapeChange > 0.001) {
+                vec2 pw = w - pointC;
+                float disDirY = abs(dot(pw, dirC));
+                float disDirX = abs(dot(pw, vec2(dirC.y, -dirC.x)));
+                float minHalf = xMode ? min(bodyH.y, ballH.y) : min(bodyH.x, ballH.x);
+                float minHalfAxis = xMode ? min(bodyH.x, ballH.x) : min(bodyH.y, ballH.y);
+                float disBetween = -shapeChange * rangeBlend;   // 必须在 ×shapeChangePlus 之前（系统 :41→:43）
+                shapeChange *= smoothstep(minHalfAxis, disBetween, shortLen);
+                float uS = mix(MB_ARC_START, MB_ARC_END,
+                    smoothstep(MB_ARC_RANGE, 0.0, abs(disBetween - shortLen)));
+                float fadeX = mbGain(smoothstep(max(minHalf * MB_SRFX, 0.001), 0.0, disDirX), uS);
+                float win1 = max(bsBody * MB_SRFY + space * 0.5, 0.001);
+                float s1 = bsBody * smoothstep(win1, 0.0, disDirY) * fadeX * shapeChange;
+                if (s1 > 0.001) { pL = pL - dirC * s1; }        // 本体朝伴球外扩（p1 += -dir*strength）
+                float win2 = max(bsBall * MB_SRFY + space * 0.5, 0.001);
+                float s2 = bsBall * smoothstep(win2, 0.0, disDirY) * fadeX * shapeChange;
+                if (s2 > 0.001) { qL = qL + dirC * s2; }        // 伴球朝本体外扩（p2 += +dir*strength）
+            }
+
+            // ---- mask + blendStrength（系统 PART_5 :2-:13）----
+            float shapeD = sdRoundedRect(w - cC, hC, c0);
+            float mask = 1.0 - smoothstep(MB_EDGE_FADE, 0.0, abs(shapeD)) * pAlign;
+            float diffBetween = shortLen + shapeChange * rangeBlend;
+            float k = strength *
+                mbGain(smoothstep(0.0, MB_STRENGTH_SMOOTH, diffBetween), MB_PROCESS_CONTROL) * mask;
+
+            // ---- smooth-min（系统 PART_5 :14-:20）+ 梯度凸组合 ----
+            float ballGradR = min(uCornerRadius * 1.5, min(ballH.x, ballH.y));
+            float d1 = mbShapeSDF(pL, bodyH);
+            float d2 = mbShapeSDF(qL, ballH);
+            float2 gBody = gradSdRoundedRect(pL, bodyH, bodyGradR);
+            float2 gBall = gradSdRoundedRect(qL, ballH, ballGradR);
+            float2 rBody = gradRefract(pL, bodyH, bodyGradR);
+            float2 rBall = gradRefract(qL, ballH, ballGradR);
+            float h = 0.0;
+            float dPair = 0.0;
+            if (k > 0.001) {
+                h = clamp(0.5 + 0.5 * (d1 - d2) / k, 0.0, 1.0);
+                dPair = mix(d1, d2, h) - k * h * (1.0 - h);
+            } else {
+                h = (d2 < d1) ? 1.0 : 0.0;   // 系统 else 分支 d = min(d1,d2) 的等价权重
+                dPair = min(d1, d2);
+            }
+            // smooth-min 梯度性质：∇smin = (1-h)·∇d1 + h·∇d2（全定义域连续，含 clamp 边界）
+            float2 gPair = (1.0 - h) * gBody + h * gBall;
+            float2 rPair = (1.0 - h) * rBody + h * rBall;
+
+            // 系统 PART_2 的 d_value 初始化语义：**原始（未位移）伴球**也并进 union
+            float2 q0 = w - ballC;
+            float dRaw = mbShapeSDF(q0, ballH);
+            if (dRaw < dPair) {
+                o.d = dRaw;
+                o.g = gradSdRoundedRect(q0, ballH, ballGradR);
+                o.r = gradRefract(q0, ballH, ballGradR);
+            } else {
+                o.d = dPair;
+                o.g = gPair;
+                o.r = rPair;
+            }
+            return o;
         }
 
         // 圆形边缘映射：x∈[0,1] → [0,1]，先快后缓（折射位移包络）
@@ -454,44 +732,62 @@ object LiquidGlassShader {
 
             // 1. SDF 几何（uParallax 作 Kyant 的 offset，移动玻璃几何中心；uMaskOffset 作 MetaBall 固有
             //    扩张偏移——uViewport=真实尺寸时把几何中心平移到真实卡片区域，spec/18 任务 A）
+            // [doc/spec/100] metaball 元素：视口保持**全尺寸**（±69px 桥区就是画布，不许再收成「真实
+            // 卡片」），本体改用 uBodyRect（系统主球矩形）。非 metaball 元素 uMetaballEnable=0 →
+            // bodyCenter=halfSize=viewport/2，与改动前**逐位一致**（回归基准）。
             float2 halfSize = uViewport * 0.5;
-            float2 centeredCoord = (coord + uParallax - uMaskOffset) - halfSize;
+            float2 bodyCenter = halfSize;
+            if (uMetaballEnable > 0.5) {
+                bodyCenter = uBodyRect.xy;
+                halfSize = uBodyRect.zw;
+            }
+            float2 centeredCoord = (coord + uParallax - uMaskOffset) - bodyCenter;
             float radius = uCornerRadius;
-            // [spec/18 圆角过渡区深挖修正] 本体角 CONIC：对齐系统 CornerParamsKt.setCornerUniform
-            // （CONIC 元素——通知卡/custom 卡/QS seekbar——Java 侧 radius×1.5 + weight 变换
-            // (8·w)/(3·w+3)，shader 侧 sdBezierDistance 三次贝塞尔 45° 处比 RBox 圆弧方 ~45px；
-            // 此前本体一律 RBox 圆弧 → 各种卡片角比系统方 = 圆角不一致根源）。FULL/tile
-            // （pathProvider 弧线，uCornerIsConic=0）保持 RBox 圆弧。
-            float sdRaw = sdRoundedRect(centeredCoord, halfSize, radius);
+            // [spec/18 圆角过渡区深挖修正] 本体角 CONIC —— 逻辑已抽到 mbShapeSDF（cc=1.5×radius、
+            // 圆弧↔CONIC 平滑过渡 uCornerConicBlend、半径≥短边一半退化为圆/胶囊），此处只算方向场半径。
+            // 原实证：cc=1.5×radius 必然 > halfSize → 贝塞尔角区判定 any(|p|<=b-cc) 恒 false →
+            // 整个元素被当角区送进按 [0,cc]² 定义的贝塞尔 → sdRaw 失真 → 高光带/圆角裁剪全部错位。
+            float sdRaw = mbShapeSDF(centeredCoord, halfSize);
             float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
-            if (uCornerIsConic > 0.5) {
-                float cc = 1.5 * radius;               // 对齐 CornerParamsKt radius×1.5
-                gradRadius = min(cc, min(halfSize.x, halfSize.y));
-                // [2026-08-13 修复] 圆弧↔CONIC 平滑过渡：uCornerConicBlend（0=纯圆弧，1=纯 CONIC）。
-                // 修复背景：滑动降级 CONIC（spec/24 修复方向 3）isMotionActive 复位时 uCornerIsConic
-                // 瞬间 true → 角形状突变（CONIC 与圆弧 45° 处差 ~45px）→ "停止滑动后圆角边缘闪"。
-                // 线性 mix 两个 SDF 近似（视觉足够平滑，无需严格距离场运算）；blend<=0.001 时跳过
-                // sdBezierDistance（运动中圆弧省 CONIC 迭代，成本同 uCornerIsConic=0）。
-                // 注：gradRadius 两分支恒等（均 min(1.5×radius, halfSize)），无需随 blend 过渡。
-                float blend = clamp(uCornerConicBlend, 0.0, 1.0);
-                // [2026-09-16 圆角自动合并修复] 对齐系统语义：半径达到短边一半时退化为圆/胶囊
-                // （实证：QsViewOutlineProvider.getRoundParams:247-250 —— 半径 >= 高度一半即返回
-                //  null → 圆形；OplusQsSmoothRoundUtil 的 circleParams 同理）。原实现无此退化，
-                //  而 cc=1.5×radius 必然 > halfSize → sdBezierDistance 的角区判定
-                //  any(|p| <= b-cc) 因 b-cc 为负而恒 false → 整个元素被当角区送进按 [0,cc]² 定义的
-                //  贝塞尔、坐标系被压扁 → sdRaw 失真 → 建立其上的高光带/圆角裁剪全部错位
-                //  （用户实证：细高光带在转弯处消失；圆形磁贴与细横幅最明显）。
-                float minHalf = min(halfSize.x, halfSize.y);
-                if (radius >= minHalf) {
-                    sdRaw = sdRoundedRect(centeredCoord, halfSize, minHalf);
-                } else if (blend > 0.001) {
-                    float sdConic = sdBezierDistance(centeredCoord, halfSize, cc, uCornerWeight);
-                    sdRaw = mix(sdRaw, sdConic, blend);
-                }
+
+            // [doc/spec/100 方案2] metaball 并集：本体 ↔ ≤3 伴球 pairwise smooth-min 融合。
+            // uMetaballEnable == 0（默认）→ 整段不执行 → sdRaw / sdfGrad / nBlend 与改动前逐位一致。
+            float2 mbGrad = float2(0.0, 1.0);
+            float2 mbRefr = float2(0.0, 1.0);
+            float mbOn = 0.0;
+            if (uMetaballEnable > 0.5) {
+                float2 w = coord + uParallax - uMaskOffset;
+                float mbBs = max(uMetaballParam.x, 0.0);
+                float mbStrength = max(uMetaballParam.y, 0.0001);
+                float mbMode = uMetaballParam.z;
+                float dAcc = sdRaw;
+                float2 gAcc = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+                float2 rAcc = gradRefract(centeredCoord, halfSize, gradRadius);
+                MbPair pr;
+                pr = mbFuse(w, uBodyRect.xy, uBodyRect.zw, uBall1.xy, uBall1.zw,
+                            uCornerRadius, mbBs, mbBs, mbStrength, mbMode, gradRadius);
+                if (pr.d < dAcc) { dAcc = pr.d; gAcc = pr.g; rAcc = pr.r; }
+                pr = mbFuse(w, uBodyRect.xy, uBodyRect.zw, uBall2.xy, uBall2.zw,
+                            uCornerRadius, mbBs, mbBs, mbStrength, mbMode, gradRadius);
+                if (pr.d < dAcc) { dAcc = pr.d; gAcc = pr.g; rAcc = pr.r; }
+                pr = mbFuse(w, uBodyRect.xy, uBodyRect.zw, uBall3.xy, uBall3.zw,
+                            uCornerRadius, mbBs, mbBs, mbStrength, mbMode, gradRadius);
+                if (pr.d < dAcc) { dAcc = pr.d; gAcc = pr.g; rAcc = pr.r; }
+                sdRaw = dAcc;
+                mbGrad = gAcc;
+                mbRefr = rAcc;
+                mbOn = 1.0;
             }
             float sd = min(sdRaw, 0.0);   // Kyant：外部像素 clamp 到 0（circleMap 定义域 [0,1] 防 NaN）
             // 纯 SDF 梯度（高光专用；Kyant 高光不混 depth 径向分量）
             float2 sdfGrad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+            if (mbOn > 0.5) {
+                // [doc/spec/100] 融合场梯度 = 各分量梯度的 h 凸组合（mbFuse 内已合成），全定义域连续
+                // → 高光 band 沿融合轮廓连续、**不在桥上断裂**；幅值≈0（两侧法线对消的中轴）时保留
+                // 本体方向，避免 normalize 小量产生任意方向。
+                float mbLen = length(mbGrad);
+                if (mbLen > 0.0001) { sdfGrad = mbGrad / mbLen; }
+            }
 
             float4 glass = float4(0.0);
 
@@ -504,16 +800,39 @@ object LiquidGlassShader {
                     glass = float4(uSource.eval(srcCoord(coord - uMaskOffset, uSourceRect)));
                 }
             } else {
-                // 2b. 折射环带：边缘位移最大，向内趋 0
+                // 2b. 折射环带：边缘位移最大，向内趋 0（包络 circleMap 与 Kyant 语义不变）
                 float d = circleMap(1.0 - -sd / max(uRefractionHeight, 1.0)) * uRefractionAmount;
-                // 法线 = 归一化(SDF 梯度 + uDepth×径向)（Kyant：grad + depthEffect*normalize(centeredCoord)）
-                float2 gradCombined = sdfGrad + uDepth * (centeredCoord / max(length(centeredCoord), 0.0001));
+                // [2026-10-10 spec/97] 方向场改走 gradRefract（返回值幅值 = 方向可信度），
+                // 替代旧的 `sdfGrad + uDepth×球面径向` —— 旧场在宽元素内部退化成「从中心径向」，
+                // 与局部边界法线差 70~80° → 内容被横向拽向中心 → 玻璃内部奇怪扭曲图案。
+                float2 nBlend = gradRefract(centeredCoord, halfSize, gradRadius);
+                if (mbOn > 0.5) {
+                    // [doc/spec/100] 折射方向场同样换成融合场（mbFuse 内按同一 h 凸组合），
+                    // 桥区因此进入折射环带分支并获得方向；腰线处两侧法线相消 → 幅值（方向可信度）
+                    // 趋 0 → 位移同步趋 0，是平滑过渡而非撕裂（与 spec/97 的中轴处理同语义）。
+                    nBlend = mbRefr;
+                }
+                // uDepth 穹顶分量：球面径向 → **按宽高比校正的椭圆梯度** ∇(x²/hx² + y²/hy²)。
+                // 旧球面径向在宽元素上边随 |x| 转到 79°（1312×248、x=500 处），与法线叠加后
+                // 把合成方向拉偏 31° → 横向拉扯；椭圆穹顶同点只偏 5°、全域 ≤12°。
+                // 正方元素 hx==hy 时椭圆梯度 ≡ 球面径向 → **逐像素零回归**（QS 磁贴等不变）。
+                float2 dome = centeredCoord / max(halfSize * halfSize, float2(0.0001));
+                float2 domeN = float2(0.0);
+                // 判零必须对 centeredCoord 做，**不能**对除过 halfSize² 的 dome 做：
+                // dome 幅值 ~ |p|/430336，离中心 32px 处就只有 ~1e-4，用 1e-4 当阈值会把
+                // 中心一大片的穹顶项静默丢掉（仿真交叉验证实测：refrVec 差 3.1e-4px）。
+                if (length(centeredCoord) > 0.0001) {
+                    domeN = dome / length(dome);
+                }
+                float2 gradCombined = nBlend + uDepth * domeN;
                 float2 n = float2(0.0);
                 if (length(gradCombined) > 0.0001) {
                     n = gradCombined / length(gradCombined);
                 }
-                // 采样点向元素【内侧】位移（负方向）= Kyant Lens.kt refractionAmount 取负的语义 → 透镜弯折
-                float2 refrVec = -d * n;
+                // 采样点向元素【内侧】位移（负方向）= Kyant Lens.kt refractionAmount 取负的语义 → 透镜弯折。
+                // 末尾再乘 |nBlend|（方向可信度）：内部多墙面法线相消处位移同步衰减 →
+                // medial axis 上的 180° 方向翻转被幅值归零掩盖，不产生撕裂线。
+                float2 refrVec = -d * n * length(nBlend);
                 float2 refractedCoord = (coord - uMaskOffset) + refrVec;
                 // [2026-09-16 整元素模糊（B 方案）] uBlurRadius>0 时环带也走模糊采样，折射位移作用在
                 // 模糊图上 → 玻璃整体呈磨砂。原实现环带恒读 uSource（全分辨率清晰图）不读 uBlurRadius，
@@ -665,6 +984,9 @@ object LiquidGlassShader {
         val cornerIsConic: Boolean = false,  // 本体角 CONIC 开关（true=三次贝塞尔 + shader 内 1.5×半径；false=RBox 圆弧）
         val cornerWeight: Float = DEFAULT_MASK_WEIGHT, // 本体 CONIC 角权重（系统 CornerParamsKt (8·w)/(3·w+3) 变换后值；默认 1.3968）
         val blurRadius: Float = 0f,      // 内部可选轻模糊 px（uBlurRadius；0=清晰透镜=iOS 26 观感；>0 仅作用内部，不糊折射环带）
+        /** 折射区高度 px（uRefractionHeight，自边缘向内）。[doc/spec/95] hook 端与预览端恒按
+         *  「元素短边 × 短边比例」算（Prefs.KEY_REFRACTION_HEIGHT_RATIO，默认 0.5 = 短边一半）；
+         *  48f 仅作漏传兜底，不参与实际渲染。 */
         val refractionHeight: Float = 48f,
         val refractionAmount: Float = 28f, // 折射强度 px（正值；AGSL 侧向内侧位移 = Kyant 负值约定）
         val depth: Float = 1f,           // 深度：法线径向分量（Kyant depthEffect=true → 1）
@@ -679,6 +1001,40 @@ object LiquidGlassShader {
         val lightAngleDegrees: Float = 45f,
         val parallaxX: Float = 0f,
         val parallaxY: Float = 0f,
+    )
+
+    /**
+     * [doc/spec/100 方案2] 单颗球（本体主球或伴球）的 uniform 几何。
+     * 中心/半尺寸一律 **viewport 局部坐标**（与 AGSL `coord` 同空间）。
+     */
+    data class Ball(
+        val cx: Float,
+        val cy: Float,
+        val halfW: Float,
+        val halfH: Float,
+    )
+
+    /**
+     * [doc/spec/100 方案2] 系统 metaball 黏连桥的 uniform 输入。
+     *
+     * **全部字段带默认值**：`body == null`（默认）时 [setUniforms] 把 `uMetaballEnable` 置 0 →
+     * AGSL 融合段整段不执行 → 非 metaball 元素（普通通知卡 / QS / 文件夹）**逐像素零变化**。
+     * 数据来源 = 系统 `MetaBallBlurDrawable` 的 `metaBallParams`（`syncToShader()` 已同步好的那份），
+     * 由 BlurDrawHook 反射读出，字段名全部为字节码真名（jadx 名不可信，见记忆 reference_jadx-visibility-artifact）。
+     *
+     * @param body 主球（= 本体）矩形；null = 不启用
+     * @param balls 伴球（已剔除主球），至多 3 颗；空列表 = 该元素虽是 metaball 但当前无邻球
+     * @param blendShape 系统 `MetaBall.blendShape`（= `setBlendRange` 的值）：驱动桥的作用域
+     *                   （range_blend = 2×此值）与 shape-change 外扩幅度
+     * @param blendStrength 系统 shader 常量 `BLEND_STRENGTH`（= 15.0）
+     * @param mode 系统 `blendMode`：0=横向扩张（左右）、1=纵向扩张（上下）
+     */
+    data class MetaBalls(
+        val body: Ball? = null,
+        val balls: List<Ball> = emptyList(),
+        val blendShape: Float = 0f,
+        val blendStrength: Float = 15f,
+        val mode: Float = 0f,
     )
 
     @Volatile
@@ -723,6 +1079,10 @@ object LiquidGlassShader {
      * @param maskOffsetX maskOffsetY [任务 A] MetaBallBlurDrawable 固有扩张偏移 px（默认 0=无扩张）。
      *               当 uViewport 被渲染侧折算为真实尺寸（bounds-2×扩张）时，shader 几何/采样坐标
      *               需减此偏移对齐真实卡片（替代 maskRect 裁剪）。(0,0) 时几何与采样零变化。
+     * @param metaBalls [doc/spec/100 方案2] metaball 黏连桥输入（本体 + ≤3 伴球 + blendStrength）。
+     *               null（默认）→ `uMetaballEnable=0`，AGSL 融合段整段不执行 = 非 metaball 元素
+     *               逐像素零变化。启用时调用方须把 viewport 设为**全 bounds 尺寸**、maskOffset 置 0、
+     *               maskRect 置 null（否则 ±69px 桥区仍会被裁掉，见 spec/100 §5）。
      */
     fun setUniforms(
         shader: RuntimeShader,
@@ -743,6 +1103,9 @@ object LiquidGlassShader {
                                        // 历史（spec/40/41）：遮罩不透明度，SystemUI 下拉所有元素统一传配置值。
         maskColor: Int = Color.BLACK,  // [spec/48 修正 2026-08-13] 同上，参数保留仅供兼容，shader 不再使用
                                        // （原为遮罩颜色 ARGB，默认黑）
+        /** [doc/spec/100 方案2] metaball 黏连桥输入；null = 不启用（默认）。**只在末尾追加，
+         *  上述既有参数名一个都没改**（LauncherHook / BlurDrawHook 既有调用方按名传参，不受影响）。 */
+        metaBalls: MetaBalls? = null,
     ) {
         if (source != null) {
             shader.setInputShader("uSource", source)
@@ -787,6 +1150,29 @@ object LiquidGlassShader {
         // shader 内已不再用于卡片内压暗（原步骤 2.5 mix 已移除）——传值仅保持 uniform 接口兼容。
         shader.setFloatUniform("uMaskAlpha", maskAlpha)
         shader.setFloatUniform("uMaskColor", argbToFloat4(maskColor))
+        // [doc/spec/100 方案2] metaball 黏连桥：全量路径**无条件**下发这 6 个 uniform。
+        // shader 实例按 drawable id 缓存复用 —— 若只在启用时下发，元素从 metaball 退回普通时会
+        // 残留上一帧的 uMetaballEnable=1 → 形状错；无条件下发则关闭路径恒 0 → 非 metaball 零变化。
+        val mb = metaBalls
+        val mbBody = mb?.body
+        if (mbBody != null) {
+            shader.setFloatUniform("uMetaballEnable", 1f)
+            shader.setFloatUniform("uBodyRect", mbBody.cx, mbBody.cy, mbBody.halfW, mbBody.halfH)
+            val b1 = mb.balls.getOrElse(0) { Ball(0f, 0f, 0f, 0f) }
+            val b2 = mb.balls.getOrElse(1) { Ball(0f, 0f, 0f, 0f) }
+            val b3 = mb.balls.getOrElse(2) { Ball(0f, 0f, 0f, 0f) }
+            shader.setFloatUniform("uBall1", b1.cx, b1.cy, b1.halfW, b1.halfH)
+            shader.setFloatUniform("uBall2", b2.cx, b2.cy, b2.halfW, b2.halfH)
+            shader.setFloatUniform("uBall3", b3.cx, b3.cy, b3.halfW, b3.halfH)
+            shader.setFloatUniform("uMetaballParam", mb.blendShape, mb.blendStrength, mb.mode, 0f)
+        } else {
+            shader.setFloatUniform("uMetaballEnable", 0f)
+            shader.setFloatUniform("uBodyRect", 0f, 0f, 0f, 0f)
+            shader.setFloatUniform("uBall1", 0f, 0f, 0f, 0f)
+            shader.setFloatUniform("uBall2", 0f, 0f, 0f, 0f)
+            shader.setFloatUniform("uBall3", 0f, 0f, 0f, 0f)
+            shader.setFloatUniform("uMetaballParam", 0f, 0f, 0f, 0f)
+        }
     }
 
     /**

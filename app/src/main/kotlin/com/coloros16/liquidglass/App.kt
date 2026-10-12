@@ -32,12 +32,16 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
     override fun onServiceBind(service: XposedService) {
         Log.i(TAG, "framework service bound: ${service.getFrameworkName()} v${service.getFrameworkVersion()}")
         serviceRef = service
+        serviceLost = false
         listeners.forEach { it.onServiceStateChanged(service) }
     }
 
     override fun onServiceDied(service: XposedService) {
         Log.w(TAG, "framework service died")
         serviceRef = null
+        // [2026-10-10] binder 注入只在进程启动时来一次，死后无重连机制 → UI 读写全部落空
+        //（读走 XML 兜底显示旧值、写进队列永远发不出）。置标志供 UI 提示用户「划掉设置页重开」自愈。
+        serviceLost = true
         listeners.forEach { it.onServiceStateChanged(null) }
     }
 
@@ -48,6 +52,10 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
         @Volatile
         var serviceRef: XposedService? = null
             private set
+
+        /** [2026-10-10] 曾经绑定成功后又死掉（≠从未注入）。UI 据此提示「划掉设置页重开」。 */
+        @Volatile
+        var serviceLost: Boolean = false
 
         private val listeners = CopyOnWriteArraySet<ServiceStateListener>()
 

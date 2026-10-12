@@ -3,12 +3,16 @@
     <string name="app_name">ColorOS16 Liquid Glass</string>
     <string name="app_description">为 ColorOS 16 通知中心/控制中心实现 iOS 26 液态玻璃效果（LibXposed 模块）</string>
 
+    <!-- 导航（[spec/88] 扩大返回键热区的无障碍描述） -->
+    <string name="settings_back">返回</string>
+
     <!-- 总开关 -->
     <string name="settings_master">启用模块（默认关闭）</string>
     <string name="settings_master_desc">模块总开关，默认关闭。开启后重启 SystemUI 让全部 hook 生效。</string>
     <string name="settings_hint">模块默认关闭，开启后才生效。改动需重启对应进程（SystemUI/Launcher/锁屏）生效。</string>
 
     <!-- 液态玻璃材质 -->
+    <string name="settings_material_preview">效果预览（实时）</string>
     <string name="settings_section_material">液态玻璃参数</string>
     <string name="settings_blur_radius">模糊半径（px）</string>
     <string name="settings_blur_radius_value">%1$d px</string>
@@ -22,6 +26,14 @@
     <string name="settings_refraction_amount">折射强度（px）</string>
     <string name="settings_refraction_amount_value">%1$d px</string>
     <string name="settings_refraction_amount_desc">折射位移强度，越大背景扭曲越明显。</string>
+    <string name="settings_refraction_height_ratio">相对（短边比例）</string>
+    <string name="settings_refraction_height_ratio_value">%1$.2f</string>
+    <string name="settings_refraction_height_ratio_desc">折射环带的高度占元素短边的比例，0.50 = 短边一半（默认，即改动前效果），1.00 = 整条短边都是折射带。值越大边缘扭曲的范围越宽。</string>
+    <string name="settings_refraction_height_mode">折射区域</string>
+    <string name="settings_refraction_height_mode_desc">「相对」按元素短边的比例算，元素越大带越宽；「绝对」固定像素数，所有元素一样宽。</string>
+    <string name="settings_refraction_height_px">绝对（像素）</string>
+    <string name="settings_refraction_height_px_value">%1$d px</string>
+    <string name="settings_refraction_height_px_desc">折射环带固定为这么多像素，不随元素大小变化。</string>
     <string name="settings_dispersion">色散（Dispersion）</string>
     <string name="settings_dispersion_value">%1$.2f</string>
     <string name="settings_dispersion_desc">背景边缘彩虹边，0 关闭，0.05~0.3 适中。</string>
@@ -46,6 +58,13 @@
     <string name="settings_parallax_y">视差 Y（Parallax Y）</string>
     <string name="settings_parallax_y_value">%1$d px</string>
     <string name="settings_parallax_y_desc">背景采样垂直偏移，0 关闭视差。</string>
+
+    <!-- 统一界面圆角（通知/控制中心） -->
+    <string name="settings_unified_corner">统一界面圆角（通知/控制中心）</string>
+    <string name="settings_unified_corner_desc">开启后，通知中心和控制中心里的元素使用同一个圆角大小。圆形和药丸形的控件会保持原来的形状，不会被压扁；桌面、锁屏等其他界面不受影响。</string>
+    <string name="settings_unified_corner_px">统一圆角（px）</string>
+    <string name="settings_unified_corner_px_value">%1$d px</string>
+    <string name="settings_unified_corner_px_desc">统一使用的圆角大小。比控件本身圆角小的会被放大到这个值；圆形和药丸形控件不会变。</string>
 
     <!-- 背景与抓屏 -->
     <string name="settings_capture_params_section">抓屏速率</string>
@@ -81,7 +100,7 @@
     <string name="settings_cc_blur_strength">系统模糊力度（%）</string>
     <string name="settings_cc_blur_strength_value">%1$d%%</string>
     <string name="settings_cc_blur_strength_desc">调整系统控制中心背景模糊力度，100=系统原值，0=不模糊。开启时阻止界面缩小。</string>
-    <string name="settings_keep_system_cc_blur">保留系统控制中心模糊（默认开）</string>
+    <string name="settings_keep_system_cc_blur">保留系统控制中心模糊（默认关）</string>
     <string name="settings_keep_system_cc_blur_desc">开启保留系统背景模糊（力度可调、阻止缩小）；关闭则背景透明露壁纸。</string>
     <string name="settings_remove_panel_mix_color">移除面板材质底色（默认开）</string>
     <string name="settings_remove_panel_mix_color_desc">去掉系统面板背景那层灰底（它不随模糊力度缩放，力度滑杆管不到）；模糊本身照常保留。</string>

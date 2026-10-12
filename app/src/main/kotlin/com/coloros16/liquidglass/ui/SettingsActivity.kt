@@ -2,12 +2,28 @@ package com.coloros16.liquidglass.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.RectF
+import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.AttributeSet
 import android.util.Log
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.CompoundButton
@@ -18,15 +34,22 @@ import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.update.UpdateChecker
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
 import io.github.libxposed.service.XposedService
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
 
 /**
@@ -108,27 +131,31 @@ class SettingsActivity : AppCompatActivity() {
         val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        toolbar.setNavigationOnClickListener {
-            when {
-                // [spec/64] 三级参数页 → 回二级「桌面动画」
-                currentAnimGroup != null -> openCategory("anim")
-                currentCategory != null -> showCategories()
-                else -> finish()
+        // [spec/88] 导航图标 / 扩大热区（backHitOverlay）/ 手势与系统返回，三处共用同一套返回逻辑
+        toolbar.setNavigationOnClickListener { navigateUp() }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                navigateUp()
             }
-        }
+        })
 
         xmlPrefs = Prefs.read(this)
         contentFrame = findViewById(R.id.settings_content)
+
+        // [spec/88] 状态栏/挖孔避让 + 返回热区几何诊断（根因与实测数据见 doc/spec/88）
+        setupWindowInsets(toolbar)
 
         // TEMP-VERIFY: 配置链路真机验证用（验证后移除）——带 auto_enable=true 启动时自动写总开关
         if (intent?.getBooleanExtra("auto_enable", false) == true) {
             writeMasterEnabled(true)
         }
 
-        // 框架就绪后刷新回显（framework 侧为权威值；仅重新绑定当前大类控件）
+        // 框架就绪后刷新回显（framework 侧为权威值；仅重新绑定当前大类控件）；
+        // [2026-10-10] 服务死亡（null 回调）→ 提示用户自愈方式（binder 只在进程启动注入一次，无重连）。
         App.addServiceStateListener(object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) bindCurrentPage()
+                else showServiceLostNotice()
             }
         }, false)
 
@@ -190,6 +217,122 @@ class SettingsActivity : AppCompatActivity() {
             .show()
     }
 
+    // ------------------------------------------------------------ [spec/88] 状态栏/挖孔避让 + 返回热区 ------------------------------------------------------------
+
+    /** [spec/88] toolbar 顶上的 inset 占位条（activity_settings.xml:toolbarTopSpacer）。 */
+    private lateinit var toolbarTopSpacer: View
+
+    /** 最近一次收到的系统条带 inset（屏幕坐标系，px）；-1 = 尚未收到任何 inset。 */
+    private var insetTop = -1
+    private var insetBottom = 0
+    private var insetLeft = 0
+    private var insetRight = 0
+
+    /** 已应用到 [toolbarTopSpacer] 的高度 px —— 用于反推 toolbar 的「无补偿基准 top」。 */
+    private var appliedSpacerHeight = 0
+
+    /** 单轮 settle 内 spacer 连改次数上限（防布局振荡把主线程拖死）。 */
+    private var spacerAdjustCount = 0
+
+    /** 上一条已打印的诊断日志（相同则不重打，防刷屏）。 */
+    private var lastInsetLog = ""
+
+    /**
+     * [spec/88] 注册窗口 inset 监听：把 toolbar 顶边顶到状态栏/挖孔之下，内容区避开导航栏。
+     *
+     * 关键点是**按屏幕坐标实测几何自校正**，而不是无条件按 inset 加 padding：
+     *
+     * ```
+     * baseTop = toolbar 屏幕 top − 已加 spacer 高   // 与 spacer 无关的不变量
+     * spacer  = max(0, 状态栏高 − baseTop)
+     * ```
+     *
+     * 于是三种形态自动收敛到正确值，且因 baseTop 恒定，一次调整即收敛、不会振荡：
+     * - edge-to-edge（Android 15+ 强制，toolbar 屏幕 top=0）→ 补满状态栏高；
+     * - 旧式 fitsSystemWindows（系统已把 DecorView 顶下去，baseTop=状态栏高）→ 补 0，不重复让位；
+     * - 悬浮/小窗（窗口顶边不在屏幕顶，toolbar 屏幕 top 远大于状态栏高）→ 补 0，不凭空压低 toolbar。
+     */
+    private fun setupWindowInsets(toolbar: View) {
+        toolbarTopSpacer = findViewById(R.id.toolbarTopSpacer)
+        val types = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
+            val sys = insets.getInsets(types)
+            insetTop = sys.top
+            insetBottom = sys.bottom
+            insetLeft = sys.left
+            insetRight = sys.right
+            applyToolbarInset(toolbar)
+            applyContentInset()
+            insets
+        }
+        // 首帧 insets 分发与 toolbar 落位先后不定，布局稳定后再量一次兜底
+        toolbar.post {
+            applyToolbarInset(toolbar)
+            applyContentInset()
+        }
+    }
+
+    /**
+     * [spec/88] 按屏幕坐标算出 toolbar 需要的顶部占位高度并应用。
+     *
+     * 由 inset 监听与 toolbar 的 OnLayoutChangeListener 双路触发：改了 spacer 会在下一帧布局后再量一次，
+     * [baseTop] 不变 → 算出的值必然相同 → 第二轮即停。
+     */
+    private fun applyToolbarInset(toolbar: View) {
+        if (!toolbar.isAttachedToWindow || !::toolbarTopSpacer.isInitialized) return
+        val loc = IntArray(2)
+        toolbar.getLocationOnScreen(loc)
+        // 无补偿基准 top = 当前屏幕 top − 已加的 spacer（spacer 只往下推 toolbar，故可精确反推）
+        val baseTop = loc[1] - appliedSpacerHeight
+        val need = if (insetTop < 0) 0 else (insetTop - baseTop).coerceAtLeast(0)
+        if (need != appliedSpacerHeight) {
+            spacerAdjustCount++
+            if (spacerAdjustCount > MAX_SPACER_ADJUST) {
+                Log.e(TAG, "toolbar inset settle failed, keep spacer=$appliedSpacerHeight (baseTop=$baseTop insetTop=$insetTop)")
+                return
+            }
+            appliedSpacerHeight = need
+            toolbarTopSpacer.layoutParams = toolbarTopSpacer.layoutParams.apply { height = need }
+            Log.i(TAG, "toolbar inset adjust #$spacerAdjustCount: baseTop=$baseTop insetTop=$insetTop -> spacer=$need")
+        }
+        logInset(baseTop, need)
+    }
+
+    /** [spec/88] 内容区避开导航栏/手势条（左右一并处理）。用「到窗口边的既有空隙」做差，旧式已让位的形态补 0。 */
+    private fun applyContentInset() {
+        if (!::contentFrame.isInitialized) return
+        val decor = window?.decorView ?: return
+        val content = contentFrame
+        if (!content.isAttachedToWindow) return
+        val d = IntArray(2)
+        decor.getLocationOnScreen(d)
+        val c = IntArray(2)
+        content.getLocationOnScreen(c)
+        val gapLeft = c[0] - d[0]
+        val gapRight = (d[0] + decor.width) - (c[0] + content.width)
+        val gapBottom = (d[1] + decor.height) - (c[1] + content.height)
+        val padL = (insetLeft - gapLeft).coerceAtLeast(0)
+        val padR = (insetRight - gapRight).coerceAtLeast(0)
+        val padB = (insetBottom - gapBottom).coerceAtLeast(0)
+        if (padL != content.paddingLeft || padR != content.paddingRight || padB != content.paddingBottom) {
+            content.setPadding(padL, 0, padR, padB)
+            Log.i(
+                TAG,
+                "content inset: inset=${insetLeft},${insetTop},${insetRight},${insetBottom} " +
+                    "gap(L/R/B)=$gapLeft/$gapRight/$gapBottom -> pad(L/R/B)=$padL/$padR/$padB"
+            )
+        }
+    }
+
+    /** [spec/88] inset 诊断日志（只在数值变化时打印；真机根因判定依据，见 doc/spec/88）。 */
+    private fun logInset(baseTop: Int, need: Int) {
+        val msg = "toolbar inset: insetTop=$insetTop baseTop=$baseTop spacer=$need applied=$appliedSpacerHeight"
+        if (msg != lastInsetLog) {
+            lastInsetLog = msg
+            Log.i(TAG, msg)
+        }
+    }
+
     // ------------------------------------------------------------ 一级 / 二级导航 ------------------------------------------------------------
 
     /** 一级列表页：展示全部大类。 */
@@ -231,6 +374,20 @@ class SettingsActivity : AppCompatActivity() {
         contentFrame.removeAllViews()
         contentFrame.addView(view)
         bindAnimParams(view, group)
+    }
+
+    /**
+     * [spec/88] 统一返回动作：导航图标、扩大的热区（backHitOverlay）、手势/系统返回
+     * （onBackPressedDispatcher）三处共用，层级语义与原导航图标完全一致 ——
+     * 三级「桌面动画参数」→ 二级「桌面动画」→ 一级列表 → 结束。
+     */
+    private fun navigateUp() {
+        when {
+            // [spec/64] 三级参数页 → 回二级「桌面动画」
+            currentAnimGroup != null -> openCategory("anim")
+            currentCategory != null -> showCategories()
+            else -> finish()
+        }
     }
 
     /** 按当前层级（三级 / 二级 / 一级）重新绑定控件（首次进入 + 框架就绪后权威值刷新共用）。 */
@@ -276,6 +433,44 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 液态玻璃材质：内部轻模糊 / 鲜艳度 / 高光衰减 / 折射环带高度 / 折射强度。 */
     private fun bindMaterial(view: View) {
+        // [spec/89] 顶部实时效果预览：滑杆拖动中即时刷新（落盘仍走 onStopTrackingTouch，配置写入时机不变）。
+        // 视差 X/Y 不喂预览 —— 它会把采样区整体移出预览框，画面会变成空白玻璃（见 doc/spec/89）。
+        val preview: LiquidGlassPreviewView? = view.findViewById(R.id.materialPreview)
+
+        // [doc/spec/101] 统一界面圆角：开关 + 半径滑杆（8~200px，默认 48）。
+        // 开关关时滑杆整组隐藏（label/seek/value/desc 全 GONE）；预览不喂 —— 预览框是单个固定形状，
+        // 统一圆角的语义是「跨元素对齐」，在单元素预览上没有可比对象（同 spec/89 视差不喂预览的理由）。
+        val switchUnifiedCorner = view.findViewById<Switch>(R.id.switchUnifiedCorner)
+        val unifiedPxLabel = view.findViewById<View>(R.id.unifiedCornerPxLabel)
+        val unifiedPxSeek = view.findViewById<SeekBar>(R.id.seekUnifiedCornerPx)
+        val unifiedPxValue = view.findViewById<TextView>(R.id.unifiedCornerPxValue)
+        val unifiedPxDesc = view.findViewById<View>(R.id.unifiedCornerPxDesc)
+        fun applyUnifiedCornerGroup(enabled: Boolean) {
+            val vis = if (enabled) View.VISIBLE else View.GONE
+            unifiedPxLabel.visibility = vis
+            unifiedPxSeek.visibility = vis
+            unifiedPxValue.visibility = vis
+            unifiedPxDesc.visibility = vis
+        }
+        bindFloatSeekBar(
+            seek = unifiedPxSeek, valueText = unifiedPxValue,
+            key = Prefs.KEY_UNIFIED_CORNER_PX, default = Prefs.DEFAULT_UNIFIED_CORNER_PX,
+            fromProgress = { p -> Prefs.UNIFIED_CORNER_PX_MIN + p },
+            toProgress = { v -> (v - Prefs.UNIFIED_CORNER_PX_MIN).roundToInt().coerceIn(0, 192) },
+            format = { v -> getString(R.string.settings_unified_corner_px_value, v.roundToInt()) },
+        )
+        val unifiedCornerListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_UNIFIED_CORNER_ENABLE, checked)
+            applyUnifiedCornerGroup(checked)
+        }
+        switchUnifiedCorner.setOnCheckedChangeListener(unifiedCornerListener)
+        refreshBooleanSwitch(
+            switchUnifiedCorner, unifiedCornerListener,
+            Prefs.KEY_UNIFIED_CORNER_ENABLE, Prefs.DEFAULT_UNIFIED_CORNER_ENABLE,
+        )
+        // 先绑滑杆再刷开关：刷开关不触发监听器 → 这里手动按当前值应用一次显隐
+        applyUnifiedCornerGroup(switchUnifiedCorner.isChecked)
+
         // [2026-09-16 恢复配置化] 模糊半径：0~32 px（默认 8）。原被硬编码 0（清晰透镜），
         // 用户反馈「横幅太透」。>0 时 shader 走 5×5 内部轻模糊（25 次采样，仅作用内部不糊折射环带）。
         bindFloatSeekBar(
@@ -284,6 +479,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, Prefs.BLUR_RADIUS_UI_MAX) },
             format = { v -> getString(R.string.settings_blur_radius_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.blurRadius = v; it.refresh() } },
         )
         // vibrancy：1.0~2.0（progress 0~100 → 1.0~2.0，默认 1.5）
         bindFloatSeekBar(
@@ -292,6 +488,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> 1.0f + p / 100f },
             toProgress = { v -> ((v - 1.0f) * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_vibrancy_value, v) },
+            onChanged = { v -> preview?.let { it.vibrancy = v; it.refresh() } },
         )
         // highlightFalloff：1~4（默认 2，越大越聚光）
         bindFloatSeekBar(
@@ -300,8 +497,69 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> 1f + p },
             toProgress = { v -> (v - 1f).roundToInt().coerceIn(0, 3) },
             format = { v -> getString(R.string.settings_highlight_falloff_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.highlightFalloff = v; it.refresh() } },
         )
-        // [2026-08-14 折射自适应] refractionHeight 不再可配置（恒 = 元素短边一半），滑杆移除
+        // [doc/spec/95 2026-10-10] 折射区域（相对·短边比例）：0.10~1.00，默认 0.50 = 改动前「短边一半」。
+        // progress 0~90 → 0.10~1.00，步进 0.01；落盘仍走 onStopTrackingTouch，渲染端 500ms TTL 重读。
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekRefractionHeightRatio), valueText = view.findViewById(R.id.refractionHeightRatioValue),
+            key = Prefs.KEY_REFRACTION_HEIGHT_RATIO, default = Prefs.DEFAULT_REFRACTION_HEIGHT_RATIO,
+            fromProgress = { p -> Prefs.REFRACTION_HEIGHT_RATIO_MIN + p / 100f },
+            toProgress = { v -> ((v - Prefs.REFRACTION_HEIGHT_RATIO_MIN) * 100f).roundToInt().coerceIn(0, 90) },
+            format = { v -> getString(R.string.settings_refraction_height_ratio_value, v) },
+            onChanged = { v -> preview?.let { it.refractionHeightRatio = v; it.refresh() } },
+        )
+        // [doc/spec/96 2026-10-10] 折射区域（绝对·像素）：8~400 px，默认 64，步进 1。仅绝对模式下显示。
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekRefractionHeightPx), valueText = view.findViewById(R.id.refractionHeightPxValue),
+            key = Prefs.KEY_REFRACTION_HEIGHT_PX, default = Prefs.DEFAULT_REFRACTION_HEIGHT_PX,
+            fromProgress = { p -> Prefs.REFRACTION_HEIGHT_PX_MIN + p },
+            toProgress = { v -> (v - Prefs.REFRACTION_HEIGHT_PX_MIN).roundToInt().coerceIn(0, 392) },
+            format = { v -> getString(R.string.settings_refraction_height_px_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.refractionHeightPx = v; it.refresh() } },
+        )
+        // [doc/spec/96] 模式切换（相对 ↔ 绝对）：两个滑杆互斥显示，切模式立即写 KEY_REFRACTION_HEIGHT_MODE。
+        val modeChips = view.findViewById<ChipGroup>(R.id.refractionHeightModeChips)
+        val ratioLabel = view.findViewById<View>(R.id.refractionHeightRatioLabel)
+        val seekRatio = view.findViewById<SeekBar>(R.id.seekRefractionHeightRatio)
+        val ratioValue = view.findViewById<View>(R.id.refractionHeightRatioValue)
+        val ratioDesc = view.findViewById<View>(R.id.refractionHeightRatioDesc)
+        val pxLabel = view.findViewById<View>(R.id.refractionHeightPxLabel)
+        val seekPx = view.findViewById<SeekBar>(R.id.seekRefractionHeightPx)
+        val pxValue = view.findViewById<View>(R.id.refractionHeightPxValue)
+        val pxDesc = view.findViewById<View>(R.id.refractionHeightPxDesc)
+        fun applyRefractionMode(mode: Int, persist: Boolean) {
+            val abs = mode == Prefs.REFRACTION_HEIGHT_MODE_ABS
+            val ratioVis = if (abs) View.GONE else View.VISIBLE
+            val pxVis = if (abs) View.VISIBLE else View.GONE
+            ratioLabel.visibility = ratioVis
+            seekRatio.visibility = ratioVis
+            ratioValue.visibility = ratioVis
+            ratioDesc.visibility = ratioVis
+            pxLabel.visibility = pxVis
+            seekPx.visibility = pxVis
+            pxValue.visibility = pxVis
+            pxDesc.visibility = pxVis
+            if (persist) writePrefInt(Prefs.KEY_REFRACTION_HEIGHT_MODE, mode)
+            preview?.let { it.refractionHeightMode = mode; it.refresh() }
+        }
+        val currentMode = (frameworkPrefs()?.let {
+            Prefs.readIntCompat(it, Prefs.KEY_REFRACTION_HEIGHT_MODE, Prefs.DEFAULT_REFRACTION_HEIGHT_MODE)
+        } ?: Prefs.readIntCompat(xmlPrefs, Prefs.KEY_REFRACTION_HEIGHT_MODE, Prefs.DEFAULT_REFRACTION_HEIGHT_MODE))
+        modeChips.removeAllViews()
+        listOf(
+            Prefs.REFRACTION_HEIGHT_MODE_RATIO to R.string.settings_refraction_height_ratio,
+            Prefs.REFRACTION_HEIGHT_MODE_ABS to R.string.settings_refraction_height_px,
+        ).forEach { (mode, labelRes) ->
+            modeChips.addView(Chip(view.context).apply {
+                id = View.generateViewId()
+                text = getString(labelRes)
+                isCheckable = true
+                isChecked = mode == currentMode
+                setOnClickListener { applyRefractionMode(mode, persist = true) }
+            })
+        }
+        applyRefractionMode(currentMode, persist = false)
         // refractionAmount：0~100 px（折射强度，默认 28）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekRefractionAmount), valueText = view.findViewById(R.id.refractionAmountValue),
@@ -309,6 +567,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_refraction_amount_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.refractionAmount = v; it.refresh() } },
         )
         // [2026-08-15 材质参数控件补齐] 色散/深度/高光/高光宽度/光角度/视差（读 KEY_*，readMaterialParams
         // 已接线，改动约 1s 内生效）
@@ -319,6 +578,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p / 100f },
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 30) },
             format = { v -> getString(R.string.settings_dispersion_value, v) },
+            onChanged = { v -> preview?.let { it.dispersion = v; it.refresh() } },
         )
         // depth：0~100 → 0~3（默认 1）
         bindFloatSeekBar(
@@ -327,6 +587,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p / 100f * 3f },
             toProgress = { v -> (v / 3f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_depth_value, v) },
+            onChanged = { v -> preview?.let { it.depth = v; it.refresh() } },
         )
         // highlight：0~100 → 0~2（默认 0.5）
         bindFloatSeekBar(
@@ -335,6 +596,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p / 100f * 2f },
             toProgress = { v -> (v / 2f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_value, v) },
+            onChanged = { v -> preview?.let { it.highlight = v; it.refresh() } },
         )
         // highlightWidth：0~60 px（默认 12）
         bindFloatSeekBar(
@@ -343,6 +605,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 60) },
             format = { v -> getString(R.string.settings_highlight_width_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.highlightWidth = v; it.refresh() } },
         )
         // highlightFloor：0~100 → 0~1（默认 0.4）。[doc/spec/67] 弧线高光保底：
         // 0 = 纯方向性（圆角弧线因法线与光源垂直而偏暗）、1 = 整圈均匀一条亮线（等于"直接描一条边"）
@@ -352,6 +615,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p / 100f },
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_floor_value, (v * 100f).roundToInt()) },
+            onChanged = { v -> preview?.let { it.highlightFloor = v; it.refresh() } },
         )
         // lightAngle：0~360°（默认 45）
         bindFloatSeekBar(
@@ -360,8 +624,9 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 360) },
             format = { v -> getString(R.string.settings_light_angle_value, v.roundToInt()) },
+            onChanged = { v -> preview?.let { it.lightAngle = v; it.refresh() } },
         )
-        // parallaxX：-100~100 px（默认 0 = 关闭视差）
+        // parallaxX：-100~100 px（默认 0 = 关闭视差）——[spec/89] 不喂预览：视差会把采样区移出预览框
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekParallaxX), valueText = view.findViewById(R.id.parallaxXValue),
             key = Prefs.KEY_PARALLAX_X, default = Prefs.DEFAULT_PARALLAX_X,
@@ -954,7 +1219,12 @@ class SettingsActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------ 液态玻璃材质滑杆 ------------------------------------------------------------
 
-    /** 绑定单个 float 材质滑杆（回显 + 拖动结束写 framework prefs）。 */
+    /**
+     * 绑定单个 float 材质滑杆（回显 + 拖动结束写 framework prefs）。
+     *
+     * @param onChanged [spec/89] 拖动中（含初始回显）实时回调当前值，用于喂效果预览；
+     *                  **落盘仍只在 onStopTrackingTouch**，不改变配置写入时机。
+     */
     private fun bindFloatSeekBar(
         seek: SeekBar,
         valueText: TextView,
@@ -963,13 +1233,18 @@ class SettingsActivity : AppCompatActivity() {
         fromProgress: (Int) -> Float,
         toProgress: (Float) -> Int,
         format: (Float) -> String,
+        onChanged: ((Float) -> Unit)? = null,
     ) {
         val current = frameworkPrefs()?.getFloat(key, default) ?: xmlPrefs.getFloat(key, default)
         seek.progress = toProgress(current)
-        valueText.text = format(fromProgress(seek.progress))
+        val initial = fromProgress(seek.progress)
+        valueText.text = format(initial)
+        onChanged?.invoke(initial)
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                valueText.text = format(fromProgress(progress))
+                val v = fromProgress(progress)
+                valueText.text = format(v)
+                onChanged?.invoke(v)
             }
 
             override fun onStartTrackingTouch(sb: SeekBar) {
@@ -1000,6 +1275,32 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
         App.addServiceStateListener(pending, true)
+    }
+
+    // ------------------------------------------------------------ [2026-10-10] 框架服务死亡提示
+
+    /** 本会话是否已弹过「服务断开」提示（防刷）。 */
+    private var serviceLostNoticeShown = false
+
+    /**
+     * 框架 binder 死亡提示：LibXposed 的 binder 只在模块进程启动时注入一次，死后**无重连机制** ——
+     * 此后设置页读全走 XML 兜底（显示旧值/默认值）、写全部进队列永远发不出（真机实测 2026-10-10：
+     * 「总开关打开退出就变关 / 参数重开回旧值」）。唯一自愈 = 完全关闭设置页（杀进程）后重开。
+     */
+    private fun showServiceLostNotice() {
+        if (serviceLostNoticeShown) return
+        if (!::contentFrame.isInitialized) return
+        serviceLostNoticeShown = true
+        runOnUiThread {
+            try {
+                Snackbar.make(
+                    contentFrame,
+                    "配置服务已断开，当前修改不会生效。请从最近任务划掉本页后重新打开。",
+                    Snackbar.LENGTH_LONG,
+                ).show()
+            } catch (ignored: Throwable) {
+            }
+        }
     }
 
     // ------------------------------------------------------------ 通用 int 滑杆 ------------------------------------------------------------
@@ -1159,7 +1460,284 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "LiquidGlassSettings"
 
+        /** [spec/88] 单轮 inset settle 内 spacer 允许的最大连续调整次数（正常第 1 次就收敛）。 */
+        private const val MAX_SPACER_ADJUST = 4
+
         /** [2026-09-17] 已「忽略此版本」的版本号（本地 XML 存储，不写框架侧——纯 UI 本地状态）。 */
         private const val XML_KEY_IGNORED_UPDATE = "ignored_update_version"
+    }
+}
+
+// ============================================================ [spec/89] 材质参数页实时效果预览 ============================================================
+
+/**
+ * 「液态玻璃材质」参数页顶部的效果预览。
+ *
+ * 用与 hook 端**同一份 AGSL**（[LiquidGlassShader]）实时渲染一块示例玻璃：下面垫一张本 View 自绘的
+ * 高对比背景样图（对角渐变 + 柔光色块 + 白色网格），样图做水平往复滚动 —— 折射环带、色散、内部模糊、
+ * vibrancy、边缘高光都能在滚动中看出差别；网格线是观察折射扭曲的参照。
+ *
+ * 纯 UI 展示，与 hook 零耦合：
+ * - 参数由 [SettingsActivity.bindMaterial] 从滑杆当前值经 `onChanged` 喂入，本类**不读不写 Prefs、
+ *   不新增配置键**（视差 X/Y 不喂 —— 会把采样区移出预览框，见 doc/spec/89）；
+ * - 背景样图是自己画的位图，不抓屏、不碰任何 hook 状态。
+ *
+ * 坐标约定（BlurDrawHook.kt 4017-4025 实证）：`main(coord)` 拿到的是 canvas 当前变换下的**本地坐标**，
+ * 所以先 `canvas.translate(cardLeft, cardTop)` 再 `drawRoundRect(0,0,w,h)`，并把 `uViewport` 设成
+ * 卡片自身尺寸 —— 几何中心正好落在 coord=(w/2,h/2)，`srcCoord` 也退化为 `srcRect.xy + coord` 1:1。
+ *
+ * 降级：API < 33（`RuntimeShader` 最低要求）或 AGSL 编译/下发失败时画一块半透明圆角，不崩、不留白。
+ */
+class LiquidGlassPreviewView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0,
+) : View(context, attrs, defStyleAttr) {
+
+    /** 下列 12 项由 `bindFloatSeekBar(onChanged=...)` 实时喂入（见 [SettingsActivity.bindMaterial]）；
+     *  折射区域**模式**由模式 Chip 组喂入（[refractionHeightMode]）。 */
+    var blurRadius = Prefs.DEFAULT_BLUR_RADIUS
+    var vibrancy = Prefs.DEFAULT_VIBRANCY
+    var highlightFalloff = Prefs.DEFAULT_HIGHLIGHT_FALLOFF
+    /** [doc/spec/95] 折射区域·相对模式：refractionHeight = 短边 × 本值，默认 0.5 = 短边一半。 */
+    var refractionHeightRatio = Prefs.DEFAULT_REFRACTION_HEIGHT_RATIO
+    /** [doc/spec/96] 折射区域·模式：0=相对（短边比例）1=绝对（像素）。 */
+    var refractionHeightMode = Prefs.DEFAULT_REFRACTION_HEIGHT_MODE
+    /** [doc/spec/96] 折射区域·绝对模式像素值（仅 [refractionHeightMode]=1 时生效）。 */
+    var refractionHeightPx = Prefs.DEFAULT_REFRACTION_HEIGHT_PX
+    var refractionAmount = Prefs.DEFAULT_REFRACTION_AMOUNT
+    var dispersion = Prefs.DEFAULT_DISPERSION
+    var depth = Prefs.DEFAULT_DEPTH
+    var highlight = Prefs.DEFAULT_HIGHLIGHT
+    var highlightWidth = Prefs.DEFAULT_HIGHLIGHT_WIDTH
+    var highlightFloor = Prefs.DEFAULT_HIGHLIGHT_FLOOR
+    var lightAngle = Prefs.DEFAULT_LIGHT_ANGLE
+
+    /** 参数变了由外部调 [refresh] 重绘；背景滚动则由 [onDraw] 自续帧驱动。 */
+    fun refresh() = invalidate()
+
+    private val density = resources.displayMetrics.density
+    private val bgPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val glassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private var shader: RuntimeShader? = null
+    private var shaderBroken = false
+    private var bg: Bitmap? = null
+    private var bgLow: Bitmap? = null
+    private var bgShader: BitmapShader? = null
+    private var bgLowShader: BitmapShader? = null
+
+    /** 背景样图横向取景偏移 px（0~[travel]）。 */
+    private var scrollX = 0f
+
+    /** 样图比视图宽出的滚动行程 px。 */
+    private var travel = 0f
+
+    private var startTimeMs = SystemClock.uptimeMillis()
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w <= 0 || h <= 0) return
+        buildBackground(w, h)
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, CORNER_RATIO * minOf(view.width, view.height))
+            }
+        }
+        clipToOutline = true
+        scrollX = 0f
+        startTimeMs = SystemClock.uptimeMillis()
+        postInvalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width
+        val h = height
+        val backdrop = bg
+        if (w > 0 && h > 0 && backdrop != null) {
+            // 背景往复滚动：按系统时钟取相位，重复 invalidate 不会加速/变相
+            if (travel > 0f) {
+                val t = (SystemClock.uptimeMillis() - startTimeMs) / 1000.0
+                scrollX = (travel * (0.5 - 0.5 * cos(2.0 * PI * t / SCROLL_PERIOD_SEC))).toFloat()
+            }
+            canvas.drawBitmap(backdrop, -scrollX, 0f, bgPaint)
+
+            val pad = (CARD_PADDING_DP * density).toInt()
+            val cw = w - pad * 2
+            val ch = h - pad * 2
+            if (cw > 0 && ch > 0) drawGlass(canvas, pad, cw, ch)
+        }
+        // 只在可见时续帧：切走/脱离窗口后链条自动断开，动画即停，无泄漏
+        if (isShown) postInvalidateDelayed(FRAME_INTERVAL_MS)
+    }
+
+    /** 渲染示例玻璃；shader 不可用时降级为半透明圆角。 */
+    private fun drawGlass(canvas: Canvas, pad: Int, cw: Int, ch: Int) {
+        val sh = ensureShader()
+        val src = bgShader
+        if (sh == null || src == null) {
+            drawFallback(canvas, pad, cw, ch)
+            return
+        }
+        val shortSide = minOf(cw, ch).toFloat()
+        val cornerR = shortSide * CORNER_RATIO
+        val cardLeft = pad.toFloat()
+        val cardTop = pad.toFloat()
+        val params = LiquidGlassShader.Params(
+            viewportWidth = cw.toFloat(),
+            viewportHeight = ch.toFloat(),
+            mixColorA = 0,
+            mixColorB = 0,
+            // 预览只看玻璃本身，不做颜色混合（hook 侧 NONE/MIX 由 BlurParam 决定）
+            blendMode = LiquidGlassShader.BlendMode.NONE,
+            cornerRadius = cornerR,
+            blurRadius = blurRadius,
+            // [doc/spec/95 + spec/96] 与 hook 端统一出口 Prefs.refractionHeightPx **同一恒等式**：
+            // 相对 = 短边 × 短边比例（默认 0.5）；绝对 = 固定像素。预览与装机后的真实变化一致。
+            refractionHeight = if (refractionHeightMode == Prefs.REFRACTION_HEIGHT_MODE_ABS) {
+                refractionHeightPx
+            } else {
+                shortSide * refractionHeightRatio
+            },
+            refractionAmount = refractionAmount,
+            depth = depth,
+            dispersion = dispersion,
+            highlight = highlight,
+            highlightWidth = highlightWidth,
+            highlightFalloff = highlightFalloff,
+            highlightFloor = highlightFloor,
+            vibrancy = vibrancy,
+            lightAngleDegrees = lightAngle,
+            parallaxX = 0f,
+            parallaxY = 0f,
+        )
+        // 卡片窗口在样图中的区域（bitmap 坐标）；AGSL 侧 srcCoord = srcRect.xy + coord/uViewport * srcRect.zw
+        val srcRect = RectF(cardLeft + scrollX, cardTop, cardLeft + scrollX + cw, cardTop + ch)
+        val lowRect = RectF(
+            srcRect.left / LOW_SCALE, srcRect.top / LOW_SCALE,
+            srcRect.right / LOW_SCALE, srcRect.bottom / LOW_SCALE,
+        )
+        try {
+            LiquidGlassShader.setUniforms(
+                sh, params, src, bgLowShader,
+                sourceRect = srcRect, lowResSourceRect = lowRect,
+            )
+        } catch (t: Throwable) {
+            shaderBroken = true
+            Log.e(TAG, "preview setUniforms failed, fallback", t)
+            drawFallback(canvas, pad, cw, ch)
+            return
+        }
+        glassPaint.shader = sh
+        val save = canvas.save()
+        try {
+            // 与 hook 同一套坐标约定：先平移到卡片原点，再画本地 (0,0,w,h)
+            canvas.translate(cardLeft, cardTop)
+            canvas.drawRoundRect(0f, 0f, cw.toFloat(), ch.toFloat(), cornerR, cornerR, glassPaint)
+        } finally {
+            glassPaint.shader = null
+            canvas.restoreToCount(save)
+        }
+    }
+
+    /** 降级：不透明度约 1/8 的白圆角，起码能看出「这里是一块玻璃」。 */
+    private fun drawFallback(canvas: Canvas, pad: Int, cw: Int, ch: Int) {
+        val r = minOf(cw, ch) * CORNER_RATIO
+        glassPaint.shader = null
+        glassPaint.color = 0x32FFFFFF
+        canvas.drawRoundRect(
+            pad.toFloat(), pad.toFloat(), (pad + cw).toFloat(), (pad + ch).toFloat(),
+            r, r, glassPaint,
+        )
+    }
+
+    /** 懒编译 AGSL（只编一次）；失败后置 [shaderBroken]，后续直接走降级，不再反复抛。 */
+    private fun ensureShader(): RuntimeShader? {
+        shader?.let { return it }
+        if (shaderBroken || Build.VERSION.SDK_INT < 33) return null
+        return try {
+            LiquidGlassShader.create().also { shader = it }
+        } catch (t: Throwable) {
+            shaderBroken = true
+            Log.e(TAG, "preview AGSL compile failed", t)
+            null
+        }
+    }
+
+    /** 程序生成背景样图：对角高饱和渐变 + 柔光色块 + 白色网格（网格用于观察折射扭曲）。 */
+    private fun buildBackground(w: Int, h: Int) {
+        travel = (w / 2).toFloat()
+        val bw = (w + travel).toInt()
+        val bmp = Bitmap.createBitmap(bw, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+
+        val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, bw.toFloat(), h.toFloat(),
+                intArrayOf(
+                    0xFF1D4ED8.toInt(), 0xFFDB2777.toInt(),
+                    0xFFF59E0B.toInt(), 0xFF059669.toInt(),
+                ),
+                null, Shader.TileMode.CLAMP,
+            )
+        }
+        c.drawRect(0f, 0f, bw.toFloat(), h.toFloat(), base)
+
+        val blobs = intArrayOf(
+            0xFFFF3B7F.toInt(), 0xFF22D3EE.toInt(),
+            0xFFEAB308.toInt(), 0xFFA78BFA.toInt(),
+        )
+        blobs.forEachIndexed { i, col ->
+            val cx = bw * (i + 0.5f) / blobs.size
+            val cy = h * (if (i % 2 == 0) 0.34f else 0.7f)
+            val r = h * 0.45f
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = RadialGradient(cx, cy, r, col, col and 0x00FFFFFF, Shader.TileMode.CLAMP)
+            }
+            c.drawCircle(cx, cy, r, p)
+        }
+
+        val grid = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x66FFFFFF
+            strokeWidth = 2f
+        }
+        val step = (h * 0.25f).coerceAtLeast(8f)
+        var x = step
+        while (x < bw) {
+            c.drawLine(x, 0f, x, h.toFloat(), grid)
+            x += step
+        }
+        var y = step
+        while (y < h) {
+            c.drawLine(0f, y, bw.toFloat(), y, grid)
+            y += step
+        }
+
+        bg = bmp
+        bgLow = Bitmap.createScaledBitmap(
+            bmp, (bw / 4).coerceAtLeast(1), (h / 4).coerceAtLeast(1), true
+        )
+        bgShader = LiquidGlassShader.createSourceBitmapShader(bmp)
+        bgLowShader = bgLow?.let { LiquidGlassShader.createLowResSourceBitmapShader(it) }
+    }
+
+    private companion object {
+        const val TAG = "LiquidGlassPreview"
+
+        /** 背景往复滚动周期（秒）。 */
+        const val SCROLL_PERIOD_SEC = 7.0
+
+        /** 绘制帧间隔 ms（≈30fps，预览够用且省电）。 */
+        const val FRAME_INTERVAL_MS = 33L
+
+        /** 玻璃卡片四周留白 dp（露出原背景做前后对比）。 */
+        const val CARD_PADDING_DP = 14f
+
+        /** 预览圆角 = 短边 ×此比例（纯审美固定值，不接配置）。 */
+        const val CORNER_RATIO = 0.3f
+
+        /** uSourceLowRes 相对 uSource 的降采样比（与 hook 一致 1/4）。 */
+        const val LOW_SCALE = 4f
     }
 }

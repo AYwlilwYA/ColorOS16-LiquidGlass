@@ -5,13 +5,39 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <com.google.android.material.appbar.MaterialToolbar
-        android:id="@+id/toolbar"
+    <!-- [spec/88] toolbar 顶部 inset 占位条：把 toolbar 顶边顶到状态栏/挖孔下沿。
+         高度由 SettingsActivity.applyToolbarInset() 按【屏幕坐标实测几何】算出（0 = 无需补偿），
+         背景与 toolbar 同为 colorSurface，视觉上是一整块 ActionBar。 -->
+    <View
+        android:id="@+id/toolbarTopSpacer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="?attr/colorSurface" />
+
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="?attr/colorSurface"
-        app:title="@string/app_name"
-        app:titleTextAppearance="?attr/textAppearanceTitleMedium" />
+        android:background="?attr/colorSurface">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="?attr/colorSurface"
+            app:title="@string/app_name"
+            app:titleTextAppearance="?attr/textAppearanceTitleMedium" />
+
+        <!-- [spec/88] 返回键扩大热区：盖住导航图标 + 其右侧空白（80dp × toolbar 全高），
+             点击直接走 navigateUp()，与导航图标同一套返回逻辑；无实底背景，不遮挡箭头。 -->
+        <View
+            android:id="@+id/backHitOverlay"
+            android:layout_width="80dp"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:contentDescription="@string/settings_back"
+            android:focusable="true" />
+    </FrameLayout>
 
     <!-- 一级列表页 / 二级设置页共用内容区（showCategories / openCategory 切换子视图） -->
     <FrameLayout

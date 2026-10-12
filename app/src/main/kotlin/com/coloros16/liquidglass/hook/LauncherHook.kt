@@ -11,6 +11,7 @@ import android.graphics.RuntimeShader
 import android.graphics.drawable.Drawable
 import android.hardware.HardwareBuffer
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
@@ -28,6 +29,9 @@ import java.lang.reflect.Method
 import java.util.LinkedHashSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.sqrt
 
 /**
  * [spec/10] Launcher 进程液态玻璃：桌面文件夹背景玻璃化。
@@ -107,6 +111,25 @@ object LauncherHook {
     private const val CLASS_WALLPAPER_MANAGER = "android.app.WallpaperManager"
     private const val METHOD_SET_WALLPAPER_OFFSETS = "setWallpaperOffsets"
 
+    // ---- [doc/spec/83 开启动画壁纸缩放跟随 2026-10-10] ----
+    /** `WallpaperManager.sendWallpaperCommand(IBinder, String, int, int, int, Bundle)`：ColorOS
+     *  开/关/文件夹动画期间由 Launcher `OplusDepthController.startWallpaperAnimation` 调用，
+     *  壁纸服务收到后按 Bundle 里的 scale/duration/spring **自己缩放渲染壁纸**（中心 pivot，
+     *  `composePivotParams` = 0.5/0.5 反编译实证）。本 hook 只读参数做镜像折算，不改原调用。 */
+    private const val METHOD_SEND_WALLPAPER_COMMAND = "sendWallpaperCommand"
+    private const val WALLPAPER_ANIMATION_ACTION = "oplus.wallpaper.animation"
+    private const val WP_KEY_SCALE_FROM = "scale_from_x"
+    private const val WP_KEY_SCALE_TO = "scale_to_x"
+    private const val WP_KEY_DURATION = "duration"
+    private const val WP_KEY_SPRING_STIFFNESS = "spring_stiffness"
+    private const val WP_KEY_SPRING_DAMPING = "spring_dampingRatio"
+    /** Bundle 缺 duration 时的兜底时长（OplusDepthController APP_OPEN_WALLPAPER_TIME = 650ms）。 */
+    private const val WP_DEFAULT_DURATION_MS = 650L
+    /** 无 spring 参数（或 damping≠临界阻尼）时退化为线性插值的固定时长。 */
+    private const val WP_TICK_INTERVAL_MS = 16L
+    /** 缩放折算的等值阈值：小于它认为没变化，不触发 invalidate。 */
+    private const val WP_SCALE_EPS = 1.0E-4f
+
     // ---- [doc/spec/66 2026-09-16] 桌面 Dock 栏液态玻璃化（借壳方案）----
     /** Dock 控件：`com.android.launcher3.OplusHotseat`（extends Hotseat extends CellLayout），
      *  背景 = 字段 `mShortcutsAndWidgets`（父类 CellLayout）的 background。 */
@@ -159,6 +182,10 @@ object LauncherHook {
     private class ElementBackground(
         val bitmap: Bitmap,
         val region: RectF,
+        /** [doc/spec/83] 位图烘焙时的壁纸缩放系数：**抓屏源** = 抓屏瞬间的壁纸缩放（屏幕上壁纸
+         *  可能已被放大，位图内容已是缩放后的内容）；**壁纸文件裁剪源** = 1（文件永远未缩放）。
+         *  折算只用相对变化 `wallpaperZoomScale / 本值`，避免「抓屏已含缩放 → 再折算一次」的双重缩放。 */
+        val wallpaperZoomAtCapture: Float,
     )
 
     /** [doc/spec/52] 壁纸文件解码源：整幅壁纸位图（inSampleSize 降采样）+ 逻辑原生尺寸 + 壁纸 id。
@@ -182,6 +209,11 @@ object LauncherHook {
         val viewport: RectF,
         val srcRect: RectF,
         val cornerRadius: Float,
+        /** [doc/spec/95 + spec/96] 上次应用的折射环带高度 px（已按相对/绝对模式折算，见
+         *  [Prefs.refractionHeightPx]）。桌面侧改动前只比对几何/源，材质参数一变就被早退分支吃掉 →
+         *  必须显式比对；存**折算后的 px**（而非比例）才能同时抓住「比例改了」「切了模式」
+         *  「绝对像素值改了」三种变化（任一变化都会改变该值 → 重设 uRefractionHeight）。 */
+        val refractionHeight: Float = 0f,
     )
 
     private class LiquidShaderBuild(val shader: RuntimeShader)
@@ -228,11 +260,37 @@ object LauncherHook {
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
     private val shaderCache = ConcurrentHashMap<Int, RuntimeShader>()
+    /** [spec/90 #5] shader 身份集合：O(1) 判「paint.shader 是否本模块实例」，替代 containsValue O(n) 每帧扫描 */
+    private val shaderOwnerSet = ConcurrentHashMap.newKeySet<RuntimeShader>()
     private val appliedUniformsMap = ConcurrentHashMap<Int, AppliedKey>()
     /** drawable(identityHashCode) → 屏幕区域 + 局部 bounds（映射 hook 建立） */
     private val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
     /** 渲染模式日志（GLASS/BLUR 切换才打，防刷屏） */
     private val lastRenderModeMap = ConcurrentHashMap<Int, String>()
+
+    // ---- [spec/85 补接] 省电模式门控（Launcher 进程侧，与 SystemUI BlurDrawHook 同语义） ----
+    /** 省电模式当前状态（broadcast 实测写入 + [isPowerSaveGlassOff] TTL 复读；热路径 volatile 读零开销） */
+    @Volatile
+    private var powerSaveActive = false
+    @Volatile
+    private var powerSaveMeasuredAt = 0L
+    /** 省电状态 TTL 缓存毫秒（同 SystemUI 侧 500ms） */
+    private const val POWER_SAVE_STATE_CACHE_MS = 500L
+    /** [spec/85 补接] Launcher 进程 Application context（Launcher 是普通 app 进程，currentApplication 恒可用） */
+    private val launcherAppContext: android.content.Context? by lazy {
+        try {
+            Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null) as? android.content.Context
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    // ---- [spec/90 #3] 追踪器可见性门控缓存（熄屏/锁屏时降频自续，不逐帧 Binder） ----
+    @Volatile
+    private var trackableCached = true
+    @Volatile
+    private var trackableCachedAtMs = 0L
 
     // ---- 整屏快照背景源 ----
     @Volatile
@@ -264,6 +322,56 @@ object LauncherHook {
     /** 待解码/已解码目标壁纸 id（壁纸变化时更新，worker 按最新 id 解码） */
     @Volatile
     private var wallpaperDecodeTargetId = -1
+
+    // ---- [doc/spec/83] 壁纸缩放镜像（开/关/文件夹动画期间壁纸服务按中心 pivot 缩放） ----
+    /** 当前壁纸服务缩放系数（1 = 原尺寸）；render 每帧读它反向折算 srcRect。 */
+    @Volatile
+    private var wallpaperZoomScale = 1f
+    /** 缩放动画进行中（主线程驱动；非主线程只读 volatile 字段） */
+    @Volatile
+    private var zoomAnimRunning = false
+    private var zoomAnimFrom = 1f
+    private var zoomAnimTo = 1f
+    private var zoomAnimStartMs = 0L
+    private var zoomAnimDurationMs = WP_DEFAULT_DURATION_MS
+    /** 临界阻尼弹簧角频率 ω=√stiffness（0 = 线性插值兜底）。 */
+    private var zoomAnimOmega = 0f
+    /** 已应用过的缩放（防同值 invalidate；from==to 快捷路径在 hook 线程也会写 → volatile） */
+    @Volatile
+    private var zoomAppliedScale = 1f
+    /** 16ms 主线程驱动 tick（缩放动画只在动画期间自续，结束后自停；object 表达式以便 this = Runnable） */
+    private val zoomTick: Runnable = object : Runnable {
+        override fun run() {
+            try {
+                if (zoomAnimRunning) {
+                    val now = SystemClock.uptimeMillis()
+                    val elapsedMs = now - zoomAnimStartMs
+                    var scale: Float
+                    if (zoomAnimOmega > 0f) {
+                        // 临界阻尼弹簧解析解（m=1、初速 0）：x(t) = to + (from-to)(1+ωt)e^{-ωt}
+                        val tSec = elapsedMs / 1000f
+                        val x = (1f + zoomAnimOmega * tSec) * exp(-zoomAnimOmega * tSec)
+                        scale = zoomAnimTo + (zoomAnimFrom - zoomAnimTo) * x
+                    } else {
+                        val p = if (zoomAnimDurationMs <= 0L) 1f
+                        else (elapsedMs.toFloat() / zoomAnimDurationMs).coerceIn(0f, 1f)
+                        scale = zoomAnimFrom + (zoomAnimTo - zoomAnimFrom) * p
+                    }
+                    if (elapsedMs >= zoomAnimDurationMs) {
+                        // 到点贴终值（弹簧截断，与壁纸服务 cut 行为一致）
+                        scale = zoomAnimTo
+                        zoomAnimRunning = false
+                    } else {
+                        mainHandler().postDelayed(this, WP_TICK_INTERVAL_MS)
+                    }
+                    applyWallpaperZoom(scale)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "wallpaper zoom: tick failed", t)
+                zoomAnimRunning = false
+            }
+        }
+    }
 
     // ---- 运动追踪（宿主位置/尺寸变化 → invalidate → 重录 → 映射跟随） ----
     private val registeredHostViews = LinkedHashSet<HostEntry>()
@@ -298,6 +406,10 @@ object LauncherHook {
         mountDockGlass(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
+        // [doc/spec/83] 开/关/文件夹动画的壁纸缩放信号（镜像折算玻璃采样窗）
+        mountWallpaperZoomCommand(api, classLoader)
+        // [spec/85 补接] 省电模式广播（开 → 即刻门控 + 重录宿主；关 → 下一帧恢复玻璃）
+        registerPowerSaveBroadcastReceiver()
         Log.i(TAG, "LauncherHook install done")
     }
 
@@ -707,6 +819,114 @@ object LauncherHook {
         }
     }
 
+    /**
+     * [doc/spec/83] hook `WallpaperManager.sendWallpaperCommand(IBinder, String, int, int, int, Bundle)` ——
+     * ColorOS 开/关/文件夹动画期间 Launcher `OplusDepthController.startWallpaperAnimation`（反编译
+     * OplusDepthController L1216/L545）发给壁纸服务的缩放命令：action = "oplus.wallpaper.animation"，
+     * Bundle = scale_from/scale_to + duration + spring_stiffness/dampingRatio + pivot 0.5/0.5（居中）。
+     * 壁纸服务按这些参数**自己缩放渲染**壁纸，而玻璃背景源（壁纸文件 / 整屏快照）是动画开始前抓的
+     * 静态图 → 背景不跟。本 hook 只读参数做**同款动画镜像**，每帧把缩放系数交给
+     * [resolveRenderSource] 反向折算采样窗；`chain.proceed()` 原样放行，壁纸命令行为完全不变。
+     *
+     * 失败只禁缩放跟随（scale 恒 1），不崩 Launcher。
+     */
+    private fun mountWallpaperZoomCommand(api: XposedInterface, classLoader: ClassLoader) {
+        try {
+            val clazz = Class.forName(CLASS_WALLPAPER_MANAGER, false, classLoader)
+            val method = clazz.getMethod(
+                METHOD_SEND_WALLPAPER_COMMAND,
+                IBinder::class.java, String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Bundle::class.java,
+            )
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        val args = chain.getArgs()
+                        if (args != null && args.size >= 6) {
+                            val action = args[1] as? String
+                            val extras = args[5] as? Bundle
+                            if (WALLPAPER_ANIMATION_ACTION == action && extras != null) {
+                                handleWallpaperZoomCommand(extras)
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "wallpaper zoom: sendWallpaperCommand intercept error", t)
+                    }
+                    chain.proceed()
+                }
+            Log.i(
+                TAG,
+                "LauncherHook mounted: $CLASS_WALLPAPER_MANAGER#$METHOD_SEND_WALLPAPER_COMMAND(IBinder, String, int, int, int, Bundle) (wallpaper zoom mirror)",
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SEND_WALLPAPER_COMMAND", t)
+        }
+    }
+
+    /** 读 Bundle 数值（launcher 侧 putFloat/putDouble/putInt 混用，统一转 Float；缺失/不识 → NaN）。 */
+    @Suppress("DEPRECATION") // Bundle.get() 已废弃但仍是唯一能按实际存储类型取值的 API
+    private fun readWallpaperNumber(b: Bundle, key: String): Float {
+        if (!b.containsKey(key)) return Float.NaN
+        return when (val v = b.get(key)) {
+            is Float -> v
+            is Double -> v.toFloat()
+            is Int -> v.toFloat()
+            is Long -> v.toFloat()
+            else -> Float.NaN
+        }
+    }
+
+    /** 解析壁纸缩放命令并启动镜像动画（无 scale 语义的空 bundle → 忽略，保持当前缩放）。 */
+    private fun handleWallpaperZoomCommand(b: Bundle) {
+        try {
+            val from = readWallpaperNumber(b, WP_KEY_SCALE_FROM)
+            val to = readWallpaperNumber(b, WP_KEY_SCALE_TO)
+            if (from.isNaN() || to.isNaN()) return
+            if (from == to) {
+                applyWallpaperZoom(to)
+                return
+            }
+            val durRaw = readWallpaperNumber(b, WP_KEY_DURATION)
+            // duration=0 是「立即到终值」（app_background_reset 实测）；只有缺失才用 650ms 兜底
+            val durationMs =
+                if (durRaw.isNaN()) WP_DEFAULT_DURATION_MS else durRaw.toLong().coerceAtLeast(0L)
+            val stiffness = readWallpaperNumber(b, WP_KEY_SPRING_STIFFNESS)
+            val damping = readWallpaperNumber(b, WP_KEY_SPRING_DAMPING)
+            // 只在临界阻尼（launcher 反编译实测恒 dampingRatio=1.0）用弹簧解析解，其余线性兜底
+            val omega = if (!stiffness.isNaN() && stiffness > 0f &&
+                !damping.isNaN() && abs(damping - 1f) < 0.02f
+            ) {
+                sqrt(stiffness)
+            } else {
+                0f
+            }
+            // hook 可能来自 WALLPAPER_TRANSACTION_EXECUTOR 线程 → 动画状态统一在主线程改
+            mainHandler().post {
+                zoomAnimFrom = from
+                zoomAnimTo = to
+                zoomAnimStartMs = SystemClock.uptimeMillis()
+                zoomAnimDurationMs = durationMs
+                zoomAnimOmega = omega
+                zoomAnimRunning = true
+                mainHandler().removeCallbacks(zoomTick)
+                mainHandler().post(zoomTick)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "wallpaper zoom: parse command failed", t)
+        }
+    }
+
+    /** 应用新的壁纸缩放系数（主线程）：写 volatile + invalidate 宿主，让玻璃重算采样窗。 */
+    private fun applyWallpaperZoom(scale: Float) {
+        val s = scale.coerceIn(0.1f, 4f)
+        if (abs(s - zoomAppliedScale) < WP_SCALE_EPS) return
+        zoomAppliedScale = s
+        wallpaperZoomScale = s
+        postInvalidateRegistered()
+    }
+
     /** [拖动态] hookBefore：mBgView 屏幕位置 + 尺寸 → 注册内层 BlurDrawable 的 screenRegionMap。 */
     private fun registerPreviewRegion(chain: XposedInterface.Chain) {
         val oplusBg = try {
@@ -815,6 +1035,23 @@ object LauncherHook {
      */
     private fun replaceShaderIfPossible(drawable: Any): Boolean {
         val id = System.identityHashCode(drawable)
+        // [spec/85 补接·Launcher] 省电开启 → 还原模块 shader 并回退系统绘制（与 SystemUI 同门控，
+        // 最优先）。paint.shader 若是本模块实例 → 置 null（系统 BaseDrawable 自配 blur shader，
+        // getShaderOrNull 语义同 SystemUI 侧：通常 null）。只 return false 不还原会残留玻璃。
+        if (isPowerSaveGlassOff()) {
+            try {
+                val p = mGetBlurShaderPaint?.invoke(drawable) as? Paint
+                val cur = p?.shader
+                if (cur is RuntimeShader && shaderOwnerSet.contains(cur)) {
+                    p.shader = null
+                    p.colorFilter = null
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "power-save: restore launcher shader failed", t)
+            }
+            logRenderMode(id, "BLUR", "power-save: glass disabled")
+            return false
+        }
         val paint = try {
             mGetBlurShaderPaint?.invoke(drawable) as? Paint
         } catch (t: Throwable) {
@@ -839,7 +1076,7 @@ object LauncherHook {
             null
         }
         // 已是本模块缓存的液态玻璃实例 → 每帧重跑 uniform（源/尺寸/位置变化才重设）
-        if (current is RuntimeShader && shaderCache.containsValue(current)) {
+        if (current is RuntimeShader && shaderOwnerSet.contains(current)) {
             return refreshShaderUniforms(paint, current, id, bounds)
         }
         val liquid = try {
@@ -880,7 +1117,8 @@ object LauncherHook {
         val srcRect = renderSource.srcRect
         val source = renderSource.source
         val shader = shaderCache.getOrPut(id) { LiquidGlassShader.create() }
-        if (shaderCache.size > 128) shaderCache.clear()
+        shaderOwnerSet.add(shader)
+        if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
         val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
         LiquidGlassShader.setUniforms(
@@ -892,6 +1130,11 @@ object LauncherHook {
             RectF(0f, 0f, bounds.width().toFloat(), bounds.height().toFloat()),
             srcRect,
             entry.cornerRadius,
+            // [doc/spec/96] 与 buildParams 同一 TTL 缓存读出的折算结果（TTL 内两次读返回同一值）
+            refractionHeight = Prefs.refractionHeightPx(
+                minOf(bounds.width(), bounds.height()).toFloat(),
+                api,
+            ),
         )
         if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
         return LiquidShaderBuild(shader)
@@ -906,14 +1149,22 @@ object LauncherHook {
             val renderSource = resolveRenderSource(id, region) ?: return true
             val srcRect = renderSource.srcRect
             val viewport = RectF(0f, 0f, bounds.width().toFloat(), bounds.height().toFloat())
-            val sourceBitmapId = System.identityHashCode(renderSource.source)
-            val applied = appliedUniformsMap[id]
-            if (applied != null && applied.sourceBitmapId == sourceBitmapId &&
-                applied.viewport == viewport && applied.srcRect == srcRect &&
-                applied.cornerRadius == entry.cornerRadius
-            ) {
-                return true
-            }
+        val sourceBitmapId = System.identityHashCode(renderSource.source)
+        val applied = appliedUniformsMap[id]
+        // [doc/spec/95 + spec/96] 折射区域纳入比对：比例改了 / 切了相对↔绝对模式 / 绝对像素值改了
+        // （哪怕几何与源全没变）也要重设 uRefractionHeight。读 Prefs 的 500ms TTL 缓存 → 每帧只是
+        // volatile 读，热路径零 IPC。存折算后的 px，与 buildParams 同一恒等式。
+        val refractionHeight = Prefs.refractionHeightPx(
+            minOf(bounds.width(), bounds.height()).toFloat(),
+            api,
+        )
+        if (applied != null && applied.sourceBitmapId == sourceBitmapId &&
+            applied.viewport == viewport && applied.srcRect == srcRect &&
+            applied.cornerRadius == entry.cornerRadius &&
+            applied.refractionHeight == refractionHeight
+        ) {
+            return true
+        }
             val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius)
             if (applied == null || applied.sourceBitmapId != sourceBitmapId) {
                 val sourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
@@ -927,7 +1178,7 @@ object LauncherHook {
                     sourceRect = srcRect, lowResSourceRect = srcRect,
                 )
             }
-            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius)
+            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight)
             if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
             return true
         } catch (t: Throwable) {
@@ -945,15 +1196,49 @@ object LauncherHook {
         if (snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0 && snap.region.width() > 0f) {
             val scaleX = snap.bitmap.width.toFloat() / snap.region.width()
             val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
+            // [doc/spec/83] 开/关/文件夹动画期间壁纸服务按中心放大渲染 → 采样窗先反向折算；
+            // 折算系数用相对变化（当前缩放 ÷ 位图烘焙时的缩放），抓屏源/壁纸文件源都正确
+            val region = zoomedRegionForWallpaper(screenRegion, snap.region, snap.wallpaperZoomAtCapture)
             val srcRect = RectF(
-                (screenRegion.left - snap.region.left) * scaleX,
-                (screenRegion.top - snap.region.top) * scaleY,
-                (screenRegion.right - snap.region.left) * scaleX,
-                (screenRegion.bottom - snap.region.top) * scaleY,
+                (region.left - snap.region.left) * scaleX,
+                (region.top - snap.region.top) * scaleY,
+                (region.right - snap.region.left) * scaleX,
+                (region.bottom - snap.region.top) * scaleY,
             )
             return RenderSource(snap.bitmap, srcRect)
         }
         return null
+    }
+
+    /**
+     * [doc/spec/83] 壁纸缩放反向折算：壁纸服务以屏幕中心 c 按系数 s 放大渲染壁纸时，
+     * 屏幕上 p 处显示的是未缩放壁纸 `c + (p-c)/s` 处的内容 → 元素采样窗按同一中心收缩
+     * （s>1，开启动画实测区间 1.0→1.2）或外扩（s<1，回退/反向）。
+     *
+     * [baseScale] = 位图烘焙时的壁纸缩放（`ElementBackground.wallpaperZoomAtCapture`）：
+     * 只用相对变化 `s = wallpaperZoomScale / baseScale` —— 抓屏若在缩放中进行，位图内容
+     * 本身已含缩放，必须除掉，否则会折算两次；壁纸文件源 baseScale=1，退化为直接用当前缩放。
+     *
+     * 外扩越界部分夹回快照覆盖区（快照没有屏外内容）；结果退化为空时回退原窗口。
+     */
+    private fun zoomedRegionForWallpaper(r: RectF, screen: RectF, baseScale: Float): RectF {
+        val s = if (baseScale > 0f) wallpaperZoomScale / baseScale else wallpaperZoomScale
+        if (abs(s - 1f) < WP_SCALE_EPS) return r
+        val cx = screen.centerX()
+        val cy = screen.centerY()
+        val out = RectF(
+            cx + (r.left - cx) / s,
+            cy + (r.top - cy) / s,
+            cx + (r.right - cx) / s,
+            cy + (r.bottom - cy) / s,
+        )
+        if (out.width() <= 0f || out.height() <= 0f) return r
+        out.left = out.left.coerceIn(screen.left, screen.right)
+        out.right = out.right.coerceIn(out.left, screen.right)
+        out.top = out.top.coerceIn(screen.top, screen.bottom)
+        out.bottom = out.bottom.coerceIn(out.top, screen.bottom)
+        if (out.width() <= 0f || out.height() <= 0f) return r
+        return out
     }
 
     /** 渲染触发整屏快照请求：**异步**（不阻塞渲染线程；失败冷却期内不重抓）。快照缺失返回 null。 */
@@ -1289,7 +1574,7 @@ object LauncherHook {
                                                     null
                                                 } else {
                                                     Log.i(TAG, "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl launcher)")
-                                                    ElementBackground(copy, region)
+                                                    ElementBackground(copy, region, wallpaperZoomScale)
                                                 }
                                             } finally {
                                                 try {
@@ -1517,7 +1802,8 @@ object LauncherHook {
                 canvas.drawBitmap(cropBmp, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), paint)
                 scaled
             }
-            ElementBackground(out, RectF(0f, 0f, scrW.toFloat(), scrH.toFloat()))
+            // 壁纸文件源：文件内容与壁纸服务的缩放无关 → 基准恒为 1（折算系数 = 当前缩放）
+            ElementBackground(out, RectF(0f, 0f, scrW.toFloat(), scrH.toFloat()), 1f)
         } catch (t: Throwable) {
             Log.e(TAG, "bg-wallpaper: build visible crop failed", t)
             null
@@ -1612,8 +1898,11 @@ object LauncherHook {
                 // [2026-09-16 恢复配置化] 原硬编码 0（清晰透镜，同 SystemUI 的「强制透明诊断档」），
                 // 改回读 KEY_BLUR_RADIUS —— 用户反馈「玻璃太透、背景看得一清二楚」。
                 blurRadius = prefs.getFloat(Prefs.KEY_BLUR_RADIUS, Prefs.DEFAULT_BLUR_RADIUS),
-                // [2026-08-14 折射自适应] 折射环带高度恒 = 元素短边一半（不再读 refraction_height 配置）
-                refractionHeight = minOf(width, height) / 2f,
+                // [doc/spec/95 + spec/96 2026-10-10] 折射环带高度走统一出口 Prefs.refractionHeightPx：
+                // 相对模式 = 元素短边 × KEY_REFRACTION_HEIGHT_RATIO（默认 0.5 = 改动前的 min(w,h)/2f）；
+                // 绝对模式 = KEY_REFRACTION_HEIGHT_PX（固定像素，默认 64）。三参数各自 500ms TTL 缓存
+                // （热路径零 IPC）；变化经 AppliedKey.refractionHeight 早退比对触发全量 setUniforms。
+                refractionHeight = Prefs.refractionHeightPx(minOf(width, height), api),
                 refractionAmount = prefs.getFloat(Prefs.KEY_REFRACTION_AMOUNT, def.refractionAmount),
                 depth = prefs.getFloat(Prefs.KEY_DEPTH, def.depth),
                 dispersion = prefs.getFloat(Prefs.KEY_DISPERSION, def.dispersion),
@@ -1636,6 +1925,11 @@ object LauncherHook {
     private val motionFrameCallback = Choreographer.FrameCallback {
         frameCallbackPosted = false
         try {
+            // [spec/90 #3] 熄屏/锁屏门控：不可见时跳过位置比对，500ms 降频自续代替每帧回调
+            if (!isLauncherFrameTrackableNow()) {
+                mainHandler().postDelayed({ kickMotionTracker() }, POWER_SAVE_STATE_CACHE_MS)
+                return@FrameCallback
+            }
             trackHostViewMotion()
         } catch (t: Throwable) {
             Log.e(TAG, "launcher taskG+: trackHostViewMotion error", t)
@@ -1743,6 +2037,81 @@ object LauncherHook {
         } catch (t: Throwable) {
             Log.e(TAG, "bg-element: postInvalidateRegistered failed", t)
         }
+    }
+
+    // ------------------------------------------------------------ [spec/85 补接 / spec/90 #3] 门控辅助
+
+    /** [spec/85 补接] 省电模式判定：`PowerManager.isPowerSaveMode` + 500ms TTL（同 SystemUI 侧）。
+     *  判定失败保守返回旧缓存值（误判只影响省电表现，不崩不漏）。 */
+    private fun isPowerSaveGlassOff(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - powerSaveMeasuredAt < POWER_SAVE_STATE_CACHE_MS) return powerSaveActive
+        val v = try {
+            val pm = launcherAppContext?.getSystemService(android.content.Context.POWER_SERVICE)
+                as? android.os.PowerManager
+            pm?.isPowerSaveMode ?: powerSaveActive
+        } catch (t: Throwable) {
+            powerSaveActive
+        }
+        powerSaveActive = v
+        powerSaveMeasuredAt = now
+        return v
+    }
+
+    /** [spec/85 补接] 注册省电模式状态广播（Launcher 进程侧）：开 → 缓存过期 + 重录宿主（下一帧门控
+     *  即刻生效）；关 → 下一帧 [replaceShaderIfPossible] 恢复玻璃。生命周期 = Launcher 进程，无需 unregister。 */
+    private fun registerPowerSaveBroadcastReceiver() {
+        val ctx = launcherAppContext
+        if (ctx == null) {
+            Log.w(TAG, "power-save: broadcast receiver skipped, context null")
+            return
+        }
+        try {
+            val filter = android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                    try {
+                        powerSaveMeasuredAt = 0L
+                        val on = isPowerSaveGlassOff()
+                        postInvalidateRegistered()
+                        Log.i(TAG, "power-save: changed on=$on, hosts invalidated")
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "power-save: broadcast onReceive error", t)
+                    }
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ctx.applicationContext.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                ctx.applicationContext.registerReceiver(receiver, filter)
+            }
+            Log.i(TAG, "power-save: broadcast receiver registered (on=${isPowerSaveGlassOff()})")
+        } catch (t: Throwable) {
+            Log.e(TAG, "power-save: register broadcast receiver failed", t)
+        }
+    }
+
+    /** [spec/90 #3] 逐帧追踪可见性判定：熄屏（!isInteractive）或锁屏 → false。
+     *  500ms TTL 缓存（否则 60fps 下每帧一次 Binder）；失败保守 true（保持旧行为）。 */
+    private fun isLauncherFrameTrackableNow(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - trackableCachedAtMs < POWER_SAVE_STATE_CACHE_MS) return trackableCached
+        val ctx = launcherAppContext
+        val v = if (ctx == null) {
+            true
+        } else {
+            try {
+                val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+                val interactive = pm?.isInteractive ?: true
+                val km = ctx.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                interactive && km?.isKeyguardLocked != true
+            } catch (t: Throwable) {
+                true
+            }
+        }
+        trackableCached = v
+        trackableCachedAtMs = now
+        return v
     }
 
     // ------------------------------------------------------------ 渲染模式日志

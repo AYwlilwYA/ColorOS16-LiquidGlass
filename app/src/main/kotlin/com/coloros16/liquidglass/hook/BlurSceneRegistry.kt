@@ -36,6 +36,12 @@ object BlurSceneRegistry {
 
     private val entries = ConcurrentHashMap<Int, SceneEntry>()
 
+    /** [spec/90 #6] 层名 → 是否玻璃化的判定缓存（WHITELIST/BLACKLIST 是固定小表，
+     *  层名字符串有限；缓存后热路径免每次逐项 contains）。上限 64 整表清空。
+     *  [doc/spec/105 P2-4] 键为**层名原文**（免 lowercase 分配），匹配本身用 ignoreCase。 */
+    private val glassableByLayer = ConcurrentHashMap<String, Boolean>()
+    private const val GLASSABLE_CACHE_MAX = 64
+
     /** 白名单：已知玻璃场景宿主层（命中 → 玻璃化）。与默认 true 一致，显式列出便于诊断与未来收紧。 */
     private val WHITELIST = listOf(
         "notificationshade",  // 通知阴影面板
@@ -90,13 +96,22 @@ object BlurSceneRegistry {
      * - 白名单层 → true；
      * - 黑名单层 → false（回退系统模糊）；
      * - 未注册 / 无层名 / 未知层 → 保守 true（不误伤，沿用现有行为）。
+     *
+     * [doc/spec/105 P2-4] **不再 `lowercase()`**：原实现在**缓存查表之前**先分配一个 lowercase 字符串
+     * （每次 draw 一次，spec/102 §3.2 D1），缓存形同虚设。改两步：① 直接拿原文查缓存（免分配）；
+     * ② miss 时用 `contains(ignoreCase = true)` 做不区分大小写匹配（也不分配），结果按**原文**入缓存。
+     * 语义与原实现一致（匹配同样不区分大小写），只是缓存键从 lowercase 改为原文 —— 同一层名大小写变体
+     * 至多各占一条缓存，判定值仍相同。
      */
     fun isGlassable(drawable: Any): Boolean {
         val entry = lookup(drawable) ?: return true
         val layer = entry.layerName ?: return true
-        val lower = layer.lowercase()
-        if (WHITELIST.any { lower.contains(it) }) return true
-        if (BLACKLIST.any { lower.contains(it) }) return false
-        return true
+        glassableByLayer[layer]?.let { return it }
+        val result = if (WHITELIST.any { layer.contains(it, ignoreCase = true) }) true
+        else if (BLACKLIST.any { layer.contains(it, ignoreCase = true) }) false
+        else true
+        if (glassableByLayer.size >= GLASSABLE_CACHE_MAX) glassableByLayer.clear()
+        glassableByLayer[layer] = result
+        return result
     }
 }
