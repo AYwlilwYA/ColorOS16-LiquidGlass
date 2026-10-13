@@ -1909,6 +1909,7 @@ object LauncherHook {
                 highlight = prefs.getFloat(Prefs.KEY_HIGHLIGHT, def.highlight),
                 highlightWidth = prefs.getFloat(Prefs.KEY_HIGHLIGHT_WIDTH, def.highlightWidth),
                 highlightFalloff = prefs.getFloat(Prefs.KEY_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FALLOFF),
+                highlightInnerAtt = prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
                 vibrancy = prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY),
                 lightAngleDegrees = prefs.getFloat(Prefs.KEY_LIGHT_ANGLE, def.lightAngleDegrees),
                 parallaxX = prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),

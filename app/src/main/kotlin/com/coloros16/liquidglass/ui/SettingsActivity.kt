@@ -580,12 +580,12 @@ class SettingsActivity : AppCompatActivity() {
             format = { v -> getString(R.string.settings_dispersion_value, v) },
             onChanged = { v -> preview?.let { it.dispersion = v; it.refresh() } },
         )
-        // depth：0~100 → 0~3（默认 1）
+        // depth：0~100 → 0~6（默认 1；2026-10-13 上限 3→6）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekDepth), valueText = view.findViewById(R.id.depthValue),
             key = Prefs.KEY_DEPTH, default = Prefs.DEFAULT_DEPTH,
-            fromProgress = { p -> p / 100f * 3f },
-            toProgress = { v -> (v / 3f * 100f).roundToInt().coerceIn(0, 100) },
+            fromProgress = { p -> p / 100f * 6f },
+            toProgress = { v -> (v / 6f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_depth_value, v) },
             onChanged = { v -> preview?.let { it.depth = v; it.refresh() } },
         )
@@ -598,12 +598,12 @@ class SettingsActivity : AppCompatActivity() {
             format = { v -> getString(R.string.settings_highlight_value, v) },
             onChanged = { v -> preview?.let { it.highlight = v; it.refresh() } },
         )
-        // highlightWidth：0~60 px（默认 12）
+        // highlightWidth：0~200 px（默认 12；2026-10-13 上限放开 60→200）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekHighlightWidth), valueText = view.findViewById(R.id.highlightWidthValue),
             key = Prefs.KEY_HIGHLIGHT_WIDTH, default = Prefs.DEFAULT_HIGHLIGHT_WIDTH,
             fromProgress = { p -> p.toFloat() },
-            toProgress = { v -> v.roundToInt().coerceIn(0, 60) },
+            toProgress = { v -> v.roundToInt().coerceIn(0, 200) },
             format = { v -> getString(R.string.settings_highlight_width_value, v.roundToInt()) },
             onChanged = { v -> preview?.let { it.highlightWidth = v; it.refresh() } },
         )
@@ -616,6 +616,15 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_floor_value, (v * 100f).roundToInt()) },
             onChanged = { v -> preview?.let { it.highlightFloor = v; it.refresh() } },
+        )
+        // highlightInnerAtt：0~100 → 0~1（默认 0=现状）。内侧高光向玻璃深处再衰减。
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekHighlightInnerAtt), valueText = view.findViewById(R.id.highlightInnerAttValue),
+            key = Prefs.KEY_HIGHLIGHT_INNER_ATT, default = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
+            fromProgress = { p -> p / 100f },
+            toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
+            format = { v -> getString(R.string.settings_highlight_inner_att_value, (v * 100f).roundToInt()) },
+            onChanged = { v -> preview?.let { it.highlightInnerAtt = v; it.refresh() } },
         )
         // lightAngle：0~360°（默认 45）
         bindFloatSeekBar(
@@ -1066,6 +1075,28 @@ class SettingsActivity : AppCompatActivity() {
             max = Prefs.ANIM_TILT_PERSPECTIVE_MAX, step = 1, offset = 0,
             format = { v -> getString(R.string.settings_anim_tilt_perspective_value, v) },
         )
+
+        // ---- [doc/spec/112] 通知卡倾斜（弹出/收回驱动；hook 端 TTL ≤0.5s 自感知，改动立即生效）----
+        val notifSwitch = view.findViewById<Switch>(R.id.switchNotifTilt)
+        val notifListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_NOTIF_TILT_ENABLE, checked)
+        }
+        notifSwitch.setOnCheckedChangeListener(notifListener)
+        refreshBooleanSwitch(notifSwitch, notifListener, Prefs.KEY_NOTIF_TILT_ENABLE, Prefs.DEFAULT_NOTIF_TILT_ENABLE)
+        // 角度：0~45°（默认 3；[用户 2026-10-13] 废 6° 安全档改自由调整；hook 端 TTL 0.5s 直读）
+        bindIntSeekBarStep(
+            seek = view.findViewById(R.id.seekNotifTiltStrength), valueText = view.findViewById(R.id.notifTiltStrengthValue),
+            key = Prefs.KEY_NOTIF_TILT_DEG, default = Prefs.DEFAULT_NOTIF_TILT_DEG,
+            max = Prefs.NOTIF_TILT_DEG_MAX, step = 1, offset = 0,
+            format = { v -> getString(R.string.settings_notif_tilt_strength_value, v) },
+        )
+        // 飞入缩放幅度：0~80%（默认 75；hook 端 TTL 0.5s 直读，0=不缩放）
+        bindIntSeekBarStep(
+            seek = view.findViewById(R.id.seekNotifFlyScale), valueText = view.findViewById(R.id.notifFlyScaleValue),
+            key = Prefs.KEY_NOTIF_FLY_SCALE, default = Prefs.DEFAULT_NOTIF_FLY_SCALE,
+            max = 80, step = 1, offset = 0,
+            format = { v -> getString(R.string.settings_notif_fly_scale_value, v) },
+        )
     }
 
     // [2026-09-17] bindTracker 已删除：追踪器（通用运动追踪开关 + 三个遍历间隔 SeekBar）整体移除。
@@ -1511,6 +1542,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
     var highlight = Prefs.DEFAULT_HIGHLIGHT
     var highlightWidth = Prefs.DEFAULT_HIGHLIGHT_WIDTH
     var highlightFloor = Prefs.DEFAULT_HIGHLIGHT_FLOOR
+    var highlightInnerAtt = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT
     var lightAngle = Prefs.DEFAULT_LIGHT_ANGLE
 
     /** 参数变了由外部调 [refresh] 重绘；背景滚动则由 [onDraw] 自续帧驱动。 */
@@ -1607,6 +1639,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
             highlightWidth = highlightWidth,
             highlightFalloff = highlightFalloff,
             highlightFloor = highlightFloor,
+            highlightInnerAtt = highlightInnerAtt,
             vibrancy = vibrancy,
             lightAngleDegrees = lightAngle,
             parallaxX = 0f,

@@ -7,7 +7,9 @@ import android.graphics.RectF
 import android.graphics.RuntimeShader
 import android.graphics.Shader
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
 
 /**
  * 液态玻璃 AGSL RuntimeShader 组装。
@@ -69,6 +71,8 @@ object LiquidGlassShader {
         uniform float uHighlightFalloff; // 高光方向衰减指数（Kyant ControlCenter=2；越大越聚光）
         uniform float uHighlightFloor;   // [2026-09-16 弧线高光修复] 方向因子保底：圆角弧线法线扫过 90°
                                          // 必然与光源垂直（dot=0）→ 原实现该处高光归零。0=完全回退原行为
+        uniform float uHighlightInnerAtt; // [2026-10-13] 内侧高光衰减 0~1：band 内半向玻璃深处再乘此衰减，
+                                         // 0=无内侧衰减（现状）、1=内半几乎归零（只剩贴边一条线）
         uniform float uVibrancy;         // 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变）
         uniform float uLightAngle;       // 光角度（弧度；Kotlin 侧由角度转弧度）
         uniform vec2  uParallax;         // 视差（面板几何中心偏移，可接传感器）
@@ -101,6 +105,12 @@ object LiquidGlassShader {
         uniform vec4  uMetaballParam;  // x=blendShape（主体/伴球同值，见 spec/100 §2.2）
                                        // y=blendStrength（系统 shader 常量 BLEND_STRENGTH=15.0）
                                        // z=blendMode（0=横向扩张 / 1=纵向扩张） w=保留
+
+        // ---------- [doc/spec/112] 通知卡倾斜（路线 B 玻璃内假透视） ----------
+        // 只斜玻璃不斜文字、不碰 region/触摸；驱动 = 通知弹出/收回动画（BlurDrawHook.mountNotificationTilt）。
+        // x=sin(θ)、y=cos(θ)（θ = 强度×动画进度×基准角，Kotlin 侧算好 → shader 内零三角函数），
+        // z=透视距离 px（Kotlin 侧常量），w=启用（1=开；0=默认 → tiltCoord 恒等返回 = 逐像素零变化）。
+        uniform vec4  uTilt;
 
         // ---------- SDF 圆角矩形（Kyant0 RoundedRectSDF 移植） ----------
         // 元素局部 coord → bitmap 像素坐标（uViewport=元素尺寸；不依赖 BitmapShader localMatrix，
@@ -719,6 +729,26 @@ object LiquidGlassShader {
             return col;
         }
 
+        // ================= [doc/spec/112] 通知卡倾斜：屏幕坐标 → 平面（采样）坐标 逆映射 =================
+        // 模型：卡片平面绕过 [c] 的水平轴旋转 θ（θ>0 = 顶边靠近观察者、底边远去），透视距离 D；
+        // 正变换 screenY = v·cosθ·D/(D + v·sinθ)、screenX = u·D/(D + v·sinθ)，此处解其逆：
+        //   v = Y·D / (D·cosθ − Y·sinθ)、u = X·(D + v·sinθ)/D   （d = p − c，X=d.x, Y=d.y）
+        // θ≤6° 时分母 ≥ D·cos6° − |d.y|max·sin6° 恒 >0（另有 <1.0 夹紧兜底）。
+        // w=0（默认）或 |sinθ|<1e-6（强度 0 / 动画结束）→ 原样返回 = 逐像素零变化。
+        float2 tiltCoord(float2 p, float2 c) {
+            if (uTilt.w < 0.5) return p;
+            float sn = uTilt.x;
+            if (abs(sn) < 0.000001) return p;
+            float cs = uTilt.y;
+            float D = max(uTilt.z, 1.0);
+            float2 d = p - c;
+            float denom = D * cs - d.y * sn;
+            if (denom < 1.0) denom = 1.0;
+            float v = d.y * D / denom;
+            float u = d.x * (D + v * sn) / D;
+            return float2(c.x + u, c.y + v);
+        }
+
         // ================= main 管线（Kyant 分层结构：清晰内部 + 折射环带 + vibrancy + 边缘高光） =================
         // iOS 26 观感 = 内部清晰透镜 + 边缘环带弯折 + 鲜亮色彩（vibrancy）+ 定向边缘亮线。
         // 注意：整体模糊 = 普通毛玻璃（2026-08-12 重构前的错误形态，已废弃）。
@@ -740,6 +770,13 @@ object LiquidGlassShader {
             if (uMetaballEnable > 0.5) {
                 bodyCenter = uBodyRect.xy;
                 halfSize = uBodyRect.zw;
+            }
+            // [doc/spec/112 通知卡倾斜] 一次性把 coord 变换到倾斜坐标系：作用于下方 SDF（centeredCoord）
+            // 与背景采样（coord − uMaskOffset）两处，二者同变换才不撕裂（spec/94 §三 路线 B）。
+            // 顺序 = 先 tilt 后 maskOffset/parallax（spec/94 §五.2）：pivot 取玻璃中心的 raw coord 位置
+            // （bodyCenter − uParallax + uMaskOffset），恒等时 coord 原样 = 逐像素零变化。
+            if (uTilt.w > 0.5) {
+                coord = tiltCoord(coord, bodyCenter - uParallax + uMaskOffset);
             }
             float2 centeredCoord = (coord + uParallax - uMaskOffset) - bodyCenter;
             float radius = uCornerRadius;
@@ -914,7 +951,12 @@ object LiquidGlassShader {
             // 2px 羽化区（smoothstep(0,-2,sdRaw)）被削弱直至消失——真机反馈「高光带细时边缘
             // 完全消失、转弯处最明显」。改为带中心保底内移到 2px（=羽化宽度），W>=4 时行为不变。
             float hw = max(uHighlightWidth, 1.0);
-            float band = 1.0 - smoothstep(0.0, hw, abs(-sdRaw - max(hw * 0.5, 2.0)));
+            float bandCenter = max(hw * 0.5, 2.0);
+            float dIn = -sdRaw;
+            float band = 1.0 - smoothstep(0.0, hw, abs(dIn - bandCenter));
+            // 内侧高光衰减：band 中心向玻璃深处（dIn 增大方向）线性再衰减，0=现状
+            float innerT = clamp((dIn - bandCenter) / max(hw * 0.5, 1.0), 0.0, 1.0);
+            float innerAtt = 1.0 - uHighlightInnerAtt * innerT;
             // [2026-09-16 圆角弧线高光修复·方案 C] `sdfGrad` 是**边缘法线**：直边法线固定（与光源夹角恒定
             // → 高光恒定），而圆角弧线法线要**旋转 90°**，其中**必然经过与光源垂直的位置** → 原
             // `pow(abs(dot),fo)` 在该处精确归零，弧线约 60% 跨度高光消失（真机实证：192×192 圆磁贴整圈
@@ -925,7 +967,7 @@ object LiquidGlassShader {
             float floorK = clamp(uHighlightFloor, 0.0, 1.0);
             float dirDot = pow(abs(dot(sdfGrad, lightDir)), uHighlightFalloff);
             float hl = floorK + (1.0 - floorK) * dirDot;
-            glass.rgb += float3(hl * band * uHighlight);
+            glass.rgb += float3(hl * band * innerAtt * uHighlight);
 
             // [临时诊断 高光] 逐像素可视化（需 uDebugHighlight>0.5）。
             // R = hl（方向因子）、G = band（带包络）、B = sdfGrad.x 映射到 [0,1]（梯度方向）。
@@ -957,6 +999,10 @@ object LiquidGlassShader {
     /** 掩码 CONIC 角权重默认值：(8×1.1)/(3×1.1+3) = 1.3968（侧滑按钮 MetaBall weight=1.1 经系统
      *  CornerParamsKt 变换 fMax=(8·w)/(3·w+3)；spec/12 实证）。 */
     private const val DEFAULT_MASK_WEIGHT = (8.0f * 1.1f) / (3.0f * 1.1f + 3.0f)
+
+    /** [doc/spec/112] 通知卡倾斜透视距离 px（uTilt.z）。越小透视越强；400 ≈ 常见卡片半高的 2 倍量级，
+     *  6° 时顶/底边缘缩放差实测顶 +3.8% / 底 −4.5%（上下差约 8.7%，观感安全档）。 */
+    private const val TILT_PERSPECTIVE_PX = 400f
 
     /** ColorOS BlendMode 枚举（事实依据：反编译 BlurDrawableShaderStringKt，doBlend 分支 0~10）。 */
     object BlendMode {
@@ -997,6 +1043,8 @@ object LiquidGlassShader {
         /** [2026-09-16 弧线高光修复] 方向因子保底（AGSL uHighlightFloor）：0=原行为（弧线归零），
          *  0.4=弧线保留基础高光不再断开。见 shader 内步骤 4 说明。 */
         val highlightFloor: Float = 0.4f,
+        /** [2026-10-13] 内侧高光衰减 0~1：band 内半向玻璃深处再衰减，0=现状、1=只剩贴边亮线。 */
+        val highlightInnerAtt: Float = 0f,
         val vibrancy: Float = 1.5f,      // 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变）
         val lightAngleDegrees: Float = 45f,
         val parallaxX: Float = 0f,
@@ -1106,6 +1154,9 @@ object LiquidGlassShader {
         /** [doc/spec/100 方案2] metaball 黏连桥输入；null = 不启用（默认）。**只在末尾追加，
          *  上述既有参数名一个都没改**（LauncherHook / BlurDrawHook 既有调用方按名传参，不受影响）。 */
         metaBalls: MetaBalls? = null,
+        /** [doc/spec/112] 通知卡倾斜角 θ（弧度；0 = 关闭 = uTilt 置 0 恒等）。已含强度×动画进度，
+         *  调用方按帧算好传入；同样只在末尾追加，既有调用方零改动（默认 0f = 逐像素零变化）。 */
+        tiltRadians: Float = 0f,
     ) {
         if (source != null) {
             shader.setInputShader("uSource", source)
@@ -1140,6 +1191,7 @@ object LiquidGlassShader {
         shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
         lastHighlightFloor = params.highlightFloor
         shader.setFloatUniform("uHighlightFloor", params.highlightFloor)
+        shader.setFloatUniform("uHighlightInnerAtt", params.highlightInnerAtt)
         // 掩码（侧滑按钮裁剪）：默认全视口 → sdMask<=0 恒成立 → step=1 → 无裁剪（不影响其他控件）
         val mr = maskRect ?: RectF(0f, 0f, max(params.viewportWidth, 1f), max(params.viewportHeight, 1f))
         shader.setFloatUniform("uMaskRect", mr.left, mr.top, mr.width(), mr.height())
@@ -1172,6 +1224,14 @@ object LiquidGlassShader {
             shader.setFloatUniform("uBall2", 0f, 0f, 0f, 0f)
             shader.setFloatUniform("uBall3", 0f, 0f, 0f, 0f)
             shader.setFloatUniform("uMetaballParam", 0f, 0f, 0f, 0f)
+        }
+        // [doc/spec/112 通知卡倾斜] 无条件下发（与 uMetaball* 同款「防残留」契约）：
+        // θ=0 → uTilt=(0,0,0,0) → AGSL tiltCoord 恒等 = 逐像素零变化；元素退出动画后靠这里把
+        // 上一帧的 sinθ 清掉（applied.tilt 变化检测同步会走全量路径，见 BlurDrawHook.applyComputedGeometry）。
+        if (tiltRadians != 0f) {
+            shader.setFloatUniform("uTilt", sin(tiltRadians), cos(tiltRadians), TILT_PERSPECTIVE_PX, 1f)
+        } else {
+            shader.setFloatUniform("uTilt", 0f, 0f, 0f, 0f)
         }
     }
 

@@ -49,6 +49,9 @@
     <string name="settings_highlight_floor">弧线高光保底</string>
     <string name="settings_highlight_floor_value">%1$d%%</string>
     <string name="settings_highlight_floor_desc">圆角弧线处的高光保底。0 = 只保留方向性（弧线因法线与光源垂直而偏暗）；1 = 整圈均匀一条亮线（相当于直接描一条边）。</string>
+    <string name="settings_highlight_inner_att">内侧高光衰减</string>
+    <string name="settings_highlight_inner_att_value">%1$d%%</string>
+    <string name="settings_highlight_inner_att_desc">高光带内半向玻璃深处的再衰减。0 = 现状（内外对称）；越大内半越暗，只剩贴边一条亮线。</string>
     <string name="settings_light_angle">光角度（Light Angle）</string>
     <string name="settings_light_angle_value">%1$d°</string>
     <string name="settings_light_angle_desc">高光光源方向角度。</string>
@@ -241,6 +244,16 @@
     <string name="settings_anim_tilt_perspective_desc" formatted="false">调节上下宽度差；0% 无近大远小效果，数值越大透视越明显（倾斜强度为 0% 时此项无效）。</string>
     <string name="settings_anim_tilt_perspective_value">%1$d%%</string>
     <string name="settings_anim_tilt_restart_note">提示：本功能为实验性，改动需重启桌面进程生效。</string>
+
+    <!-- [doc/spec/112+113] 通知卡动效（弹出/收回动画驱动，手指不参与；默认关，改动立即生效） -->
+    <string name="settings_notif_tilt_enabled">通知卡动效</string>
+    <string name="settings_notif_tilt_enabled_desc" formatted="false">横幅从摄像头位置飞入并带透视倾斜，收回时向摄像头方向回拉后飞出；落位后自动回正（只斜玻璃不斜文字，不替换系统动画）。默认关闭。</string>
+    <string name="settings_notif_tilt_strength">通知卡倾斜角度</string>
+    <string name="settings_notif_tilt_strength_desc" formatted="false">0~45° 自由调整，默认 3°；0° 等同关闭。角度越大透视畸变越明显（45° 内分母安全、不会花屏）。</string>
+    <string name="settings_notif_tilt_strength_value">%1$d°</string>
+    <string name="settings_notif_fly_scale">飞入缩放幅度</string>
+    <string name="settings_notif_fly_scale_value">%1$d%%</string>
+    <string name="settings_notif_fly_scale_desc">横幅弹出/收回时的网格缩放幅度（起始缩到 1-幅度，落位 100%）。0 = 不缩放只透视。</string>
 
     <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
     <string name="update_dialog_title">发现新版本</string>

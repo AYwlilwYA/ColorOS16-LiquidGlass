@@ -39,7 +39,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import kotlin.jvm.functions.Function0
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Hook B：替换绘制 —— 把系统"纯模糊 + MixColor 混合"替换为液态玻璃 RuntimeShader（M2a 落地）。
@@ -498,6 +501,40 @@ object BlurDrawHook {
     private const val METHOD_ON_ATTACHED_TO_WINDOW = "onAttachedToWindow"
     private const val METHOD_ON_DETACHED_FROM_WINDOW = "onDetachedFromWindow"
 
+    // ---- [doc/spec/112] 通知卡倾斜驱动（路线 B；SystemUI 16.99.12 反编译实证，行号见 spec/112 §二） ----
+    // 弹出 = OplusHeadsUpAnimator.show(View)（arg 即 ExpandableNotificationRow，OplusHeadsUpAnimator:344 实证）；
+    // 收回 = OplusHeadsUpAnimator.dismiss(boolean,String,Function1)（行身份取 control.getView()，失败回退 show 记录）；
+    // shade 插入 = NotificationStackScrollLayout.generateAddAnimation(ExpandableView)（onViewAddedInternal:3011）。
+    private const val CLASS_OPLUS_HEADS_UP_ANIMATOR = "com.oplus.systemui.notification.headsup.windowframe.OplusHeadsUpAnimator"
+    private const val METHOD_HU_SHOW = "show"
+    private const val METHOD_HU_DISMISS = "dismiss"
+    private const val METHOD_HU_GET_VIEW = "getView"
+    private const val FIELD_HU_CONTROL = "control"
+    private const val METHOD_GENERATE_ADD_ANIMATION = "generateAddAnimation"
+    private const val CLASS_EXPANDABLE_VIEW = "com.android.systemui.statusbar.notification.row.ExpandableView"
+    // ---- [doc/spec/113] 摄像头飞入位移：系统动画写入点与 spring 纯值保护 ----
+    private const val METHOD_HU_ANIMATE_TO = "animateTo"
+    /** 弹出倾斜时长 ms（到位归零的收敛窗口） */
+    private const val NOTIF_TILT_IN_MS = 450L
+    /** 收回倾斜时长 ms（sin 包络：起止都归 0，防结束瞬间跳变） */
+    private const val NOTIF_TILT_OUT_MS = 450L
+    /** 活跃倾斜动画条数上限（超出丢最旧；正常同屏 ≤2 条） */
+    private const val NOTIF_TILT_MAX_ANIMS = 8
+    /** [doc/spec/112] 倾斜帧泵节拍 ms（主线程 Handler）；上限 64 tick ≈ 1s（包络仅 450ms）。
+     *  作用：系统行滑动动画的 draw 是主帧源，但其时长/停帧不保证与 450ms 包络对齐——
+     *  泵负责每帧重算 θ 并在包络结束时**精确画出归零帧**（否则玻璃会冻结在末帧角度，
+     *  等下次随机绘制才跳回 0）。 */
+    private const val NOTIF_TILT_PUMP_TICK_MS = 16L
+    private const val NOTIF_TILT_PUMP_MAX_TICKS = 64L
+    /** [桌面模式 2026-10-13] 弹出/收回缩放幅度（入场 0.85→1.0，pivot=顶部中央≈摄像头）。系统不写 scale，零冲突。 */
+    private const val NOTIF_FLY_SCALE_AMOUNT = 0.75f
+    /** [3D 倾斜 2026-10-13] 弹出起始 rotationX 角度（绕顶部轴翻转摆正；整卡含内容参与，AGSL uTilt 只扭背景不够）。 */
+    private const val NOTIF_FLY_ROTATE_DEG = 40f
+    /** [spec/113 反编译实锤] show fresh/收回的 spring 端点 = min(-actualHeight, -430)（横幅完全滑出屏上）。 */
+    private const val NOTIF_FLY_START_Y = -430f
+    /** OplusHeadsUpAnimator 落位字段（refreshHoldY 写入 = padding + statusBarHeight，④ 进度公式终点）。 */
+    private const val FIELD_HU_HOLD_Y = "holdY"
+
     // ---- [任务 文字反转取色 spec/21] 亮度阈值与状态 ----
     /** 背景亮度阈值：>196 → 黑字（false）；≤196 → 白字（true）。与系统 OplusQsColorManager.setQsColorState 同阈值 */
     private const val TEXT_CONTRAST_BRIGHTNESS_THRESHOLD = 196
@@ -669,6 +706,9 @@ object BlurDrawHook {
         /** [doc/spec/100 方案2] metaball 黏连桥 uniform 输入（data class，equals 覆盖全部字段）。
          *  球心/半尺寸逐帧随动画变 → 每帧命中差异 → 走全量 setUniforms 重设 uBall1/2/3。 */
         val metaBalls: LiquidGlassShader.MetaBalls? = null,
+        /** [doc/spec/112] 已下发的倾斜角 θ（弧度；uniform 变化检测）：动画每帧 θ 变 → tiltChanged →
+         *  禁用轻量分支走全量 setUniforms 重设 uTilt；归零（动画结束/开关关/省电）同样靠它把 uTilt 清 0。 */
+        val tilt: Float = 0f,
     )
 
     // ------------------------------------------------------------ 整屏快照背景源（doc/spec/07 + 2026-08-13 组合方案）
@@ -998,6 +1038,52 @@ object BlurDrawHook {
      *  （防重复起线程；通知消失自动退出并复位）。@Volatile：主线程写，worker finally 复位。 */
     @Volatile
     private var headsUpContinuousRunning = false
+
+    // ---- [doc/spec/112] 通知卡倾斜动画状态机（弹出/收回驱动；手指不参与） ----
+    /** 单条倾斜动画：target = 被动画的 View（heads-up 行 / 新插入的 ExpandableView），
+     *  匹配规则 = 渲染宿主是 target 自身或其后代（bgView 在行内 → 天然只命中通知卡，
+     *  控制中心磁贴/滑杆等非通知元素恒不匹配 ⇒ 不泄漏）。@Volatile 整数组引用替换（写读都在主线程）。
+     *  [doc/spec/113] 新增 dx/dy = 摄像头飞入位移分量（挖孔中心 − 自然中心，含系统 -430 起点补偿）；
+     *  每条目自带偏移，打断复位后新条目立即按新包络接管（旧条目残留由归零闭环清理）。 */
+    private class NotifTiltAnim(
+        val target: WeakReference<View>,
+        val startAtMs: Long,
+        val incoming: Boolean,
+        /** 飞入 X 偏移（px）；shade 插入条目恒 0 */
+        val dx: Float = 0f,
+        /** 飞入 Y 偏移（px）；shade 插入条目恒 0 */
+        val dy: Float = 0f,
+    )
+
+    @Volatile
+    private var notifTiltAnims: Array<NotifTiltAnim> = emptyArray()
+
+    /** show() 记录的当前 heads-up 行：dismiss() 没有行参数时的回退身份源。 */
+    @Volatile
+    private var lastHeadsUpTiltRow: WeakReference<View>? = null
+
+    /** [doc/spec/113] 每个 View 最后一次实际叠加的位移 dy（setTranslationY hook 写入时记录）。
+     *  归零时减这个「最后写入值」而非当前帧 dy —— 系统 spring 可能已停止调 setTranslationY，
+     *  两者不等会残留（减当前帧 dy 在 spring 停止后会留下 dy_last − dy_now 的偏差）。 */
+    private val notifFlyAppliedDy = WeakHashMap<View, Float>()
+
+    /** [doc/spec/113][审查 V-113 M-3] ⑤ animateTo hook 挂载成功标志：false（挂载失败）时 ④ 位移叠加
+     *  **降级为透传** —— ⑤ 缺失会使 spring setStartValue 读到含 dy 的值 → 双倍偏移；宁可没飞入也不错位。 */
+    @Volatile
+    private var mNotifFlySpringGuardMounted = false
+
+    /** [doc/spec/113][审查 V-113 M-1] dismiss 挂起表：系统在 show spring 运行中把 animateDismiss 挂到
+     *  spring end 延迟执行（OplusHeadsUpAnimator:190-205）——OUT 条目若在 show spring 期间建立，450ms
+     *  包络会先跑完被 prune，真正收回时效果丢失。故 dismiss 只登记 pending，由 ⑤ 首次 animateTo
+     *  （= 真正收回动画开始）时才建立 OUT 条目，包络从正确起点开始。主线程 only（spring 强制主线程）。 */
+    private val pendingDismissFly = WeakHashMap<View, Long>()
+
+    /** 持锁只覆盖数组引用读改写（事件极低频、临界区微秒级） */
+    private val notifTiltLock = Any()
+
+    /** [doc/spec/112] 倾斜帧泵运行标志（防重复起泵）。@Volatile：主线程唯一读写。 */
+    @Volatile
+    private var notifTiltPumpRunning = false
 
     /** [2026-08-15 主动式持续抓屏] 面板（下拉通知栏）展开期间主动持续抓屏 worker 运行标志
      *  （防重复起线程；面板收起自动退出并复位）。@Volatile：主线程（onExpansionStarted /
@@ -2050,6 +2136,9 @@ object BlurDrawHook {
         // 根治「窗口重建后缓存失效 + 新根未登记 → resolveShadeSfc 三来源全空 → 一阵子不抓屏」。
         mountShadeRootAttach(api, classLoader)
         mountContainerTransformHooks(api, classLoader)
+        // [doc/spec/112 通知卡倾斜] 驱动事件源：heads-up 弹出/收回 + shade 插入（手指不参与）。
+        // 独立 try-catch（函数体内三段各自兜底）：挂失败只禁用倾斜，不影响主渲染。
+        mountNotificationTilt(api, classLoader)
         // [spec/19 Heads-Up 玻璃化] hook ViewBlurProxy.setBlurType：heads-up 背景 Motion → PlatformStatic
         mountViewBlurProxySetBlurType(api, classLoader)
         // [spec/19 修复 2026-08-13] 纯白根因：系统 excludeRules = headsUpWindow.isHeadsUpView(view) 阻止
@@ -4938,6 +5027,700 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Log.e(TAG, "customRow: invalidate bgView failed", t)
         }
+    }
+
+    // ------------------------------------------------------------ [doc/spec/112] 通知卡倾斜驱动（弹出/收回，手指不参与） ------------------------------------------------------------
+
+    /** 通知行类（驱动侧门控：只对 ExpandableNotificationRow 起倾斜，天然不碰磁贴/滑杆）。 */
+    @Volatile
+    private var mExpandableRowClass: Class<*>? = null
+
+    /** `OplusHeadsUpAnimator.control` 字段（HeadsUpContainerWindow；dismiss 取当前行用）。 */
+    @Volatile
+    private var mHeadsUpAnimatorControlField: Field? = null
+
+    /** `HeadsUpContainerWindow.getView()`（public，getMethod 解析即可）。 */
+    @Volatile
+    private var mHeadsUpContainerGetView: Method? = null
+
+    /** `OplusHeadsUpAnimator.holdY` 字段（落位 Y；④ 进度公式终点，show 时读取）。 */
+    @Volatile
+    private var mHeadsUpHoldYField: Field? = null
+
+    /** 当前弹出/收回的 spring 终点（holdY）。null = 无 fly 动画（④ 透传）。 */
+    @Volatile
+    private var mHeadsUpFlyTargetY: Float? = null
+
+    /** 弹出方向标志（show=true / dismiss=false）——④ 按它选 rotationX 符号（弹出上窄下宽、收回反向对称）。 */
+    @Volatile
+    private var mHeadsUpFlyIncoming: Boolean = true
+
+    /** [缩放通道] HeadsUpZoomParamsKt.getRowAnimationStateEx(ExpandableView)。 */
+    @Volatile
+    private var mGetRowAnimEx: java.lang.reflect.Method? = null
+
+    /** [缩放通道] ScaleState(float,float) 构造器。 */
+    @Volatile
+    private var mScaleStateCtor: java.lang.reflect.Constructor<*>? = null
+
+    /** [缩放通道] RowAnimationStateEx.requestRowScale(Object,ScaleState)。 */
+    @Volatile
+    private var mRequestRowScale: java.lang.reflect.Method? = null
+
+    /** [网格缩放] View.setAnimationMatrix(Matrix)——draw 期变换，ViewState.applyToView 不写它（反编译实锤）。 */
+    private var mSetAnimMatrix: java.lang.reflect.Method? = null
+
+    /** [网格缩放] 复用矩阵，避免每帧分配。 */
+    private val mFlyMatrix = android.graphics.Matrix()
+
+    /**
+     * [doc/spec/112] 挂载通知卡倾斜驱动（**只读驱动事件，不改系统动画**；三个 hook 各自独立 try-catch）：
+     *
+     * 1. `OplusHeadsUpAnimator.show(View)` → **弹出**：arg 就是 ExpandableNotificationRow（反编译
+     *    OplusHeadsUpAnimator:344 `view instanceof ExpandableNotificationRow` 实证），横幅从屏外滑入。
+     * 2. `OplusHeadsUpAnimator.dismiss(boolean,String,Function1)` → **收回**：无行参数，行身份 =
+     *    `control.getView()`（HeadsUpContainerWindow 当前挂着的行），反射失败回退 show() 记录的行。
+     * 3. `NotificationStackScrollLayout.generateAddAnimation(ExpandableView)` → **shade 插入**：
+     *    onViewAddedInternal(:3011) 唯一漏斗（新增通知卡滑入列表）。
+     *
+     * 选点理由与落选候选（ViewState.applyToView / setTranslationX / generateRemoveAnimation /
+     * OplusHeadsUpAnimator 之外的 AOSP 面板漏斗）见 spec/112 §二。挂载失败只禁用本效果（PROTECTIVE）。
+     */
+    private fun mountNotificationTilt(api: XposedInterface, classLoader: ClassLoader) {
+        // 驱动门控用的通知行类（一次解析，供 startNotifTilt instanceof 判定）
+        try {
+            mExpandableRowClass = Class.forName(
+                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow", false, classLoader
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "notif-tilt: ExpandableNotificationRow class not found, tilt disabled", t)
+            return
+        }
+        try {
+            val clazz = Class.forName(CLASS_OPLUS_HEADS_UP_ANIMATOR, false, classLoader)
+            // 反射句柄（dismiss 取行身份）：control 字段 + HeadsUpContainerWindow.getView()
+            try {
+                mHeadsUpAnimatorControlField = clazz.getDeclaredField(FIELD_HU_CONTROL).apply { isAccessible = true }
+            } catch (t: Throwable) {
+                Log.w(TAG, "notif-tilt: resolve control field failed, dismiss falls back to last shown row", t)
+            }
+            try {
+                mHeadsUpHoldYField = clazz.getDeclaredField(FIELD_HU_HOLD_Y).apply { isAccessible = true }
+            } catch (t: Throwable) {
+                Log.w(TAG, "notif-tilt: resolve holdY field failed, 3D fly disabled", t)
+            }
+            // [缩放通道] requestRowScale 状态口（View 的 scaleX/scaleY 会被 pre-draw 强制打回，
+            // 走 ColorOS 自己的请求口它反而会帮我们应用）
+            try {
+                val expandableViewCls = Class.forName(CLASS_EXPANDABLE_VIEW, false, classLoader)
+                val zoomKt = Class.forName(
+                    "com.oplus.systemui.notification.headsup.zoom.HeadsUpZoomParamsKt", false, classLoader
+                )
+                mGetRowAnimEx = zoomKt.getMethod("getRowAnimationStateEx", expandableViewCls)
+                val scaleStateCls = Class.forName(
+                    "com.android.systemui.statusbar.notification.animation.ScaleState", false, classLoader
+                )
+                mScaleStateCtor = scaleStateCls.getConstructor(
+                    Float::class.javaPrimitiveType, Float::class.javaPrimitiveType
+                )
+                val rowAnimCls = Class.forName(
+                    "com.android.systemui.statusbar.notification.animation.RowAnimationStateEx", false, classLoader
+                )
+                mRequestRowScale = rowAnimCls.getMethod("requestRowScale", Any::class.java, scaleStateCls)
+            } catch (t: Throwable) {
+                Log.w(TAG, "notif-tilt: resolve requestRowScale channel failed, fly scale disabled", t)
+            }
+            // [网格缩放] View.setAnimationMatrix：draw 期矩阵，ViewState 打不回；单次反射，无每帧分配
+            try {
+                mSetAnimMatrix = android.view.View::class.java.getMethod(
+                    "setAnimationMatrix", android.graphics.Matrix::class.java
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "notif-tilt: resolve setAnimationMatrix failed, fly scale disabled", t)
+            }
+            try {
+                mHeadsUpContainerGetView = Class.forName(CLASS_HEADS_UP_CONTAINER_WINDOW, false, classLoader)
+                    .getMethod(METHOD_HU_GET_VIEW)
+            } catch (t: Throwable) {
+                Log.w(TAG, "notif-tilt: resolve HeadsUpContainerWindow.getView failed, dismiss falls back to last shown row", t)
+            }
+            // ① 弹出：show(View)（fly=true → 叠加摄像头飞入位移，spec/113）
+            try {
+                val show = clazz.getDeclaredMethod(METHOD_HU_SHOW, View::class.java)
+                api.hook(show)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        try {
+                            val row = chain.getArg(0) as? View
+                            logThrottled("notif-show-entry", Log.INFO, 500L) {
+                                "notif-tilt: show entry arg=${row?.javaClass?.name} isRow=${row != null && mExpandableRowClass?.isInstance(row) == true}"
+                            }
+                            if (row != null && mExpandableRowClass?.isInstance(row) == true) {
+                                // [spec/113 反编译方案] 读 holdY 作 ④ 进度公式终点 + 设 3D 前置态。
+                                // rotationX 不在此预设——由 ④ 第一帧按 f 计算（fresh: setTranslationY(-430)
+                                // 必经④ → p=0 → 40°；again: f≈holdY → p≈1 → 0°，预设会闪一帧）。
+                                try {
+                                    mHeadsUpFlyTargetY = mHeadsUpHoldYField?.get(chain.getThisObject()) as? Float
+                                } catch (t: Throwable) {
+                                    mHeadsUpFlyTargetY = null
+                                }
+                                row.cameraDistance = 2500f  // [修] 近相机才有透视梯形（12000≈正交=只有俯仰没梯形）
+                                if (row.width > 0) row.pivotX = row.width / 2f
+                                row.pivotY = 0f             // 顶部为轴（翻盖感）
+                                mHeadsUpFlyIncoming = true  // 弹出方向（④ 选 rot 符号：上窄下宽）
+                                logThrottled("notif-fly-3d", Log.INFO, 1000L) {
+                                    "notif-fly: 3D armed targetY=$mHeadsUpFlyTargetY startY=$NOTIF_FLY_START_Y"
+                                }
+                            }
+                            if (row != null) lastHeadsUpTiltRow = WeakReference(row)
+                            startNotifTilt(row, incoming = true, fly = true, src = "show")
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "notif-tilt: show intercept error", t)
+                        }
+                        chain.proceed()
+                    }
+                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW(View) (notif tilt IN + fly)")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW", t)
+            }
+            // ② 收回：dismiss(boolean,String,Function1)（fly=true → 对称飞回挖孔点，spec/113）
+            try {
+                // Function1 必须从系统 classLoader 解析：模块 CL 的 Class 对象与系统侧不相等，
+                // getDeclaredMethod 按 Class 比较会 NoSuchMethod（真机实测恒 mount FAILED）
+                val fn1Cls = Class.forName("kotlin.jvm.functions.Function1", false, classLoader)
+                val dismiss = clazz.getDeclaredMethod(
+                    METHOD_HU_DISMISS,
+                    Boolean::class.javaPrimitiveType,
+                    String::class.java,
+                    fn1Cls,
+                )
+                api.hook(dismiss)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        try {
+                            val row = resolveHeadsUpDismissRow(chain.getThisObject())
+                            // 收回方向标志：④ 选 rot=+角（上宽下窄缩回感）
+                            mHeadsUpFlyIncoming = false
+                            // [审查 V-113 M-1] 收回改走 pending：spring 还在跑时 animateDismiss 被延迟到
+                            // spring end 才执行（系统 :190-205），立即建 OUT 条目会在等待期被 prune 掉
+                            // → 收回飞入丢失。登记 pending，由 ⑤ 首次 animateTo（真正收回开始）消费。
+                            // ⑤ 未挂载（M-3 guard=false）→ 回落立即建（可能丢效果，但不会错位）
+                            if (row != null && mExpandableRowClass?.isInstance(row) == true) {
+                                if (mNotifFlySpringGuardMounted) {
+                                    pendingDismissFly[row] = SystemClock.uptimeMillis()
+                                    logThrottled("notif-fly-pending", Log.INFO, 1000L) {
+                                        "notif-fly: dismiss pending queued (wait spring end)"
+                                    }
+                                } else {
+                                    startNotifTilt(row, incoming = false, fly = true, src = "dismiss-direct")
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "notif-tilt: dismiss intercept error", t)
+                        }
+                        chain.proceed()
+                    }
+                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS(boolean,String,Function1) (notif tilt OUT + fly)")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS", t)
+            }
+            // ⑤ [doc/spec/113] 防双倍偏移：animateTo(float,Function0) 在 spring setStartValue
+            //  之前读 control.getTranslationY()（含我们已叠加的 dy）→ spring 会从「纯值+旧偏移」起步，
+            //  后续每帧再叠加一次形成双倍。before proceed 把 translationY 减去当前帧 dy 还原纯值。
+            try {
+                // Function0 同 dismiss：必须从系统 classLoader 解析（跨 CL Class 不相等 → mount FAILED）
+                val fn0Cls = Class.forName("kotlin.jvm.functions.Function0", false, classLoader)
+                val animateTo = clazz.getDeclaredMethod(
+                    METHOD_HU_ANIMATE_TO,
+                    Float::class.javaPrimitiveType,
+                    fn0Cls,
+                )
+                api.hook(animateTo)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        try {
+                            val row = resolveHeadsUpDismissRow(chain.getThisObject())
+                            if (row != null && mExpandableRowClass?.isInstance(row) == true) {
+                                // [审查 V-113 M-1] 消费 pending dismiss：animateTo = 真正收回动画开始，
+                                // 此刻才建 OUT 条目（包络起点正确；OUT k(0)=sin(0)=0 不干扰本帧）
+                                pendingDismissFly.remove(row)?.let {
+                                    startNotifTilt(row, incoming = false, fly = true, src = "dismiss")
+                                    logThrottled("notif-fly-pending", Log.INFO, 1000L) {
+                                        "notif-fly: pending dismiss consumed, OUT envelope started"
+                                    }
+                                }
+                                val anim = findActiveNotifFlyAnim(row)
+                                if (anim != null) {
+                                    // 减「最后实际叠加量」还原纯值（setStartValue 拿到纯 spring 起点）；
+                                    // 减完即 remove —— 若随后 prune 归零会再减一次（double-subtract）
+                                    val applied = notifFlyAppliedDy.remove(row)
+                                    if (applied != null && applied != 0f) {
+                                        row.translationY = row.translationY - applied
+                                    }
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            logThrottled("notif-fly-animateto", Log.WARN, 5000L) { "notif-fly: animateTo intercept error: $t" }
+                        }
+                        chain.proceed()
+                    }
+                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO(float,Function0) (notif fly spring start pure)")
+                mNotifFlySpringGuardMounted = true
+            } catch (t: Throwable) {
+                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO", t)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR (notif tilt heads-up path)", t)
+        }
+        // ④ [doc/spec/113] 位移叠加：HeadsUpContainerWindow.setTranslationY(float)
+        //  系统 spring 每帧经此写 Row 的 translationY（HeadsUpContainerWindow:232→236 view.setTranslationY）。
+        //  before proceed 把参数（spring 纯值）加当前帧 dy；X 系统完全不写 → proceed 后直接写 translationX。
+        //  无活跃位移时透传并把残留 X 归零（防横幅永久飞在半空）。
+        try {
+            val containerClazz = Class.forName(CLASS_HEADS_UP_CONTAINER_WINDOW, false, classLoader)
+            val setTy = containerClazz.getDeclaredMethod(METHOD_SET_TRANSLATION_Y, Float::class.javaPrimitiveType)
+            api.hook(setTy)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        val row = mHeadsUpContainerGetView?.invoke(chain.getThisObject()) as? View
+                        if (row != null && mExpandableRowClass?.isInstance(row) == true) {
+                            val args = chain.getArgs()?.toTypedArray()
+                            val pureY = args?.get(0) as? Float ?: 0f
+                            // [spec/113 反编译方案] 本回调 = 弹出/收回/拖拽所有 Y 变化的唯一每帧漏斗。
+                            // 按 spring 行进位置算进度 p（-430→holdY），写 rotationX=(1-p)²·40°——
+                            // 与位移逐帧严格同步的整卡 3D 翻转。scale 不写（ColorOS pre-draw 强制打回）。
+                            // 拖拽时 f 在 holdY 附近 → p≈1 → rot≈0，天然无感（无需区分调用方）。
+                            val targetY = mHeadsUpFlyTargetY
+                            if (targetY != null && Prefs.notifTiltEnabled(api) && !isPowerSaveGlassOff()) {
+                                val span = targetY - NOTIF_FLY_START_Y
+                                if (span > 1f) {
+                                    val p = ((pureY - NOTIF_FLY_START_Y) / span).coerceIn(0f, 1f)
+                                    // [2026-10-13 23:1x] 曲线定稿：q=1-p 线性映射——spring 位移本身
+                                    // 前快后慢（ease-out），线性跟随即贴合轨迹；sqrt 会让角度前慢后快=反了。
+                                    if (p <= 0.02f || p >= 0.98f) {
+                                        if (row.rotationX != 0f) row.rotationX = 0f
+                                        mSetAnimMatrix?.invoke(row, null)
+                                    } else {
+                                        val q = 1f - p
+                                        row.rotationX = NOTIF_FLY_ROTATE_DEG * q
+                                        // 缩放幅度走 Prefs（0~80%，TTL 500ms；默认 75 → 起始 0.25 倍）
+                                        val amt = Prefs.notifFlyScale(api) / 100f
+                                        val sc = 1f - amt * q
+                                        val w = row.width
+                                        if (w > 0) {
+                                            mFlyMatrix.setScale(sc, sc, w / 2f, 0f)
+                                            mSetAnimMatrix?.invoke(row, mFlyMatrix)
+                                        }
+                                    }
+                                    logThrottled("notif-fly-3d-frame", Log.INFO, 500L) {
+                                        "notif-fly: 3D frame f=$pureY p=$p rot=${row.rotationX} incoming=$mHeadsUpFlyIncoming"
+                                    }
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        logThrottled("notif-fly-setty", Log.WARN, 5000L) { "notif-fly: setTranslationY intercept error: $t" }
+                    }
+                    chain.proceed()
+                }
+            Log.i(TAG, "Hook mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y(float) (notif 3D rotationX drive)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Hook mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y", t)
+        }
+        // ③ shade 插入：NotificationStackScrollLayout.generateAddAnimation(ExpandableView)
+        try {
+            val clazz = Class.forName(CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT, false, classLoader)
+            val expandableView = Class.forName(CLASS_EXPANDABLE_VIEW, false, classLoader)
+            // getDeclaredMethod 锚定子类自身方法（防解析到 View 基类：全 View 命中 / 0 命中）
+            val add = clazz.getDeclaredMethod(METHOD_GENERATE_ADD_ANIMATION, expandableView)
+            api.hook(add)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                    try {
+                        // [反编译实锤 2026-10-13] 此处实参是 temp row（HeadsUpTempViewCreator 伪造占位卡，
+                        // 在 NSSL shade 列表位置）——不是真横幅。fly 一律 false（3D/位移只挂真 row 的 show）。
+                        startNotifTilt(chain.getArg(0) as? View, incoming = true, fly = false, src = "add")
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "notif-tilt: generateAddAnimation intercept error", t)
+                    }
+                    chain.proceed()
+                }
+            Log.i(TAG, "Hook mounted: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION(ExpandableView) (notif tilt IN)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Hook mount FAILED: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION", t)
+        }
+    }
+
+    /** dismiss 无行参数：优先 `control.getView()`（HeadsUpContainerWindow 当前行），失败回退 show() 记录的行。 */
+    private fun resolveHeadsUpDismissRow(animator: Any?): View? {
+        try {
+            val ctrl = mHeadsUpAnimatorControlField?.get(animator)
+            if (ctrl != null) {
+                val v = mHeadsUpContainerGetView?.invoke(ctrl) as? View
+                if (v != null) return v
+            }
+        } catch (t: Throwable) {
+            logThrottled("notif-tilt-ctrl", Log.WARN, 5000L) { "notif-tilt: control.getView failed, fallback last row: $t" }
+        }
+        return lastHeadsUpTiltRow?.get()
+    }
+
+    /**
+     * [doc/spec/112] 起一条倾斜动画（弹出 incoming=true / 收回 incoming=false）。
+     *
+     * - **只作用于通知卡**：target 必须是 ExpandableNotificationRow（驱动侧门控；渲染侧再按
+     *   「宿主 ∈ target 后代」匹配一次，控制中心磁贴/滑杆恒不命中）。
+     * - 同 target 新事件 = **打断复位**：丢旧进度重启包络（不会叠加成两倍角度）。
+     * - 状态纯内存 + 时间驱动：无系统动画回调依赖，动画结束/被打断都会在 [notifTiltAngleFor] 按时收敛归零。
+     * - [doc/spec/113] `fly=true`（仅 heads-up show/dismiss）时计算摄像头飞入偏移 dx/dy 存入条目；
+     *   shade 插入（generateAddAnimation）fly=false 恒 0 偏移（iOS shade 插入不从摄像头飞）。
+     *   开关关 → [zeroNotifFlyOffsets] 归零已有位移残留（归零闭环路径②）。
+     */
+    private fun startNotifTilt(view: View?, incoming: Boolean, fly: Boolean = false, src: String = "?") {
+        if (view == null) return
+        if (mExpandableRowClass?.isInstance(view) != true) return  // 非通知行（磁贴/滑杆/容器）直接不驱动
+        // [审查 V-112 M-2 修复] 开关关着就不建条目、不起帧泵（TTL 0.5s，开开关后下一条通知即生效）
+        if (!Prefs.notifTiltEnabled(api)) {
+            // [doc/spec/113 归零闭环路径②] 开关关 → 归零表内已有位移残留（防横幅永久飞在半空）
+            zeroNotifFlyOffsets()
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        val (dx, dy) = if (fly) computeNotifFlyOffset(view) else 0f to 0f
+        synchronized(notifTiltLock) {
+            val kept = ArrayList<NotifTiltAnim>(NOTIF_TILT_MAX_ANIMS)
+            for (a in notifTiltAnims) {
+                val t = a.target.get() ?: continue
+                if (t === view) {
+                    // 同卡新事件 = 打断复位：先归零旧条目位移残留，新条目自带 dx/dy 立即接管
+                    zeroNotifFlyOffsetOf(a)
+                    continue
+                }
+                val dur = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+                if (now - a.startAtMs < dur) {
+                    kept.add(a)
+                } else {
+                    // [审查 V-113 M-2] 过期丢弃路径同样归零位移残留（帧源中途停止时 k≠0，残留可达数百 px）
+                    zeroNotifFlyOffsetOf(a)
+                }
+            }
+            kept.add(NotifTiltAnim(WeakReference(view), now, incoming, dx, dy))
+            while (kept.size > NOTIF_TILT_MAX_ANIMS) {
+                // [审查 V-113 M-2] 超上限淘汰最旧条目同样先归零（与过期丢弃对齐）
+                zeroNotifFlyOffsetOf(kept.removeAt(0))
+            }
+            notifTiltAnims = kept.toTypedArray()
+        }
+        logThrottled("notif-tilt-evt", Log.INFO, 1000L) {
+            "notif-tilt: ${if (incoming) "IN" else "OUT"} fly=$fly src=$src dx=${dx.toInt()} dy=${dy.toInt()} row=${view.javaClass.simpleName}@${System.identityHashCode(view)}"
+        }
+        pumpNotifTiltFrames()
+    }
+
+    // ------------------------------------------------------------ [doc/spec/113] 摄像头飞入位移（位移轨迹） ------------------------------------------------------------
+
+    /**
+     * [doc/spec/113] 读挖孔中心（屏幕坐标）：API 28+ 取 `DisplayCutout.boundingRects` **面积最大者**
+     * 的中心（多挖孔/刘海取主孔）；无挖孔 / minSdk 26~27 / 读取失败 → null（调用方回落屏幕顶部中央）。
+     */
+    private fun cameraCutoutCenterOnScreen(view: View): android.graphics.PointF? {
+        if (Build.VERSION.SDK_INT < 28) return null
+        return try {
+            val cutout = view.rootWindowInsets?.displayCutout ?: return null
+            var best: Rect? = null
+            var bestArea = -1L
+            for (r in cutout.boundingRects) {
+                val area = r.width().toLong() * r.height()
+                if (area > bestArea) {
+                    bestArea = area
+                    best = r
+                }
+            }
+            val r = best ?: return null
+            if (r.width() <= 0 || r.height() <= 0) return null
+            android.graphics.PointF(r.exactCenterX(), r.exactCenterY())
+        } catch (t: Throwable) {
+            logThrottled("notif-fly-cutout", Log.WARN, 5000L) { "notif-fly: read displayCutout failed: $t" }
+            null
+        }
+    }
+
+    /**
+     * [doc/spec/113] 计算摄像头飞入偏移 (dx, dy)：**p=0 视觉 = 当前视觉中心 + (dx,dy) = 挖孔点**
+     * ⇒ dx/dy = 挖孔点 − 当前视觉中心（`getLocationOnScreen` 已含 translation，直接用）。
+     * [真机实测 2026-10-13 16:39] 横幅弹出**常态走 "show: again" 分支**（parent!=null，系统不设
+     * -max(h,430) 起点、pure0=0），fresh 分支反而是少数 —— 固定补偿任何常数必错一分支；
+     * 「目标−当前」对 fresh / again / 带残留三种起点形态**统一覆盖**（审查 V-113 A1 的最终形态，
+     * 取代此前 actualHeightOr430 反射方案：again 常态下反射值根本不参与系统起点）。
+     * - 挖孔读取失败 → 回落「屏幕顶部中央」（camX = 屏宽/2，camY = 0）。
+     */
+    private fun computeNotifFlyOffset(view: View): Pair<Float, Float> {
+        try {
+            if (view.width <= 0 || view.height <= 0) return 0f to 0f
+            val loc = IntArray(2)
+            view.getLocationOnScreen(loc)
+            val curX = loc[0] + view.width / 2f
+            val curY = loc[1] + view.height / 2f
+            val cut = cameraCutoutCenterOnScreen(view)
+            val camX: Float
+            val camY: Float
+            if (cut != null) {
+                camX = cut.x
+                camY = cut.y
+            } else {
+                // 回落：屏幕顶部中央（横幅从上方中央冲出）
+                camX = view.resources.displayMetrics.widthPixels / 2f
+                camY = 0f
+            }
+            // [用户 2026-10-13 反馈] 「cam−当前」只有 −23px（横幅 holdY 本就贴着摄像头）→ 位移无感。
+            // 起点夸张化：挖孔再往上 1.2 个横幅高（视觉位移 ≈250px，真正的「从摄像头飞出」观感）。
+            val startY = camY - view.height * 1.2f
+            return (camX - curX) to (startY - curY)
+        } catch (t: Throwable) {
+            logThrottled("notif-fly-offset", Log.WARN, 5000L) { "notif-fly: compute offset failed: $t" }
+            return 0f to 0f
+        }
+    }
+
+    /**
+     * [doc/spec/113] 位移包络 k(p)（与 θ 包络同形同进度）：
+     * - IN（弹出飞入）：`(1−p)³` —— p=0 全额偏移（横幅在挖孔点）、p=1 归 0 落位（与角包络同形，落位同步摆正）。
+     * - OUT（收回）：`sin(πp)` 起止归 0 —— 中段回拉，绝不做 0→反向全额（横幅要消失时推到屏外还可见会闪）。
+     * 返回 0 = 无位移（过期/未开始）。
+     */
+    private fun notifFlyEnvelopeK(a: NotifTiltAnim, now: Long): Float {
+        val dur = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+        val elapsed = now - a.startAtMs
+        if (elapsed < 0 || elapsed >= dur) return 0f
+        val p = elapsed.toFloat() / dur
+        return if (a.incoming) {
+            val q = 1f - p
+            q * q * q
+        } else {
+            sin(PI * p).toFloat()
+        }
+    }
+
+    /** [doc/spec/113] 查该 View 的活跃位移动画；开关关 / 省电 → null（= 透传零变化）。 */
+    private fun findActiveNotifFlyAnim(view: View): NotifTiltAnim? {
+        if (!Prefs.notifTiltEnabled(api)) return null
+        if (isPowerSaveGlassOff()) return null
+        val now = SystemClock.uptimeMillis()
+        var found: NotifTiltAnim? = null
+        var expired = false
+        for (a in notifTiltAnims) {
+            val t = a.target.get()
+            if (t == null) {
+                expired = true
+                continue
+            }
+            val dur = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+            if (now - a.startAtMs >= dur) {
+                expired = true
+                continue
+            }
+            if (t === view) found = a
+        }
+        if (expired) pruneNotifTiltAnims(now)
+        return found
+    }
+
+    /**
+     * [doc/spec/113 归零闭环] 把一条动画的位移分量还原到 (0,0)：
+     * translationX 归 0；translationY 减去当前帧 dy（系统 spring 纯值还在，减完即自然位置）。
+     * 用于：包络过期 prune / 打断复位 / 开关关 / 条目 GC。
+     */
+    private fun zeroNotifFlyOffsetOf(a: NotifTiltAnim) {
+        val t = a.target.get() ?: return
+        try {
+            // 减「最后实际叠加量」（而非当前帧 dy）——系统 spring 可能已停止调 setTranslationY，
+            // 两者不等会残留 dy_last − dy_now 的偏差（spring 停止后尤其明显）
+            val applied = notifFlyAppliedDy.remove(t) ?: 0f
+            if (applied != 0f) t.translationY = t.translationY - applied
+            if (t.translationX != 0f) t.translationX = 0f
+            // [桌面模式] scale/rotationX/动画矩阵复位（帧泵驱动的 3D 变换不残留——row 复用时残留=怪形态）
+            if (t.scaleX != 1f) t.scaleX = 1f
+            if (t.scaleY != 1f) t.scaleY = 1f
+            if (t.rotationX != 0f) t.rotationX = 0f
+            mSetAnimMatrix?.invoke(t, null)
+        } catch (t2: Throwable) {
+            logThrottled("notif-fly-zero", Log.WARN, 5000L) { "notif-fly: zero offset failed: $t2" }
+        }
+    }
+
+    /** [doc/spec/113 归零闭环] 全表归零并清表（开关关 / 省电 / 条目清理入口）。 */
+    private fun zeroNotifFlyOffsets() {
+        val snapshot: Array<NotifTiltAnim>
+        synchronized(notifTiltLock) {
+            snapshot = notifTiltAnims
+            notifTiltAnims = emptyArray()
+        }
+        for (a in snapshot) zeroNotifFlyOffsetOf(a)
+        if (snapshot.isNotEmpty()) {
+            logThrottled("notif-fly-zerocall", Log.INFO, 5000L) { "notif-fly: zeroed ${snapshot.size} offset(s)" }
+        }
+    }
+
+    /**
+     * [doc/spec/112] 倾斜帧泵：动画期间每 16ms 在主线程失效一次倾斜行 + 全表玻璃宿主，保证
+     * ① 系统行滑动动画停帧后包络仍逐帧推进；② 包络终点画出**归零帧**（玻璃不冻结在末帧角度）。
+     * 动画表空即停，上限 64 tick 兜底；与系统动画自身的 draw 重复触发由 spec/105 节流合并，开销可忽略。
+     */
+    /** [桌面模式 2026-10-13] 帧泵每 tick 直接写 row 变换：3D rotationX（整卡透视翻转，含内容）+ 缩放。
+     *  弹出：rotationX 40°→0（绕顶部轴翻转摆正，App 启动动画同款透视）+ scale 0.85→1.0；
+     *  收回：0→-25°（反向翻走）+ scale →0.85。pivot=顶部，系统不写 rotationX/scale → 零冲突。 */
+    private fun applyNotifFlyScale(a: NotifTiltAnim, now: Long) {
+        val t = a.target.get() ?: return
+        try {
+            if (!Prefs.notifTiltEnabled(api) || isPowerSaveGlassOff()) return
+            val dur = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+            val p = ((now - a.startAtMs).toFloat() / dur).coerceIn(0f, 1f)
+            val q = 1f - p
+            // 3D 透视翻转：弹出 q³ 衰减（40°→0）；收回 p² 加速（0→-25°，底部甩出去）
+            val rot = if (a.incoming) {
+                NOTIF_FLY_ROTATE_DEG * q * q * q
+            } else {
+                -NOTIF_FLY_ROTATE_DEG * 0.625f * p * p
+            }
+            val shrink = if (a.incoming) {
+                NOTIF_FLY_SCALE_AMOUNT * q * q * q
+            } else {
+                NOTIF_FLY_SCALE_AMOUNT * p
+            }
+            if (t.width > 0) t.pivotX = t.width / 2f
+            t.pivotY = 0f
+            t.cameraDistance = 12000f  // 加大相机距离 → 透视更平缓自然（默认 ~ density*1280 太近会夸张）
+            t.rotationX = rot
+            t.scaleX = 1f - shrink
+            t.scaleY = 1f - shrink
+            logThrottled("notif-fly-scale-w", Log.INFO, 300L) {
+                "notif-fly: xform rot=$rot scale=${1f - shrink} p=$p src=${if (a.incoming) "IN" else "OUT"}"
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun pumpNotifTiltFrames() {
+        if (notifTiltPumpRunning || notifTiltAnims.isEmpty()) return
+        notifTiltPumpRunning = true
+        try {
+            mainHandler().post(object : Runnable {
+                private var ticks = 0L
+                override fun run() {
+                    try {
+                        // [doc/spec/113 归零闭环路径②③] 动画期间开关关 / 省电开启 → 立即全表归零
+                        // （位移不残留半空；清表后下方 isNotEmpty=false → 帧泵自然停）
+                        if (!Prefs.notifTiltEnabled(api) || isPowerSaveGlassOff()) {
+                            zeroNotifFlyOffsets()
+                        }
+                        // 先清过期条目 → 本轮 draw 读到空表 = θ=0（归零帧）
+                        pruneNotifTiltAnims(SystemClock.uptimeMillis())
+                        for (a in notifTiltAnims) {
+                            a.target.get()?.invalidate()  // 直接失效倾斜行（不依赖它是否在注册表）
+                        }
+                        invalidateRegisteredHostViews()   // 玻璃宿主全表失效（spec/105 节流合并）
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "notif-tilt: pump tick failed", t)
+                    }
+                    ticks++
+                    // [审查 V-112 M-1 修复] 上限到了但表仍有活条目（如 0.6s 间隔连发通知）→ 重置计数续泵，
+                    // 防「停泵时停在活角度、归零帧漏画」（原式表非空也直接停泵，冻结到下次随机 draw 才跳回 0）
+                    if (ticks >= NOTIF_TILT_PUMP_MAX_TICKS && notifTiltAnims.isNotEmpty()) {
+                        ticks = 0
+                    }
+                    if (ticks < NOTIF_TILT_PUMP_MAX_TICKS && notifTiltAnims.isNotEmpty()) {
+                        mainHandler().postDelayed(this, NOTIF_TILT_PUMP_TICK_MS)
+                    } else {
+                        notifTiltPumpRunning = false
+                        logThrottled("notif-tilt-pump", Log.INFO, 5000L) {
+                            "notif-tilt: frame pump done, ticks=$ticks anims=${notifTiltAnims.size}"
+                        }
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            notifTiltPumpRunning = false
+            Log.e(TAG, "notif-tilt: spawn frame pump failed", t)
+        }
+    }
+
+    /**
+     * [doc/spec/112] 渲染期取该宿主当前倾斜角 θ（弧度）。**四条归零路径**（任一不过 → 当帧 0）：
+     * ① 时间到（弹出/收回各 450ms 后条目过期）② 开关关（[Prefs.notifTiltEnabled] TTL ≤0.5s）
+     * ③ 省电门控（[isPowerSaveGlassOff]，spec/85 同分支）④ 强度 0%。返回值直接进 setUniforms(tiltRadians)。
+     */
+    private fun notifTiltAngleFor(host: View?): Float {
+        val anims = notifTiltAnims
+        if (anims.isEmpty() || host == null) return 0f
+        if (!Prefs.notifTiltEnabled(api)) return 0f
+        if (isPowerSaveGlassOff()) return 0f
+        // [用户 2026-10-13 拍板] 自由角度调整：直读 Prefs 角度（0~45°，clamp 在 Prefs.notifTiltDeg），
+        // 废除原「3°基准 × 强度% 且硬夹 6°」换算（6° 安全档被否——"6度太小！自由调整！"）
+        val deg = Prefs.notifTiltDeg(api)
+        if (deg <= 0) return 0f
+        val baseRad = Math.toRadians(deg.toDouble()).toFloat()
+        val now = SystemClock.uptimeMillis()
+        var best = 0f
+        var expired = false
+        for (a in anims) {
+            val target = a.target.get()
+            if (target == null) {
+                expired = true
+                continue
+            }
+            val durMs = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+            val elapsed = now - a.startAtMs
+            if (elapsed >= durMs) {
+                expired = true
+                continue
+            }
+            if (!isSelfOrDescendant(host, target)) continue  // 只命中有倾斜事件的通知卡
+            val p = elapsed.toFloat() / durMs
+            val angle = if (a.incoming) {
+                // 弹出：入场即倾斜 → easeOut 收敛，到位（p=1）归零。
+                // 包络 = base·(1 − easeOutCubic(p)) = base·(1−p)³：p=0→base（入场即倾）、p→1→0（到位归零）。
+                // [审查 V-112 BLOCKER-1 修复] 原式 base·easeOutCubic(p) 方向写反（0→base 到位最大角，
+                // 450ms 处 base→0 硬跳变）——已改为三次方衰减，落地无跳变。
+                baseRad * (1f - p) * (1f - p) * (1f - p)
+            } else {
+                // 收回：起止都归 0 的 sin 包络（中段倾斜出场，结束不跳变）
+                (-baseRad * sin(PI * p)).toFloat()
+            }
+            if (abs(angle) > abs(best)) best = angle
+        }
+        if (expired) pruneNotifTiltAnims(now)
+        return best
+    }
+
+    /** 清掉已过期 / 目标已被 GC 的动画条目（防表无限长；事件低频，微秒级）。
+     *  [doc/spec/113 归零闭环路径①] 被清条目同时归零位移分量（防「横幅永久飞在半空」）。 */
+    private fun pruneNotifTiltAnims(now: Long) {
+        synchronized(notifTiltLock) {
+            val kept = ArrayList<NotifTiltAnim>(notifTiltAnims.size)
+            for (a in notifTiltAnims) {
+                val t = a.target.get()
+                val dur = if (a.incoming) NOTIF_TILT_IN_MS else NOTIF_TILT_OUT_MS
+                if (t != null && now - a.startAtMs < dur) {
+                    kept.add(a)
+                } else if (t != null) {
+                    zeroNotifFlyOffsetOf(a)  // 过期条目归零位移（GC 条目 target=null 无法归零）
+                }
+            }
+            notifTiltAnims = kept.toTypedArray()
+        }
+    }
+
+    /** node 是否为 ancestor 自身或其后代（bgView ∈ 行内 → 倾斜只作用于该通知卡的玻璃）。 */
+    private fun isSelfOrDescendant(node: View, ancestor: View): Boolean {
+        var v: View? = node
+        var depth = 0
+        while (v != null && depth < 32) {
+            if (v === ancestor) return true
+            v = v.parent as? View
+            depth++
+        }
+        return false
     }
 
     // ------------------------------------------------------------ [方案 B] NC↔CC 切换 / 锁屏展开 容器缩放变换追踪（doc/spec/29）
@@ -9302,6 +10085,9 @@ object BlurDrawHook {
             // [doc/spec/100 方案2] metaball uniform 输入（cg.bodyRect==null → null → shader 零变化）
             val mbNow = resolveMetaBalls(entry, cg.bodyRect, cg.viewport)
             val applied = appliedUniformsMap[id]
+            // [doc/spec/112 通知卡倾斜] 当前帧该卡倾斜角（无动画事件 / 开关关 / 省电 → 恒 0）。
+            // 只有通知卡（hostView ∈ 倾斜行内）能拿到非 0 → 磁贴/滑杆等其余元素恒 0 不泄漏。
+            val tiltNow = notifTiltAngleFor(entry?.hostViewRef?.get())
             val frame = cg.frame
             // 源变化判断用主线程【当前】快照实例 id（后台计算后快照可能换新 → 立即重建绑定新图，玻璃内容不冻结）
             val currentBitmap = screenSnapshot?.bitmap
@@ -9334,12 +10120,17 @@ object BlurDrawHook {
             // [doc/spec/100 方案2] metaball 球心/半尺寸/blendShape 逐帧随动画变 → data class equals
             // 命中差异 → 必须走全量 setUniforms 重设 uBall1/2/3（否则桥位置停在上一帧）。
             val metaBallChanged = applied != null && applied.metaBalls != mbNow
+            // [doc/spec/112] 倾斜角变化（动画每帧 θ 变 / 归零）→ 必须走全量 setUniforms 重设 uTilt，
+            // 且**禁用两个轻量分支**（轻量路径不下发 uTilt，漏了会把动画帧吃掉 → 卡片停在旧角度）。
+            val tiltChanged = applied == null || applied.tilt != tiltNow
             val uniformsChanged = sourceBitmapChanged || viewportChanged || maskChanged || srcRectChanged || cornerChanged ||
                 // [spec/35 黑遮罩 / spec/41 作用范围修正] 遮罩统一值变化（配置/首次应用）→ 走全量重设
                 maskOverlayChanged ||
                 materialChanged ||
                 // [doc/spec/100 方案2] metaball 变化同样禁用轻量分支（轻量路径不下发 uBall*）
-                metaBallChanged
+                metaBallChanged ||
+                // [doc/spec/112] 倾斜变化同样禁用轻量分支（轻量路径不下发 uTilt）
+                tiltChanged
 
             if (!uniformsChanged) return true
 
@@ -9373,7 +10164,7 @@ object BlurDrawHook {
             // uSourceRect/uSourceLowResRect（2 个 uniform），跳过全量 setUniforms。
             // [doc/spec/95] 轻量分支条件补 !materialChanged：否则材质（含折射区域比例）变化恰逢 srcRect
             // 变化时会被轻量分支吃掉、要等下一帧才补全量 —— 材质变化一律走全量 setUniforms（同帧生效）。
-            if (srcRectChanged && !sourceBitmapChanged && !viewportChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged) {
+            if (srcRectChanged && !sourceBitmapChanged && !viewportChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged) {
                 LiquidGlassShader.setSourceRectOnly(shader, srcRect, lowResSrcRect)
                 appliedUniformsMap[id] = applied!!.copy(srcRect = srcRect)
                 // [coord 诊断] 与全量路径同一计数（每 64 次 + 距上次 ≥2s 打一条，验证 srcRect 跟手）
@@ -9394,7 +10185,7 @@ object BlurDrawHook {
             // [2026-08-13 滑动延迟修复] 轻量分支 2：srcRect+viewport 变（拖动时 resize 的控件）→
             // 重设 uViewport + uSourceRect/uSourceLowResRect（3~4 个 uniform），跳过全量 setUniforms。
             // [doc/spec/95] 同上：材质变化不走 viewport+srcRect 轻量分支（漏设 uRefractionHeight 等材质 uniform）
-            if (srcRectChanged && !sourceBitmapChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged) {
+            if (srcRectChanged && !sourceBitmapChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged) {
                 LiquidGlassShader.setViewportAndSourceRect(shader, viewport, srcRect, lowResSrcRect, cg.maskRect)
                 appliedUniformsMap[id] = applied!!.copy(viewport = viewport, srcRect = srcRect)
                 refreshUniformCount++
@@ -9429,6 +10220,8 @@ object BlurDrawHook {
                 maskAlpha = cg.maskAlpha,
                 // [doc/spec/100 方案2] metaball 黏连桥（null = 非 metaball，shader 侧零变化）
                 metaBalls = mbNow,
+                // [doc/spec/112] 通知卡倾斜角（0 = 恒等零变化；动画期每帧更新）
+                tiltRadians = tiltNow,
             )
             appliedUniformsMap[id] = AppliedKey(
                 frame, sourceBitmapId, viewport, srcRect, cg.maskRect,
@@ -9438,6 +10231,8 @@ object BlurDrawHook {
                 materialHash = cg.params.hashCode(),
                 // [doc/spec/100 方案2] metaball 状态（球动 → 下帧 metaBallChanged 触发全量重设）
                 metaBalls = mbNow,
+                // [doc/spec/112] 倾斜角（θ 变 → 下帧 tiltChanged 继续走全量；归零后回轻量路径）
+                tilt = tiltNow,
             )
             // [coord 诊断] refresh 重设 uniform 节流日志（每 64 次 + 距上次 ≥2s 打一条）
             refreshUniformCount++
@@ -9658,6 +10453,8 @@ object BlurDrawHook {
         val viewport = geo.viewport
         // [doc/spec/32] 实时渲染区域：loc + realRegion 形状 → 容器缩放变换（重影 spec/29，应用在实时 region）
         val hostView = entry.hostViewRef?.get()
+        // [doc/spec/112] 首帧构建路径同样带倾斜角（弹出时常与首帧重合；非通知卡/无事件恒 0）
+        val tiltNow = notifTiltAngleFor(hostView)
         val liveRegion: RectF = if (hostView != null) {
             val loc = IntArray(2)
             hostView.getLocationOnScreen(loc)
@@ -9788,6 +10585,8 @@ object BlurDrawHook {
             maskAlpha = maskAlphaFor(entry.hostViewName),
             // [doc/spec/100 方案2] metaball 黏连桥（null = 非 metaball，shader 侧零变化）
             metaBalls = mbNow,
+            // [doc/spec/112] 通知卡倾斜角（0 = 恒等零变化）
+            tiltRadians = tiltNow,
         )
         // 记录已应用状态（R1：后续每帧 refresh 据此判断是否重设 uniform）
         appliedUniformsMap[region.id] = AppliedKey(
@@ -9802,6 +10601,8 @@ object BlurDrawHook {
             maskAlpha = maskAlphaFor(entry.hostViewName),
             // [doc/spec/100 方案2] metaball 状态（球动 → 下帧 metaBallChanged 触发全量重设）
             metaBalls = mbNow,
+            // [doc/spec/112] 倾斜角（与 setUniforms 传入一致，防下帧 tiltChanged 误判）
+            tilt = tiltNow,
         )
         return LiquidShaderBuild(shader, region.id)
     }
@@ -10335,6 +11136,8 @@ object BlurDrawHook {
         /** [2026-09-16 弧线高光修复] 高光方向因子保底。放末尾并带默认值：位置参数构造，
          *  避免重排既有实参（兜底分支不传即用配置默认）。 */
         val highlightFloor: Float = Prefs.DEFAULT_HIGHLIGHT_FLOOR,
+        /** [2026-10-13] 内侧高光衰减 0~1（默认 0=现状）。 */
+        val highlightInnerAtt: Float = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
     )
 
     @Volatile
@@ -10384,6 +11187,7 @@ object BlurDrawHook {
                     prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),
                     prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_FLOOR, Prefs.DEFAULT_HIGHLIGHT_FLOOR),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
                 )
             } catch (t: Throwable) {
                 Log.e(TAG, "buildParams: prefs float read failed, use defaults", t)
@@ -10442,6 +11246,7 @@ object BlurDrawHook {
                 highlightWidth = m.highlightWidth,
                 highlightFalloff = m.highlightFalloff,
                 highlightFloor = m.highlightFloor,
+                highlightInnerAtt = m.highlightInnerAtt,
                 vibrancy = m.vibrancy,
                 lightAngleDegrees = m.lightAngleDegrees,
                 parallaxX = m.parallaxX,

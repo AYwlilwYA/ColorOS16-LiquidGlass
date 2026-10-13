@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 液态玻璃水滴主体：玻璃青渐变 -->
+    <path android:pathData="M54,26 C54,26 34,52 34,64 C34,76.15 43.16,86 54,86 C64.84,86 74,76.15 74,64 C74,52 54,26 54,26 Z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="40"
+                android:startY="34"
+                android:endX="68"
+                android:endY="82"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#B37DF9FF" />
+                <item android:offset="0.45" android:color="#8040D4FF" />
+                <item android:offset="1.0" android:color="#CC1A88C8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- 玻璃高光弧（左上） -->
+    <path
+        android:pathData="M42,52 C42,44 48,36 54,32"
+        android:strokeWidth="5"
+        android:strokeColor="#CCFFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- 底部反光点 -->
+    <path
+        android:pathData="M58,76 A4,4 0 1,1 58.01,76 Z"
+        android:fillColor="#66FFFFFF" />
+</vector>

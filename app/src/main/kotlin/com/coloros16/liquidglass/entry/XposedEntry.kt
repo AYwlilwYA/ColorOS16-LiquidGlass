@@ -101,7 +101,7 @@ class XposedEntry : XposedModule() {
             }
             return
         }
-        val cl = resolveClassLoader(pkg)
+        val cl = resolveClassLoader(pkg, param)
         if (cl == null) {
             Log.e(TAG, "hot-reload: classLoader unresolved for $pkg, KEEP OLD HOOKS (no unhook)")
             return
@@ -165,9 +165,21 @@ class XposedEntry : XposedModule() {
     // ------------------------------------------------------------ [doc/spec/110] 热重载 classLoader 解析链 ------------------------------------------------------------
     // onHotReloaded 跑在**新加载的类**上 ⇒ 新类静态为空，onPackageLoaded 存的缓存多半取不到，
     // 兜底链按「宿主线程 contextClassLoader → 宿主已知 Application 类」逐级退化。
+    // [2026-10-13 修复] 实测三级全空 → KEEP OLD HOOKS（新代码永远进不了进程）：
+    // ① 新类静态缓存必空 ② TCCL 在 Drip 重载线程上不可靠 ③ Class.forName 用的还是同一个不可靠 TCCL。
+    // 现把 **①.5 旧 hook 反查**插到最前：HookHandle.getExecutable().declaringClass.classLoader ——
+    // hook 目标方法声明在宿主类（com.android.systemui.* / com.oplus.*）里，其 classLoader 就是宿主
+    // 本尊，不依赖任何静态字段或线程状态（boot 类返回 null 由 firstNotNullOfOrNull 自动跳过）。
 
-    private fun resolveClassLoader(pkg: String): ClassLoader? {
+    private fun resolveClassLoader(pkg: String, param: HotReloadedParam): ClassLoader? {
         cachedClassLoader(pkg)?.let { return it }
+        param.oldHookHandles.firstNotNullOfOrNull { h ->
+            try {
+                h.executable?.declaringClass?.classLoader
+            } catch (t: Throwable) {
+                null
+            }
+        }?.let { return it }
         try {
             Thread.currentThread().contextClassLoader?.let { return it }
         } catch (t: Throwable) {
@@ -213,7 +225,7 @@ class XposedEntry : XposedModule() {
         private var cachedSystemUiLoader: ClassLoader? = null
         private var cachedLauncherLoader: ClassLoader? = null
         /** [doc/spec/110] 模块版本标记（热重载完成日志用，便于 daemon 侧对账 loaded version）。 */
-        private const val MODULE_VERSION = "spec-110"
+        private const val MODULE_VERSION = "spec-113"
         private const val TAG = "LiquidGlass"
     }
 }

@@ -85,11 +85,82 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- [doc/spec/65] 动态倾斜（桌面）：重启提示——必须在通知卡倾斜节【之前】，
+             否则文案会盖到「立即生效」的通知卡节（审查 V-112 m-2 修复） -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:text="@string/settings_anim_tilt_restart_note"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- [doc/spec/112] 通知卡倾斜：弹出/收回动画驱动（与上面 spec/65 桌面动态倾斜互不影响）。
+             [审查 V-112 m-3 修复] 删全仓库唯一的 listDivider 分隔线——其余二级页一律标题+间距分节 -->
+        <Switch
+            android:id="@+id/switchNotifTilt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/settings_notif_tilt_enabled" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_notif_tilt_enabled_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_notif_tilt_strength"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <SeekBar
+            android:id="@+id/seekNotifTiltStrength"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="45"
+            android:progress="3" />
+
+        <TextView
+            android:id="@+id/notifTiltStrengthValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_notif_fly_scale"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <SeekBar
+            android:id="@+id/seekNotifFlyScale"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="80"
+            android:progress="75" />
+
+        <TextView
+            android:id="@+id/notifFlyScaleValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_notif_tilt_strength_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 

@@ -418,7 +418,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:max="60"
+            android:max="200"
             android:progress="12" />
 
         <TextView
@@ -465,6 +465,37 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="@string/settings_highlight_floor_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:id="@+id/highlightInnerAttLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_highlight_inner_att"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <SeekBar
+            android:id="@+id/seekHighlightInnerAtt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100"
+            android:progress="0" />
+
+        <TextView
+            android:id="@+id/highlightInnerAttValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:id="@+id/highlightInnerAttDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_highlight_inner_att_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 

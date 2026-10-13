@@ -63,6 +63,9 @@ object Prefs {
      *  必然经过与光源垂直处 → 原实现该处高光精确归零（弧线约 60% 跨度消失）。保底后弧线保留
      *  基础亮度、不再断开；0 = 完全回退旧行为。详见 doc/spec/67。 */
     const val KEY_HIGHLIGHT_FLOOR = "highlight_floor"
+    /** [2026-10-13] 内侧高光衰减（0~1，默认 0=现状）：band 内半向玻璃深处再衰减，1=只剩贴边亮线。 */
+    const val KEY_HIGHLIGHT_INNER_ATT = "highlight_inner_att"
+    const val DEFAULT_HIGHLIGHT_INNER_ATT = 0f
     const val KEY_VIBRANCY = "vibrancy"
     const val KEY_LIGHT_ANGLE = "light_angle"
     const val KEY_PARALLAX_X = "parallax_x"
@@ -762,6 +765,109 @@ object Prefs {
 
     // [2026-09-17 死键清理] backgroundMode / isSceneFilterEnabled / sceneWhitelist 三个读取辅助
     // 已随对应死键一并删除（零调用方）。
+
+    // ---------- [doc/spec/112] 通知卡倾斜（路线 B 玻璃内假透视；驱动 = 弹出/收回动画，手指不参与） ----------
+
+    /** 通知卡倾斜开关：true = 通知卡**弹出/收回动画期间**玻璃短暂倾斜入场/出场，到位自动回正
+     *  （只斜玻璃不斜文字；驱动与角度见 [KEY_NOTIF_TILT_DEG]）。
+     *  **默认 false**（模块「默认全关 + 每个效果一个开关」铁律）；关闭时渲染侧恒 0 → 逐像素零变化。
+     *  改动 ≤0.5s 生效（TTL 500ms 重读，无需重启 SystemUI）。 */
+    const val KEY_NOTIF_TILT_ENABLE = "notif_tilt_enable"
+    /** 通知卡倾斜开关默认值（false = 默认关闭） */
+    const val DEFAULT_NOTIF_TILT_ENABLE = false
+
+    /** 通知卡倾斜角度（°，0~45，默认 3）。**用户 2026-10-13 拍板：自由调整，废除 spec/94 §六 6° 安全档**
+     *  —— 45° 时透视分母 D·cosθ−Y·sinθ ≈168>0（D=400、半高 163）仍安全，shader 另有 denom<1 夹紧兜底；
+     *  更大角度畸变由用户自行权衡。0 = 不倾斜。仅 [KEY_NOTIF_TILT_ENABLE]=true 时生效。 */
+    const val KEY_NOTIF_TILT_DEG = "notif_tilt_deg"
+    /** 通知卡倾斜角度默认值（3°，沿用 spec/94 基准档） */
+    const val DEFAULT_NOTIF_TILT_DEG = 3
+    /** 通知卡倾斜角度上限（45°；用户拍板放开，见 [KEY_NOTIF_TILT_DEG] 注释） */
+    const val NOTIF_TILT_DEG_MAX = 45
+
+    /** [spec/113] 横幅 3D 飞入缩放幅度（0~80%，默认 75）：起始缩到 (1-幅度)，落位 1.0。
+     *  仅弹出/收回动画期间生效（setAnimationMatrix 网格矩阵）。 */
+    const val KEY_NOTIF_FLY_SCALE = "notif_fly_scale"
+    const val DEFAULT_NOTIF_FLY_SCALE = 75
+
+    /** [doc/spec/112] 热路径重读 TTL（ms）：沿用 [refractionHeightRatio] 的 500ms 模式 ——
+     *  改动 ≤0.5s 生效，TTL 内直接返回 @Volatile 缓存，渲染热路径零 IPC。 */
+    private const val NOTIF_TILT_TTL_MS = 500L
+
+    @Volatile
+    private var notifTiltEnableCache: Boolean = DEFAULT_NOTIF_TILT_ENABLE
+
+    @Volatile
+    private var notifTiltEnableCacheAtMs = 0L
+
+    @Volatile
+    private var notifTiltDegCache: Int = DEFAULT_NOTIF_TILT_DEG
+
+    @Volatile
+    private var notifTiltDegCacheAtMs = 0L
+
+    /**
+     * 通知卡倾斜开关（[TTL][NOTIF_TILT_TTL_MS] 节流缓存，与 [unifiedCornerEnabled] 同款骨架）。
+     * 读取失败 / api 不可用 → 默认 false（= 不倾斜，零变化）。
+     */
+    fun notifTiltEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_NOTIF_TILT_ENABLE
+        val now = SystemClock.uptimeMillis()
+        if (now - notifTiltEnableCacheAtMs < NOTIF_TILT_TTL_MS) return notifTiltEnableCache
+        notifTiltEnableCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_NOTIF_TILT_ENABLE, DEFAULT_NOTIF_TILT_ENABLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read notif_tilt_enable failed, default $DEFAULT_NOTIF_TILT_ENABLE", t)
+            DEFAULT_NOTIF_TILT_ENABLE
+        }
+        notifTiltEnableCache = v
+        return v
+    }
+
+    /**
+     * 通知卡倾斜角度°（[TTL][NOTIF_TILT_TTL_MS] 节流缓存）。返回值恒已 clamp 到 0~[NOTIF_TILT_DEG_MAX]。
+     * 用 [readIntCompat]（老 UI 曾把 int 键写成 Float，防 ClassCastException）。
+     */
+    fun notifTiltDeg(api: XposedInterface?): Int {
+        if (api == null) return DEFAULT_NOTIF_TILT_DEG
+        val now = SystemClock.uptimeMillis()
+        if (now - notifTiltDegCacheAtMs < NOTIF_TILT_TTL_MS) return notifTiltDegCache
+        notifTiltDegCacheAtMs = now
+        val raw = try {
+            readIntCompat(read(api), KEY_NOTIF_TILT_DEG, DEFAULT_NOTIF_TILT_DEG)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read notif_tilt_deg failed, default $DEFAULT_NOTIF_TILT_DEG", t)
+            DEFAULT_NOTIF_TILT_DEG
+        }
+        val v = raw.coerceIn(0, NOTIF_TILT_DEG_MAX)
+        if (v != raw) Log.w(TAG, "notif_tilt_deg=$raw out of range, clamp to $v")
+        notifTiltDegCache = v
+        return v
+    }
+
+    @Volatile
+    private var notifFlyScaleCache: Int = DEFAULT_NOTIF_FLY_SCALE
+
+    @Volatile
+    private var notifFlyScaleCacheAtMs = 0L
+
+    /** 横幅 3D 飞入缩放幅度 %（0~80，TTL 缓存同 notifTiltDeg）。 */
+    fun notifFlyScale(api: XposedInterface?): Int {
+        if (api == null) return DEFAULT_NOTIF_FLY_SCALE
+        val now = SystemClock.uptimeMillis()
+        if (now - notifFlyScaleCacheAtMs < NOTIF_TILT_TTL_MS) return notifFlyScaleCache
+        notifFlyScaleCacheAtMs = now
+        val raw = try {
+            readIntCompat(read(api), KEY_NOTIF_FLY_SCALE, DEFAULT_NOTIF_FLY_SCALE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read notif_fly_scale failed, default $DEFAULT_NOTIF_FLY_SCALE", t)
+            DEFAULT_NOTIF_FLY_SCALE
+        }
+        val v = raw.coerceIn(0, 80)
+        notifFlyScaleCache = v
+        return v
+    }
 
     // ---------- 读写（模块 UI 进程，SettingsActivity） ----------
     /** 框架侧存储（与 hook 端 getRemotePreferences 同一份数据，可写）。 */
