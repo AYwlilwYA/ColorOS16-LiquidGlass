@@ -9,6 +9,8 @@
     <!-- 总开关 -->
     <string name="settings_master">启用模块（默认关闭）</string>
     <string name="settings_master_desc">模块总开关，默认关闭。开启后重启 SystemUI 让全部 hook 生效。</string>
+    <string name="settings_glass_enable">液态玻璃渲染</string>
+    <string name="settings_glass_enable_desc">关 = 不套自研玻璃 shader、回退系统模糊（约 0.5 秒生效）；倾斜、横幅飞入等其它功能不受影响。</string>
     <string name="settings_hint">模块默认关闭，开启后才生效。改动需重启对应进程（SystemUI/Launcher/锁屏）生效。</string>
 
     <!-- 液态玻璃材质 -->

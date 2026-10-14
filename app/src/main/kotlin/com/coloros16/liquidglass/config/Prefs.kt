@@ -32,6 +32,11 @@ object Prefs {
     /** 模块总开关，默认关闭（false = 模块完全不生效） */
     const val KEY_MASTER = "master_enabled"
 
+    /** [2026-10-13] 玻璃渲染总开关：false = 自研液态玻璃 shader 完全不套（回退系统模糊），
+     *  其余功能（倾斜/飞入/热重载等）不受影响。默认开（保持现行为）。500ms TTL 直读生效。 */
+    const val KEY_GLASS_ENABLE = "glass_enable"
+    const val DEFAULT_GLASS_ENABLE = true
+
     // [2026-09-17 死键清理] 背景档位已删除：KEY_BACKGROUND_MODE + BACKGROUND_TRANSPARENT/LIGHT/SYSTEM
     // 三个取值 + Prefs.backgroundMode()，全部零调用方（档位语义早已被材质参数逐项取代）。
 
@@ -535,6 +540,28 @@ object Prefs {
     }
 
     fun masterEnabled(api: XposedInterface): Boolean = read(api).getBoolean(KEY_MASTER, false)
+
+    @Volatile
+    private var glassEnableCache: Boolean = DEFAULT_GLASS_ENABLE
+
+    @Volatile
+    private var glassEnableCacheAtMs = 0L
+
+    /** 玻璃渲染总开关（500ms TTL 缓存，渲染热路径零 IPC；关 = 不套自研 shader、回退系统模糊）。 */
+    fun glassEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_GLASS_ENABLE
+        val now = SystemClock.uptimeMillis()
+        if (now - glassEnableCacheAtMs < 500L) return glassEnableCache
+        glassEnableCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_GLASS_ENABLE, DEFAULT_GLASS_ENABLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read glass_enable failed, default $DEFAULT_GLASS_ENABLE", t)
+            DEFAULT_GLASS_ENABLE
+        }
+        glassEnableCache = v
+        return v
+    }
 
     // ---------- 折射区域可调（doc/spec/95，2026-10-10） ----------
 

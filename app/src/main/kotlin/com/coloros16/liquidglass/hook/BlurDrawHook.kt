@@ -25,7 +25,7 @@ import android.view.ViewParent
 import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
-import com.coloros16.liquidglass.liquidglass.ShaderPreheat
+import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -1530,7 +1530,8 @@ object BlurDrawHook {
     private fun obtainShader(id: Int): RuntimeShader {
         synchronized(shaderCache) {
             shaderCache[id]?.let { return it }
-            val shader = LiquidGlassShader.create()
+            // [doc/spec/118] 池化预构造实例：50k AGSL 解析从渲染线程挪到 idle 后台
+            val shader = ShaderInstancePool.pollOrCreate()
             shaderCache[id] = shader
             shaderOwnerSet.add(shader)
             while (shaderCache.size > SHADER_CACHE_MAX) {
@@ -2206,13 +2207,11 @@ object BlurDrawHook {
         // [spec/60 周期强制刷新] 启动文字周期强制刷新循环（幂等去重；开关全关 / 无活跃宿主时
         // tick 轻量跳过，唯一成本是几微秒空 tick）
         ensureTextForceRefreshLoop()
-        // [doc/spec/111 AGSL 启动预热] 安装收尾后延迟 5s，离屏跑一遍真实 shader（真 GPU 路径，
-        // HardwareRenderer + ImageReader），把「首次下拉控制中心卡 1.4s」的 driver program
-        // 编译一次性成本挪到启动 idle 期付掉（方案 B，用户拍板「其它地方编好」）。
-        // 为何选这里而非 XposedEntry.installHooks 末尾：本开关 moduleLogEnabled 与 SystemUI 玻璃
-        // 路径同在此文件，预热日志门控直接复用同一个值（不必再把开关暴露出去）；且本 install
-        // 只由 XposedEntry 对 PACKAGE_SYSTEMUI 调用，正好覆盖出问题的控制中心场景。
-        ShaderPreheat.schedule(moduleLogEnabled)
+        // [doc/spec/118 卡顿修复] 旧 GPU 预热（spec/111 ShaderPreheat）停用：TOP2 存疑
+        // （独立 HardwareRenderer 与真实 UI 大概率不共享 driver program 缓存 → 白做还多一笔开销）、
+        // TOP3（不覆盖每元素 create() 路径）。替代 = shader 实例池：install 收尾触发一次补货，
+        // 把 50k AGSL 的构造解析挪到 idle 后台线程（见 ShaderInstancePool）。
+        ShaderInstancePool.pollOrCreate()
     }
 
     // ------------------------------------------------------------ 反射解析
@@ -9670,6 +9669,14 @@ object BlurDrawHook {
         if (isPowerSaveGlassOff()) {
             restoreSystemShaderIfReplaced(drawable)
             logRenderMode(id, "BLUR", "power-save: glass disabled", drawable)
+            return false
+        }
+
+        // [2026-10-13 玻璃总开关] 关 → 还原模块 shader 并回退系统模糊（与省电同款语义；
+        // 倾斜/飞入等非渲染功能不受影响）。500ms TTL，设置里关 ≤0.5s 生效。
+        if (!Prefs.glassEnabled(api)) {
+            restoreSystemShaderIfReplaced(drawable)
+            logRenderMode(id, "BLUR", "glass switch off", drawable)
             return false
         }
 

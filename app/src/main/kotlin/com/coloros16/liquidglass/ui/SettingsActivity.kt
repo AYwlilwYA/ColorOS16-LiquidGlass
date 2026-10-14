@@ -429,6 +429,13 @@ class SettingsActivity : AppCompatActivity() {
         }
         switch.setOnCheckedChangeListener(switchListener)
         refreshMasterSwitch(switch, switchListener)
+        // 玻璃渲染总开关（关=回退系统模糊，倾斜/飞入不受影响；hook 端 500ms TTL 直读）
+        val switchGlass = view.findViewById<Switch>(R.id.switchGlass)
+        val glassListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_GLASS_ENABLE, checked)
+        }
+        switchGlass.setOnCheckedChangeListener(glassListener)
+        refreshBooleanSwitch(switchGlass, glassListener, Prefs.KEY_GLASS_ENABLE, Prefs.DEFAULT_GLASS_ENABLE)
     }
 
     /** 液态玻璃材质：内部轻模糊 / 鲜艳度 / 高光衰减 / 折射环带高度 / 折射强度。 */

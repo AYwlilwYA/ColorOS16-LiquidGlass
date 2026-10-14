@@ -37,6 +37,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 失败容忍：全 try-catch，任何失败只打日志（受 moduleLogEnabled 总开关门控）后 return，
  * 绝不影响现有渲染 / hook。
+ * ⚠️ [doc/spec/118 2026-10-14] **已停用**（schedule 无调用方）：TOP2 独立 HardwareRenderer 与
+ * 真实 UI 大概率不共享 driver program 缓存（白做）+ TOP3 不覆盖每元素 create()。替代 =
+ * [ShaderInstancePool]（CPU 侧实例预构造）。本文件保留作 spec/111 历史方案参考，勿复活。
  */
 object ShaderPreheat {
 

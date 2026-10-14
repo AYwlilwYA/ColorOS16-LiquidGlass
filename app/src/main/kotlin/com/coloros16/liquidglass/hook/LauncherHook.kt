@@ -21,6 +21,7 @@ import android.view.View
 import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
+import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -1052,6 +1053,21 @@ object LauncherHook {
             logRenderMode(id, "BLUR", "power-save: glass disabled")
             return false
         }
+        // [2026-10-13 玻璃总开关] 关 → 还原模块 shader 回退系统模糊（与 SystemUI 同门控）
+        if (!Prefs.glassEnabled(api)) {
+            try {
+                val p = mGetBlurShaderPaint?.invoke(drawable) as? Paint
+                val cur = p?.shader
+                if (cur is RuntimeShader && shaderOwnerSet.contains(cur)) {
+                    p.shader = null
+                    p.colorFilter = null
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "glass switch off: restore launcher shader failed", t)
+            }
+            logRenderMode(id, "BLUR", "glass switch off")
+            return false
+        }
         val paint = try {
             mGetBlurShaderPaint?.invoke(drawable) as? Paint
         } catch (t: Throwable) {
@@ -1116,7 +1132,7 @@ object LauncherHook {
         val renderSource = resolveRenderSource(id, region) ?: return null
         val srcRect = renderSource.srcRect
         val source = renderSource.source
-        val shader = shaderCache.getOrPut(id) { LiquidGlassShader.create() }
+        val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
         shaderOwnerSet.add(shader)
         if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
         val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius)
