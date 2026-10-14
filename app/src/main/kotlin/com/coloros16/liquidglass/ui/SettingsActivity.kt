@@ -1626,10 +1626,6 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
         val params = LiquidGlassShader.Params(
             viewportWidth = cw.toFloat(),
             viewportHeight = ch.toFloat(),
-            mixColorA = 0,
-            mixColorB = 0,
-            // 预览只看玻璃本身，不做颜色混合（hook 侧 NONE/MIX 由 BlurParam 决定）
-            blendMode = LiquidGlassShader.BlendMode.NONE,
             cornerRadius = cornerR,
             blurRadius = blurRadius,
             // [doc/spec/95 + spec/96] 与 hook 端统一出口 Prefs.refractionHeightPx **同一恒等式**：

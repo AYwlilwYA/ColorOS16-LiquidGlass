@@ -5,6 +5,7 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.Rect
@@ -15,13 +16,16 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.hardware.HardwareBuffer
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
 import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewParent
+import android.view.WindowManager
 import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
@@ -89,11 +93,22 @@ object BlurDrawHook {
     private const val CLASS_BLUR_DRAWABLE_MANAGER = "com.oplus.posteffect.manager.BlurDrawableManager"
     private const val METHOD_DRAW_BLUR_SHADER = "drawBlurShader"
     private const val METHOD_ON_DRAW_CONTENT = "onDrawContent"
+    // [spec/114] 16.00.14 旧架构无 onDrawContent，shader 不可用时系统改走 drawBlur 位图平铺 —— 挂它作等价兜底
+    private const val METHOD_DRAW_BLUR = "drawBlur"
+    private const val CLASS_FOREGROUND_BLUR_PARAM = "com.oplus.posteffect.ForegroundBlurParam"
     private const val METHOD_ON_BLUR_READY = "onBlurReady"
     private const val METHOD_GET_DRAWABLE_SHADER_PAINT = "getDrawableShaderPaint"
     private const val METHOD_GET_DRAWABLE_SHADER = "getDrawableShader"
     private const val METHOD_GET_ENABLE_SHADER = "getEnableShader"
     private const val METHOD_GET_SHADER_OR_NULL = "getShaderOrNull"
+    // [spec/114] 16.00.14 旧架构 posteffect（48 类）：无 DrawableShader/getDrawableShader*，等价旧名
+    // BlurDrawableShader/getBlurShader*（public final，语义一致），只作候选链第二级、现役第一命中不变
+    private const val CLASS_DRAWABLE_SHADER_LEGACY = "com.oplus.posteffect.agsl.BlurDrawableShader"
+    private const val METHOD_GET_LEGACY_SHADER_PAINT = "getBlurShaderPaint"
+    private const val METHOD_GET_LEGACY_SHADER = "getBlurShader"
+    private const val METHOD_GET_LEGACY_GRADIENT_STROKE_PARAMS = "getGradientStrokeCornerParams"
+    // [spec/114] 16.00.14 BlurConfig 无 getPathProvider，圆角改从 BaseDrawable.pathProvider 私有字段读
+    private const val FIELD_LEGACY_PATH_PROVIDER = "pathProvider"
 
     // ---- [doc/spec/100 方案2] metaball 黏连参数反射（全部为字节码真名，jadx 名不可信）----
     // 走「全 public」链路拿球参数，不需要 setAccessible 私有字段：
@@ -186,6 +201,9 @@ object BlurDrawHook {
     private const val CLASS_VIEW_BLUR_MANAGER = "com.oplus.systemui.notification.blur.ViewBlurManager"
     private const val FIELD_VIEW_BLUR_MANAGER = "viewBlurManager"
     private const val FIELD_CURRENT_MATERIAL_COLOR = "currentMaterialColor"
+    // [spec/114] 17.99.02：currentMaterialColor 迁 MaterialColorManager，ViewBlurManager 经 holder 字段持有
+    private const val CLASS_MATERIAL_COLOR_MANAGER = "com.oplus.systemui.notification.color.MaterialColorManager"
+    private const val FIELD_MATERIAL_COLOR_MANAGER = "materialColorManager"
     private const val FIELD_BLUR_MASK_COLOR = "blurMaskColor"
     private const val FIELD_CLICK_ALPHA = "clickAlpha"
     private const val FIELD_STACKED_MUSK_COLOR = "stackedNotificationMuskColor"
@@ -289,6 +307,10 @@ object BlurDrawHook {
     private const val CLASS_ROUND_RECT_OUTLINE_PROVIDER = "com.oplusos.systemui.common.outline.RoundRectOutlineProvider"
     private const val FIELD_CORNER_RADIUS = "cornerRadius"
     private const val CLASS_CORNER_PARAMS = "com.oplus.posteffect.CornerParams"
+    // [spec/114] 17.99.02：CornerParams/CornerType 迁 params 子包（类内成员不变），候选链二级
+    private const val CLASS_CORNER_PARAMS_PARAMS = "com.oplus.posteffect.params.CornerParams"
+    // [spec/114] 16.00.14 旧架构：CornerParams 旧名（getRadius/getType/getWeight/setRadius 同名），候选链三级
+    private const val CLASS_CORNER_PARAMS_LEGACY = "com.oplus.posteffect.GradientStrokeCornerParams"
     private const val METHOD_GET_RADIUS = "getRadius"
     // [spec/18 圆角过渡区深挖修正] CONIC 本体判定：CornerParams.getType()/getWeight()（c16.1_PJZ110
     // CornerParams.java 反编译实证：public final CornerType getType() / public final float getWeight()），
@@ -302,6 +324,9 @@ object BlurDrawHook {
     // "系统走 CONIC 平滑角" 的稳定信号。
     private const val METHOD_GET_RADIUS_WEIGHT = "getRadiusWeight"
     private const val CLASS_CORNER_TYPE = "com.oplus.posteffect.CornerType"
+    private const val CLASS_CORNER_TYPE_PARAMS = "com.oplus.posteffect.params.CornerType"
+    // [spec/114] 16.00.14 旧枚举名（CONIC/FULL 同名），候选链三级
+    private const val CLASS_CORNER_TYPE_LEGACY = "com.oplus.posteffect.GradientStrokeCornerType"
     // [spec/18 Bug 1 二级菜单] QsFlashLightBackgroundUtils.provideLevelBarBlurProxy 用
     // SmoothRoundRectPathProvider（com.oplus.posteffect.path，**非** RoundRectOutlineProvider）作
     // pathProvider → 五级反射 getCornerRadius/四角/RoundRectOutlineProvider/gradientStrokeCornerParam
@@ -343,6 +368,8 @@ object BlurDrawHook {
     //   QS 容器平移经 OplusQSContainerImplController → OplusQSContainerImpl.setTranslationY
     //   （View 字段），重录后 getLocationOnScreen 反映新位置 → 映射随之更新。
     private const val CLASS_PAGED_TILE_LAYOUT_LISTENER = "com.android.systemui.qs.PagedTileLayout\$2"
+    // [spec/114] 17.99.02：PagedTileLayout$2 迁 qs.deprecated 包（onPageScrolled 签名不变）
+    private const val CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED = "com.android.systemui.qs.deprecated.PagedTileLayout\$2"
     private const val METHOD_ON_PAGE_SCROLLED = "onPageScrolled"
     private const val CLASS_QUICK_SETTINGS_CONTROLLER = "com.android.systemui.shade.QuickSettingsControllerImpl"
     private const val METHOD_SET_EXPANSION_HEIGHT = "setExpansionHeight"
@@ -866,7 +893,15 @@ object BlurDrawHook {
     // ---- 磨砂根因：ViewBlurManager.currentMaterialColor / PlatformBlurDrawable.blurMaskColor 字段 ----
     private var mNbvViewBlurManager: Field? = null
     private var mViewBlurManagerMaterialColor: Field? = null
+    // [spec/114] 17.99.02：非空时 currentMaterialColor 目标对象 = holder.get(vbm)（MaterialColorManager 实例）
+    private var mMaterialColorManagerHolder: Field? = null
     private var mPlatformBlurMaskColor: Field? = null
+
+    // ---- [spec/114] 四处多版本兼容命中标签（装机自检小表）----
+    @Volatile private var compatHitOnBlurReady = "?"
+    @Volatile private var compatHitQsPageScroll = "?"
+    @Volatile private var compatHitCorner = "?"
+    @Volatile private var compatHitMaterialColor = "?"
 
     // ---- 任务 D + 任务 B（spec/11）：圆角半径反射（ViewBlurProxy.getBlurConfig → BlurConfig 真实 cornerRadius） ----
     private var mViewProxyGetBlurConfig: Method? = null
@@ -887,6 +922,11 @@ object BlurDrawHook {
     private var mCornerTypeConic: Any? = null    // CornerType.CONIC 枚举常量（判等用；null=反射失败降级圆弧）
     private var mBaseRoundRectPathProviderClass: Class<*>? = null
     private var mBaseRoundRectPathProviderGetMaxRadius: Method? = null
+    // [spec/114] 16.00.14 旧架构 holder：CornerParams 挂在 BaseDrawable.blurShader 上（BlurConfig 无 gradientStroke 级）
+    private var mLegacyShaderGetGradientStrokeParams: Method? = null
+    private var mLegacyPathProviderField: Field? = null
+    /** [spec/114] 16.00.14 旧架构 posteffect 判定（新 shader 类缺失且旧 shader 类命中），降级日志措辞用 */
+    @Volatile private var legacyPosteffectArch = false
     // ---- [doc/spec/106 方案 A] 统一圆角写穿：写口反射（读口见上方任务 D；全部 public 成员） ----
     private var mBlurConfigSetCornerRadius: Method? = null
     private var mBlurConfigSetLeftTopCornerRadius: Method? = null
@@ -1154,6 +1194,77 @@ object BlurDrawHook {
         }
         return null
     }
+
+    /** [doc/spec/118] 真实 GrContext 预热一次性门（进程内一次；热重载新类=重预热=正确）。 */
+    @Volatile
+    private var realGrWarmDone = false
+
+    /**
+     * [doc/spec/118 卡顿修复·TOP2 对策] 在 SystemUI **真实窗口**上画 1px 玻璃，逼真
+     * RenderThread/GrContext 完成 driver program 首次编译（「首开下拉卡 1.4s」的 912ms GPU 段）。
+     *
+     * 旧 ShaderPreheat（spec/111）走独立 HardwareRenderer + ImageReader —— 与真实 UI 大概率
+     * 不共享 GrContext → 编译缓存白做还多一笔开销（已停用）。本方案同进程同 RenderThread，
+     * 编译产物直接被后续首帧复用。
+     *
+     * 细节：TYPE_STATUS_BAR 窗口（SystemUI 自有权限）1×1、FLAG_NOT_TOUCHABLE|FOCUSABLE、
+     * 300ms 后移除；全 try-catch 失败只打日志。
+     */
+    private fun warmUpRealGrContext() {
+        if (realGrWarmDone) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return // RuntimeShader 需 API 33
+        try {
+            val ctx = resolveSystemUiContext() ?: return
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (realGrWarmDone) return@postDelayed
+                var removed = false
+                try {
+                    val shader = ShaderInstancePool.pollOrCreate()
+                    // 绑一个 1×1 源图防 shader input 未定义（uniform 值不影响 program 编译）
+                    val srcBmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+                    shader.setInputShader("uSource", LiquidGlassShader.createSourceBitmapShader(srcBmp))
+                    shader.setInputShader("uSourceLowRes", LiquidGlassShader.createSourceBitmapShader(srcBmp))
+                    shader.setFloatUniform("uViewport", 1f, 1f)
+                    val paint = Paint().apply { this.shader = shader }
+                    val warmView = object : View(ctx) {
+                        override fun onDraw(canvas: Canvas) {
+                            canvas.drawRect(0f, 0f, 1f, 1f, paint)
+                        }
+                    }
+                    // TYPE_VOLUME_OVERLAY(2020)：SystemUI 自有权限且允许多实例；
+                    // TYPE_STATUS_BAR(2000) 在 ColorOS 只许一个（实测 BadTokenException）
+                    val lp = WindowManager.LayoutParams(
+                        1, 1,
+                        2020, // WindowManager.LayoutParams.TYPE_VOLUME_OVERLAY
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT,
+                    ).apply { alpha = 0f }
+                    val wm = ctx.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager
+                    wm.addView(warmView, lp)
+                    realGrWarmDone = true
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        try {
+                            wm.removeView(warmView); removed = true
+                        } catch (ignored: Throwable) {
+                        }
+                        if (!removed) {
+                            try { wm.removeViewImmediate(warmView) } catch (ignored: Throwable) {
+                            }
+                        }
+                        srcBmp.recycle()
+                    }, 300L)
+                    Log.i(TAG, "lg-preheat: real-GrContext warm view attached (spec/118)")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "lg-preheat: real-GrContext warm failed (spec/118)", t)
+                }
+            }, 8000L)
+        } catch (t: Throwable) {
+            Log.w(TAG, "lg-preheat: schedule real warm failed", t)
+        }
+    }
+
     /** 锁屏状态缓存（volatile 读零开销；≥[KEYGUARD_STATE_CACHE_MS] 才重查 Binder，锁屏/解锁切换 ≤500ms 响应） */
     @Volatile
     private var cachedKeyguardLocked = false
@@ -1517,6 +1628,8 @@ object BlurDrawHook {
      *（本类只经 [obtainShader] / [touchShaderCache] / [clearShaderCache] 访问，勿直接用）。
      */
     private val shaderCache = LinkedHashMap<Int, RuntimeShader>(16, 0.75f, true)
+    /** [doc/spec/119 拆源] id → 是否 FULL 源（与 shaderCache 同步增删；null 缺省视为 BASE） */
+    private val shaderCacheMb = HashMap<Int, Boolean>()
     /** [doc/spec/105 P1-3] LRU 上限（沿用原 128，语义从「整表清空阈值」改为「淘汰阈值」） */
     private const val SHADER_CACHE_MAX = 128
     /** [spec/90 #5] shader 身份集合：O(1) 判「paint.shader 是否本模块实例」，
@@ -1526,19 +1639,28 @@ object BlurDrawHook {
     /**
      * [doc/spec/105 P1-3] 取（或建）该 drawable 的液态玻璃 RuntimeShader。
      * 超过 [SHADER_CACHE_MAX] 按 LRU 逐条淘汰最旧的，**绝不整表 clear**。
+     * [doc/spec/119 拆源] metaball=true → FULL 源（MetaBall 黏连桥）；false → BASE（小元素）。
+     * 同 id 若源类型变化（极罕见），旧实例销毁重建。
      */
-    private fun obtainShader(id: Int): RuntimeShader {
+    private fun obtainShader(id: Int, metaball: Boolean = false): RuntimeShader {
         synchronized(shaderCache) {
-            shaderCache[id]?.let { return it }
-            // [doc/spec/118] 池化预构造实例：50k AGSL 解析从渲染线程挪到 idle 后台
-            val shader = ShaderInstancePool.pollOrCreate()
+            shaderCache[id]?.let { cached ->
+                if (shaderCacheMb[id] == metaball) return cached
+                // 源类型变化：销毁旧实例换新源
+                shaderCache.remove(id)
+                shaderOwnerSet.remove(cached)
+            }
+            // [doc/spec/118+119] 池化双源：FULL/BASE 各自 idle 后台预构造
+            val shader = ShaderInstancePool.pollOrCreate(metaball)
             shaderCache[id] = shader
+            shaderCacheMb[id] = metaball
             shaderOwnerSet.add(shader)
             while (shaderCache.size > SHADER_CACHE_MAX) {
                 val it = shaderCache.entries.iterator()
                 if (!it.hasNext()) break
                 val eldest = it.next()
                 it.remove()
+                shaderCacheMb.remove(eldest.key)
                 shaderOwnerSet.remove(eldest.value)
                 logThrottled("shader-lru-evict", Log.DEBUG) {
                     "shader: LRU evict id=${eldest.key}, size=${shaderCache.size} (spec/105)"
@@ -1562,6 +1684,7 @@ object BlurDrawHook {
     private fun clearShaderCache() {
         synchronized(shaderCache) {
             shaderCache.clear()
+            shaderCacheMb.clear()
             shaderOwnerSet.clear()
         }
     }
@@ -2131,7 +2254,16 @@ object BlurDrawHook {
         mountAddBlurDrawable(api, classLoader)
         mountDrawBlurShader(api, classLoader)
         mountOnDrawContent(api, classLoader)
+        // [spec/114] 16.00.14 旧架构：无 onDrawContent → 挂 drawBlur 作等价兜底（现役直接返回）
+        mountLegacyDrawBlur(api, classLoader)
         mountMotionSources(api, classLoader)
+        // [spec/114] 四处多版本兼容自检小表（#39/#14 在 mount 内、R5/R6/R14 在 resolveMethods 内已各打命中行）
+        Log.i(TAG, "lg-hook compat #39 onBlurReady=$compatHitOnBlurReady")
+        Log.i(TAG, "lg-hook compat #14 qsPageScroll=$compatHitQsPageScroll")
+        Log.i(TAG, "lg-hook compat R5/R6 corner=$compatHitCorner")
+        Log.i(TAG, "lg-hook compat R14 materialColor=$compatHitMaterialColor")
+        // [spec/114] 16.00.14 能力自检：缺失项逐条打 lg-hook INFO 降级行（现役全命中只打一行汇总）
+        legacyCompatCheck(classLoader)
         // [2026-08-15 偶发不抓屏根治] hook NotificationShadeWindowView.onAttachedToWindow/onDetachedFromWindow：
         // shade 窗口（重建后）重挂载时立即刷新 shadeRootViewCache（始终指向当前 attach 的 shade 根），
         // 根治「窗口重建后缓存失效 + 新根未登记 → resolveShadeSfc 三来源全空 → 一阵子不抓屏」。
@@ -2207,26 +2339,179 @@ object BlurDrawHook {
         // [spec/60 周期强制刷新] 启动文字周期强制刷新循环（幂等去重；开关全关 / 无活跃宿主时
         // tick 轻量跳过，唯一成本是几微秒空 tick）
         ensureTextForceRefreshLoop()
-        // [doc/spec/118 卡顿修复] 旧 GPU 预热（spec/111 ShaderPreheat）停用：TOP2 存疑
-        // （独立 HardwareRenderer 与真实 UI 大概率不共享 driver program 缓存 → 白做还多一笔开销）、
-        // TOP3（不覆盖每元素 create() 路径）。替代 = shader 实例池：install 收尾触发一次补货，
-        // 把 50k AGSL 的构造解析挪到 idle 后台线程（见 ShaderInstancePool）。
+        // [doc/spec/118] 预热全部停用：旧 GPU 预热白做（独立 GrContext）；真实窗口预热
+        // 在真机把 SystemUI 打进重启循环（卸载恢复 2026-10-14），未定位前禁止复活。
+        // shader 实例池保留（纯 CPU 构造，无 GPU 窗口）。
         ShaderInstancePool.pollOrCreate()
+        // warmUpRealGrContext()  // [禁用] SystemUI 重启循环事故，见上
     }
 
     // ------------------------------------------------------------ 反射解析
 
+    /** [spec/114] 候选 FQCN 链解析：旧名第一优先，命中即止；全 miss 返回 null（调用方降级） */
+    private fun resolveClassChain(classLoader: ClassLoader, vararg candidates: String): Class<*>? {
+        for (name in candidates) {
+            try {
+                return Class.forName(name, false, classLoader)
+            } catch (t: Throwable) {
+                // 候选 miss（ClassNotFoundException 等），试下一候选
+            }
+        }
+        return null
+    }
+
+    /** [spec/114] 候选方法链：按序取第一个命中的 public 方法（含继承），全 miss 返回 null */
+    private fun resolveMethodChain(clazz: Class<*>, vararg names: String): Method? {
+        for (name in names) {
+            try {
+                return clazz.getMethod(name)
+            } catch (t: Throwable) {
+                // 候选 miss，试下一候选
+            }
+        }
+        return null
+    }
+
+    /** [spec/114] 16.00.14 旧架构判定：新 shader 类缺失且旧 shader 类命中 */
+    private fun isLegacyPosteffect(classLoader: ClassLoader): Boolean =
+        resolveClassChain(classLoader, CLASS_DRAWABLE_SHADER) == null &&
+            resolveClassChain(classLoader, CLASS_DRAWABLE_SHADER_LEGACY) != null
+
+    /** [spec/114] 能力缺失降级日志（16.00.14 上即「16.00.14 无 X，降级」） */
+    private fun logLegacyDegrade(what: String) {
+        Log.i(TAG, "lg-hook: ${if (legacyPosteffectArch) "16.00.14 无" else "本版本无"} $what，降级")
+    }
+
+    /** [spec/114] 旧架构等价链命中日志（能力仍在，只是换了旧名/旧来源） */
+    private fun logLegacyAlt(what: String, alt: String) {
+        if (legacyPosteffectArch) Log.i(TAG, "lg-hook: 16.00.14 无 $what，改走 $alt")
+    }
+
+    /**
+     * [spec/114] 16.00.14 能力自检：逐项探测 9 个 hook 点与 10 项关键反射是否在本版本存在。
+     * 真缺失 → lg-hook INFO「16.00.14 无 X，降级」；有旧架构等价物 → 只说明改走哪条；
+     * 现役版本全命中时只打一行汇总（零噪音）。
+     */
+    private fun legacyCompatCheck(classLoader: ClassLoader) {
+        val ver = if (legacyPosteffectArch) "16.00.14 " else ""
+        var missing = 0
+        fun miss(label: String) {
+            missing++
+            logLegacyDegrade(label)
+        }
+        fun hasMethod(cls: String, method: String, vararg params: Class<*>): Boolean = try {
+            Class.forName(cls, false, classLoader).getDeclaredMethod(method, *params)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+        fun hasPubMethod(cls: String, method: String, vararg params: Class<*>): Boolean = try {
+            Class.forName(cls, false, classLoader).getMethod(method, *params)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+        fun hasField(cls: String, field: String): Boolean = try {
+            Class.forName(cls, false, classLoader).getField(field)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+        // ---- hook 点（#2/#4/#5/#7/#9/#41/#43/#44 = 16.00.14 缺；#14 双 FQCN）----
+        if (!hasPubMethod(CLASS_LIGHT_STYLE_STROKE_DRAWABLE, METHOD_DRAW, Canvas::class.java)) {
+            Log.i(TAG, "lg-hook: ${ver}无 LightStyleStrokeDrawable#draw（QS 详情背景改回基类 AutoBlurDrawable，#1 覆盖）")
+        }
+        if (!hasPubMethod(CLASS_CAPSULE_BACKGROUND_HELPER, METHOD_DRAW_CAPSULE_BG, View::class.java, Canvas::class.java)) {
+            miss("#4 锁屏胶囊 CapsuleBackgroundHelper#drawCapsuleBg")
+        }
+        if (!hasPubMethod(CLASS_CAPSULE_EAR_VIEW, METHOD_ON_DRAW, Canvas::class.java)) {
+            miss("#5 锁屏胶囊 CapsuleEarView#onDraw")
+        }
+        if (!hasPubMethod(CLASS_MIX_COLOR_TILE_DRAWABLE, METHOD_DRAW, Canvas::class.java)) {
+            Log.i(TAG, "lg-hook: ${ver}无 MixColorTileDrawable#draw（1x1 tile 改走 MixColorTileViewBackground + 基类 AutoBlurDrawable，#1 覆盖）")
+        }
+        if (!hasPubMethod(CLASS_META_BALL_DRAWABLE, "setMetaColor", Int::class.javaPrimitiveType!!)) {
+            miss("#9 MetaBall 粘连（MetaBallBlurDrawable#setMetaColor）")
+        }
+        if (!hasMethod(CLASS_QS_SEEKBAR_BLUR_MANAGER, METHOD_GET_SEEKBAR_ACTIVE_DRAWABLE, View::class.java)) {
+            miss("#41 QS 音量/亮度条进度层（QsSeekBarBlurManager#getSeekBarActiveDrawable）")
+        }
+        if (!hasMethod(CLASS_BLEND_DRAWABLE, METHOD_ON_DRAW_CONTENT, Canvas::class.java)) {
+            miss("#43 BlendDrawable#onDrawContent")
+        }
+        if (!hasMethod(CLASS_BASE_DRAWABLE, METHOD_ON_DRAW_CONTENT, Canvas::class.java)) {
+            miss("#44 BaseDrawable#onDrawContent（shader 不可用兜底路径）")
+        }
+        if (!hasMethod(CLASS_PAGED_TILE_LAYOUT_LISTENER, METHOD_ON_PAGE_SCROLLED, Int::class.javaPrimitiveType!!, Float::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!) &&
+            !hasMethod(CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED, METHOD_ON_PAGE_SCROLLED, Int::class.javaPrimitiveType!!, Float::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!)
+        ) {
+            miss("#14 QS 翻页重录（PagedTileLayout\$2#onPageScrolled）")
+        }
+        // ---- 关键反射（R1-R8/R14/R20；R1-R3/R5-R8 有等价链，R4/R14/R20 真缺）----
+        if (!hasMethod(CLASS_DRAWABLE_SHADER, METHOD_MB_GET_META_BALL_PARAMS)) {
+            miss("R4 MetaBall 粘连参数链（DrawableShader#getMetaBallParams）")
+        }
+        if (resolveClassChain(classLoader, CLASS_DRAWABLE_SHADER_LEGACY) != null) {
+            logLegacyAlt("R1/R2/R3 DrawableShader/getDrawableShader*", "BlurDrawableShader/getBlurShader*")
+        }
+        if (!hasField(CLASS_VIEW_BLUR_MANAGER, FIELD_CURRENT_MATERIAL_COLOR) &&
+            !hasField(CLASS_MATERIAL_COLOR_MANAGER, FIELD_CURRENT_MATERIAL_COLOR)
+        ) {
+            miss("R14 材质色抑制（ViewBlurManager#currentMaterialColor）")
+        }
+        if (resolveClassChain(classLoader, "com.oplus.systemui.notification.row.NotificationMenuRowMetaBallController2") == null) {
+            miss("R20 侧滑按钮圆角正解（NotificationMenuRowMetaBallController2）")
+        }
+        Log.i(TAG, "lg-hook compat 16.00.14 能力自检：缺 $missing 项，旧架构=$legacyPosteffectArch")
+    }
+
     private fun resolveMethods(classLoader: ClassLoader) {
+        // [spec/114] 逐成员独立解析 + 旧架构候选：16.00.14 缺 getDrawableShader*/DrawableShader（旧名
+        // getBlurShader*/BlurDrawableShader），原先整段一个 try 首个 miss 就连坐 getBounds/getPaint/
+        // drawBlurShader 全部解析不到 → 主渲染链整体失效。旧名候选只在新名 miss 时才试，
+        // 现役（16.99.12/17.99.02）新名第一命中，解析结果与原先逐字一致。
+        legacyPosteffectArch = isLegacyPosteffect(classLoader)
+        if (legacyPosteffectArch) Log.i(TAG, "lg-hook: 16.00.14 旧架构 posteffect 检出，shader/圆角走旧名等价链")
         try {
             val base = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
-            mGetDrawableShaderPaint = base.getMethod(METHOD_GET_DRAWABLE_SHADER_PAINT)
-            mGetDrawableShader = base.getMethod(METHOD_GET_DRAWABLE_SHADER)
-            mGetEnableShader = base.getMethod(METHOD_GET_ENABLE_SHADER)
-            mGetBounds = base.getMethod(METHOD_GET_BOUNDS)
-            mGetPaint = base.getMethod(METHOD_GET_PAINT)
-            mDrawBlurShader = base.getMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
-            val shaderCls = Class.forName(CLASS_DRAWABLE_SHADER, false, classLoader)
-            mGetShaderOrNull = shaderCls.getMethod(METHOD_GET_SHADER_OR_NULL)
+            val shaderCls = resolveClassChain(classLoader, CLASS_DRAWABLE_SHADER, CLASS_DRAWABLE_SHADER_LEGACY)
+            mGetDrawableShaderPaint = resolveMethodChain(base, METHOD_GET_DRAWABLE_SHADER_PAINT, METHOD_GET_LEGACY_SHADER_PAINT)
+            mGetDrawableShader = resolveMethodChain(base, METHOD_GET_DRAWABLE_SHADER, METHOD_GET_LEGACY_SHADER)
+            mGetEnableShader = resolveMethodChain(base, METHOD_GET_ENABLE_SHADER)
+            mGetBounds = resolveMethodChain(base, METHOD_GET_BOUNDS)
+            mGetPaint = resolveMethodChain(base, METHOD_GET_PAINT)
+            mDrawBlurShader = try {
+                base.getMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
+            } catch (t: Throwable) {
+                null
+            }
+            mGetShaderOrNull = shaderCls?.let { c -> resolveMethodChain(c, METHOD_GET_SHADER_OR_NULL) }
+            if (mGetDrawableShaderPaint == null) logLegacyDegrade("BaseDrawable.getDrawableShaderPaint")
+            if (mGetDrawableShader == null) logLegacyDegrade("BaseDrawable.getDrawableShader")
+            if (mGetEnableShader == null) logLegacyDegrade("BaseDrawable.getEnableShader")
+            if (mGetBounds == null) logLegacyDegrade("BaseDrawable.getBounds")
+            if (mGetPaint == null) logLegacyDegrade("BaseDrawable.getPaint")
+            if (mDrawBlurShader == null) logLegacyDegrade("BaseDrawable.drawBlurShader(Canvas)")
+            if (mGetShaderOrNull == null) logLegacyDegrade("shader.getShaderOrNull")
+            // [spec/114] 16.00.14 圆角/CONIC 旧 holder（BlurConfig 无 gradientStroke 级时才用到）
+            mLegacyShaderGetGradientStrokeParams = shaderCls?.let { c ->
+                resolveMethodChain(c, METHOD_GET_LEGACY_GRADIENT_STROKE_PARAMS)
+            }
+            if (mGetDrawableShaderPaint?.name == METHOD_GET_LEGACY_SHADER_PAINT ||
+                mGetDrawableShader?.name == METHOD_GET_LEGACY_SHADER
+            ) {
+                Log.i(TAG, "lg-hook: 16.00.14 命中旧名 getBlurShaderPaint/getBlurShader（getDrawableShader* 等价物）")
+            }
+            mLegacyPathProviderField = try {
+                base.getDeclaredField(FIELD_LEGACY_PATH_PROVIDER).apply { isAccessible = true }
+            } catch (t: Throwable) {
+                null
+            }
+            if (mGetDrawableShaderPaint == null || mGetDrawableShader == null || mGetEnableShader == null ||
+                mGetBounds == null || mGetPaint == null || mDrawBlurShader == null || mGetShaderOrNull == null
+            ) {
+                Log.e(TAG, "Hook B resolve methods incomplete, Hook B degraded")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "Hook B resolve methods failed, Hook B disabled", t)
         }
@@ -2280,16 +2565,32 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Log.e(TAG, "Hook B resolve NotificationBackgroundView methods failed, notification card map disabled", t)
         }
-        // 磨砂根因·修 1：ViewBlurManager.currentMaterialColor 字段（ExtImp.viewBlurManager 是 public final，
-        // currentMaterialColor 是 public int；16.1 反编译 ViewBlurManager.java line 78/117 实证）。
-        // 独立 try-catch：失败只禁用材质色层抑制（回退现状含磨砂），不影响其他 hook。
+        // 磨砂根因·修 1：currentMaterialColor 反射链（spec/114 §5.2）：① ViewBlurManager 字段（16.x）
+        // → miss 则 ② ViewBlurManager.materialColorManager holder → ③ MaterialColorManager 字段
+        //（17.99.02）。每级独立 try；全 miss 只禁用材质色层抑制（回退现状含磨砂），不影响其他 hook。
         try {
             val extImpCls = Class.forName(CLASS_NBV_EXT_IMP, false, classLoader)
             mNbvViewBlurManager = extImpCls.getField(FIELD_VIEW_BLUR_MANAGER).apply { isAccessible = true }
             val vbmCls = Class.forName(CLASS_VIEW_BLUR_MANAGER, false, classLoader)
-            mViewBlurManagerMaterialColor = vbmCls.getField(FIELD_CURRENT_MATERIAL_COLOR).apply { isAccessible = true }
+            val colorField = try {
+                vbmCls.getField(FIELD_CURRENT_MATERIAL_COLOR).apply { isAccessible = true }.also {
+                    compatHitMaterialColor = "ViewBlurManager field (16.x)"
+                    Log.i(TAG, "lg-hook: currentMaterialColor @ ViewBlurManager field (16.x)")
+                }
+            } catch (t: Throwable) {
+                val holder = vbmCls.getDeclaredField(FIELD_MATERIAL_COLOR_MANAGER).apply { isAccessible = true }
+                val mcmCls = Class.forName(CLASS_MATERIAL_COLOR_MANAGER, false, classLoader)
+                mcmCls.getField(FIELD_CURRENT_MATERIAL_COLOR).apply { isAccessible = true }.also {
+                    mMaterialColorManagerHolder = holder
+                    compatHitMaterialColor = "MaterialColorManager via holder (17.99.02)"
+                    Log.i(TAG, "lg-hook: currentMaterialColor @ MaterialColorManager via holder (17.99.02)")
+                }
+            }
+            mViewBlurManagerMaterialColor = colorField
             Log.i(TAG, "Hook B ViewBlurManager.currentMaterialColor field resolved (frosted-glass suppress)")
         } catch (t: Throwable) {
+            mMaterialColorManagerHolder = null
+            compatHitMaterialColor = "MISS (suppressed)"
             Log.e(TAG, "Hook B resolve ViewBlurManager.currentMaterialColor failed, material-color layer suppress disabled", t)
         }
         // 磨砂根因·修 3（agent 细读实证 2026-08-12，F:\jadx_extimp_out\NotificationBackgroundViewExtImp.java）：
@@ -2318,19 +2619,35 @@ object BlurDrawHook {
         // 字段名以 16.1 反编译源码核对：ViewBlurProxy.getBlurConfig() → BlurConfig.getCornerRadius()/
         // getLeftTopCornerRadius()/其余三角 getter/getPathProvider()/getGradientStrokeCornerParam()
         // （blurability\BlurConfig.java；spec/11）
+        // [spec/114] 16.00.14：BlurConfig 无 getPathProvider/getGradientStrokeCornerParam，故拆成
+        // 逐成员独立解析 —— 否则在这两处抛异常会连坐其后的 getRadiusWeight（R9 三版都在）。
         try {
             val vbpCls = Class.forName(CLASS_VIEW_BLUR_PROXY, false, classLoader)
             mViewProxyGetBlurConfig = vbpCls.getMethod(METHOD_GET_BLUR_CONFIG)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Hook B resolve ViewBlurProxy.getBlurConfig failed, corner chain off", t)
+        }
+        try {
             val bc = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
-            mBlurConfigGetCornerRadius = bc.getMethod(METHOD_GET_CORNER_RADIUS)
-            mBlurConfigGetLeftTopCornerRadius = bc.getMethod(METHOD_GET_LEFT_TOP_CORNER_RADIUS)
-            mBlurConfigGetLeftBottomCornerRadius = bc.getMethod(METHOD_GET_LEFT_BOTTOM_CORNER_RADIUS)
-            mBlurConfigGetRightTopCornerRadius = bc.getMethod(METHOD_GET_RIGHT_TOP_CORNER_RADIUS)
-            mBlurConfigGetRightBottomCornerRadius = bc.getMethod(METHOD_GET_RIGHT_BOTTOM_CORNER_RADIUS)
-            mBlurConfigGetPathProvider = bc.getMethod(METHOD_GET_PATH_PROVIDER)
-            mBlurConfigGetGradientStrokeCornerParam = bc.getMethod(METHOD_GET_GRADIENT_STROKE_CORNER_PARAM)
-            mBlurConfigGetRadiusWeight = bc.getMethod(METHOD_GET_RADIUS_WEIGHT)
-            Log.i(TAG, "Hook B BlurConfig cornerRadius reflection resolved (getCornerRadius/四角/pathProvider/gradientStrokeCornerParam/radiusWeight)")
+            mBlurConfigGetCornerRadius = resolveMethodChain(bc, METHOD_GET_CORNER_RADIUS)
+            mBlurConfigGetLeftTopCornerRadius = resolveMethodChain(bc, METHOD_GET_LEFT_TOP_CORNER_RADIUS)
+            mBlurConfigGetLeftBottomCornerRadius = resolveMethodChain(bc, METHOD_GET_LEFT_BOTTOM_CORNER_RADIUS)
+            mBlurConfigGetRightTopCornerRadius = resolveMethodChain(bc, METHOD_GET_RIGHT_TOP_CORNER_RADIUS)
+            mBlurConfigGetRightBottomCornerRadius = resolveMethodChain(bc, METHOD_GET_RIGHT_BOTTOM_CORNER_RADIUS)
+            mBlurConfigGetPathProvider = resolveMethodChain(bc, METHOD_GET_PATH_PROVIDER)
+            mBlurConfigGetGradientStrokeCornerParam = resolveMethodChain(bc, METHOD_GET_GRADIENT_STROKE_CORNER_PARAM)
+            mBlurConfigGetRadiusWeight = resolveMethodChain(bc, METHOD_GET_RADIUS_WEIGHT)
+            if (mBlurConfigGetPathProvider == null) {
+                logLegacyAlt("BlurConfig.getPathProvider", "BaseDrawable.pathProvider 字段")
+            }
+            if (mBlurConfigGetGradientStrokeCornerParam == null) {
+                logLegacyAlt("BlurConfig.getGradientStrokeCornerParam", "BaseDrawable.blurShader.getGradientStrokeCornerParams")
+            }
+            if (mBlurConfigGetCornerRadius != null && mBlurConfigGetPathProvider != null &&
+                mBlurConfigGetGradientStrokeCornerParam != null && mBlurConfigGetRadiusWeight != null
+            ) {
+                Log.i(TAG, "Hook B BlurConfig cornerRadius reflection resolved (getCornerRadius/四角/pathProvider/gradientStrokeCornerParam/radiusWeight)")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "Hook B resolve BlurConfig cornerRadius failed, no valid cornerRadius (use square)", t)
         }
@@ -2341,26 +2658,36 @@ object BlurDrawHook {
             mRoundRectOutlineProviderCornerRadiusField = mRoundRectOutlineProviderClass?.getField(FIELD_CORNER_RADIUS)
             Log.i(TAG, "Hook B RoundRectOutlineProvider.cornerRadius field resolved (pathProvider 级)")
         } catch (t: Throwable) {
+            logLegacyAlt("RoundRectOutlineProvider", "BaseRoundRectPathProvider.getMaxRadius（级 3d）")
             Log.e(TAG, "Hook B resolve RoundRectOutlineProvider.cornerRadius failed, pathProvider 圆角级跳过", t)
         }
         // [spec/11] 级 4：CornerParams.getRadius()（侧滑按钮/MetaBall gradientStrokeCornerParam 真实圆角）。
-        // 独立 try-catch：失败只跳过该级。
+        // [spec/114] 候选链：根包（16.x）→ params 子包（17.99.02 迁包）→ GradientStrokeCornerParams
+        //（16.00.14 旧名，getter 同名），命中即止。独立 try-catch：失败只跳过该级。
         try {
-            val cpCls = Class.forName(CLASS_CORNER_PARAMS, false, classLoader)
+            val cpCls = resolveClassChain(classLoader, CLASS_CORNER_PARAMS, CLASS_CORNER_PARAMS_PARAMS, CLASS_CORNER_PARAMS_LEGACY)
+                ?: throw ClassNotFoundException("$CLASS_CORNER_PARAMS | $CLASS_CORNER_PARAMS_PARAMS | $CLASS_CORNER_PARAMS_LEGACY all miss")
             mCornerParamsGetRadius = cpCls.getMethod(METHOD_GET_RADIUS)
+            compatHitCorner = cpCls.name
+            Log.i(TAG, "lg-hook: CornerParams.getRadius @ ${cpCls.name}")
             Log.i(TAG, "Hook B CornerParams.getRadius() resolved (gradientStrokeCornerParam 级)")
         } catch (t: Throwable) {
             Log.e(TAG, "Hook B resolve CornerParams.getRadius() failed, gradientStrokeCornerParam 圆角级跳过", t)
         }
         // [spec/18 圆角过渡区深挖修正] 级 4b：CornerParams.getType()/getWeight() + CornerType.CONIC 判等
         //（CONIC 本体判定；c16.1_PJZ110 CornerParams.java/CornerType.java 反编译实证）。
+        // [spec/114] CornerParams/CornerType 同走 根包 → params 子包 → GradientStroke* 三级候选链。
         // 独立 try-catch：失败 → mCornerTypeConic=null → resolveCornerRadius 降级圆弧（不崩）。
         try {
-            val cpCls = Class.forName(CLASS_CORNER_PARAMS, false, classLoader)
+            val cpCls = resolveClassChain(classLoader, CLASS_CORNER_PARAMS, CLASS_CORNER_PARAMS_PARAMS, CLASS_CORNER_PARAMS_LEGACY)
+                ?: throw ClassNotFoundException("$CLASS_CORNER_PARAMS | $CLASS_CORNER_PARAMS_PARAMS | $CLASS_CORNER_PARAMS_LEGACY all miss")
             mCornerParamsGetType = cpCls.getMethod(METHOD_GET_TYPE)
             mCornerParamsGetWeight = cpCls.getMethod(METHOD_GET_WEIGHT)
-            val cornerTypeCls = Class.forName(CLASS_CORNER_TYPE, false, classLoader)
+            val cornerTypeCls = resolveClassChain(classLoader, CLASS_CORNER_TYPE, CLASS_CORNER_TYPE_PARAMS, CLASS_CORNER_TYPE_LEGACY)
+                ?: throw ClassNotFoundException("$CLASS_CORNER_TYPE | $CLASS_CORNER_TYPE_PARAMS | $CLASS_CORNER_TYPE_LEGACY all miss")
             mCornerTypeConic = cornerTypeCls.getField("CONIC").get(null)
+            compatHitCorner = cpCls.name
+            Log.i(TAG, "lg-hook: CornerParams getType/getWeight + CornerType.CONIC @ ${cpCls.name} / ${cornerTypeCls.name}")
             Log.i(TAG, "Hook B CornerParams.getType()/getWeight() + CornerType.CONIC resolved (CONIC 本体判定)")
         } catch (t: Throwable) {
             Log.e(TAG, "Hook B resolve CornerType.CONIC failed, conic 判定降级圆弧", t)
@@ -3535,8 +3862,11 @@ object BlurDrawHook {
             mBlurConfigCornerRadiusField = null
         }
         try {
-            val cpCls = Class.forName(CLASS_CORNER_PARAMS, false, classLoader)
+            // [spec/114] 写口同走 根包 → params 子包 → GradientStrokeCornerParams 三级候选链（与读口级 4 同类同名）
+            val cpCls = resolveClassChain(classLoader, CLASS_CORNER_PARAMS, CLASS_CORNER_PARAMS_PARAMS, CLASS_CORNER_PARAMS_LEGACY)
+                ?: throw ClassNotFoundException("$CLASS_CORNER_PARAMS | $CLASS_CORNER_PARAMS_PARAMS | $CLASS_CORNER_PARAMS_LEGACY all miss")
             mCornerParamsSetRadius = cpCls.getMethod(METHOD_SET_RADIUS, Float::class.javaPrimitiveType)
+            Log.i(TAG, "lg-hook: CornerParams.setRadius @ ${cpCls.name}")
         } catch (t: Throwable) {
             Log.e(TAG, "unified-corner: resolve CornerParams.setRadius failed, CONIC corner not unified", t)
             mCornerParamsSetRadius = null
@@ -3632,7 +3962,7 @@ object BlurDrawHook {
             (loc[1] + bounds.bottom).toFloat(),
         )
         val key = System.identityHashCode(target)
-        val corner = resolveCornerRadius(cornerProxy, bounds, hostView)
+        val corner = resolveCornerRadius(cornerProxy, bounds, hostView, target)
         val entry = RegionEntry(
             region, bounds, hostView.javaClass.simpleName, corner.radius, corner.source,
             cornerIsConic = corner.isConic, cornerWeight = corner.weight,
@@ -4076,7 +4406,7 @@ object BlurDrawHook {
             // （静止全 CONIC / 运动态全圆弧 / 中间同步渐混）→ 不切不闪。spec/12 :30「本体复刻 CONIC」落地。
             CornerInfo(r, s, isConic = r > 0f, weight = DEFAULT_CORNER_WEIGHT)
         } else {
-            resolveCornerRadius(proxy, bounds, hostView)
+            resolveCornerRadius(proxy, bounds, hostView, target)
         }
         // [2026-08-13 修复] swipe 本体不再 Kotlin 侧 ×1.5：shader CONIC 分支 sdBezierDistance 内自 ×1.5
         //（cc=1.5×uCornerRadius=96），与掩码 cc=1.5×uMaskCornerRadius 一致；圆弧路径（运动态 blend=0）
@@ -4455,6 +4785,12 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Log.e(TAG, "fuzzy: read viewBlurManager failed", t); null
         }
+        // [spec/114] currentMaterialColor 目标对象：16.x = vbm 本体；17.99.02 = vbm.materialColorManager
+        val colorHost = if (mMaterialColorManagerHolder != null) {
+            try { mMaterialColorManagerHolder?.get(vbm) } catch (t: Throwable) {
+                Log.e(TAG, "fuzzy: read materialColorManager holder failed", t); null
+            }
+        } else vbm
         // [修3] clickAlpha（点击暗层 clickEffectDrawable alpha，点击动画后归 0）+ stackedNotificationMuskColor
         // （折叠/堆叠动画 oplusColorBg 色层，progress→0 后消失）——置 0 拦截，finally 恢复。独立于 vbm。
         val origClick = try { mExtImpClickAlpha?.getInt(extImp) } catch (t: Throwable) { Log.e(TAG, "fuzzy: read clickAlpha failed", t); null }
@@ -4466,13 +4802,13 @@ object BlurDrawHook {
             try { mExtImpStackedMuskColor?.setInt(extImp, 0) } catch (t: Throwable) { Log.e(TAG, "fuzzy: clear stackedNotificationMuskColor failed", t) }
         }
         val original = try {
-            mViewBlurManagerMaterialColor?.getInt(vbm)
+            mViewBlurManagerMaterialColor?.getInt(colorHost)
         } catch (t: Throwable) {
             Log.e(TAG, "fuzzy: read currentMaterialColor failed", t); null
         }
         if (original != null && original != 0) {
             try {
-                mViewBlurManagerMaterialColor?.setInt(vbm, 0)
+                mViewBlurManagerMaterialColor?.setInt(colorHost, 0)
             } catch (t: Throwable) {
                 Log.e(TAG, "fuzzy: clear currentMaterialColor failed", t)
             }
@@ -4481,7 +4817,7 @@ object BlurDrawHook {
             chain.proceed()
         } finally {
             if (original != null) {
-                try { mViewBlurManagerMaterialColor?.setInt(vbm, original) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore currentMaterialColor failed", t) }
+                try { mViewBlurManagerMaterialColor?.setInt(colorHost, original) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore currentMaterialColor failed", t) }
             }
             if (origClick != null) {
                 try { mExtImpClickAlpha?.setInt(extImp, origClick) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore clickAlpha failed", t) }
@@ -4654,7 +4990,7 @@ object BlurDrawHook {
         val key = System.identityHashCode(target)
         // [任务 D] 真实圆角半径（反射 BlurConfig / 启发式）；hostView=bgView 供 seekbar 级 6 兜底判定。
         // [spec/18 修正] 通知卡 CONIC 本体判定（gradientStrokeCornerParam.type=CONIC → isConic=true）
-        val corner = resolveCornerRadius(proxy, bounds, bgView)
+        val corner = resolveCornerRadius(proxy, bounds, bgView, target)
         val entry = RegionEntry(
             region, bounds, "NotificationBackgroundView",
             corner.radius, corner.source,
@@ -4822,8 +5158,26 @@ object BlurDrawHook {
 
     /** 运动事件源①：QS 翻页滚动回调（PagedTileLayout$2 = ViewPager.OnPageChangeListener 匿名实现） */
     private fun mountQsPageScroll(api: XposedInterface, classLoader: ClassLoader) {
+        // [spec/114] 候选 FQCN 链：旧 qs 包（16.x）第一优先；Class.forName 失败再试 qs.deprecated（17.99.02
+        // 整类迁包，onPageScrolled 签名不变）。两版都失败才禁用 QS 翻页重录。
+        val clazz = try {
+            Class.forName(CLASS_PAGED_TILE_LAYOUT_LISTENER, false, classLoader).also {
+                compatHitQsPageScroll = "qs (16.x)"
+                Log.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs (16.x)")
+            }
+        } catch (t: Throwable) {
+            try {
+                Class.forName(CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED, false, classLoader).also {
+                    compatHitQsPageScroll = "qs.deprecated (17.99.02)"
+                    Log.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs.deprecated (17.99.02)")
+                }
+            } catch (t2: Throwable) {
+                compatHitQsPageScroll = "MISS (disabled)"
+                Log.e(TAG, "Hook G mount FAILED: $CLASS_PAGED_TILE_LAYOUT_LISTENER / $CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED (all candidates)", t2)
+                return
+            }
+        }
         try {
-            val clazz = Class.forName(CLASS_PAGED_TILE_LAYOUT_LISTENER, false, classLoader)
             val method = clazz.getDeclaredMethod(
                 METHOD_ON_PAGE_SCROLLED,
                 Int::class.javaPrimitiveType,
@@ -4841,9 +5195,10 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook G mounted: ${CLASS_PAGED_TILE_LAYOUT_LISTENER}#$METHOD_ON_PAGE_SCROLLED(int,float,int) (QS page flip -> invalidate hosts)")
+            Log.i(TAG, "Hook G mounted: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED(int,float,int) (QS page flip -> invalidate hosts)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook G mount FAILED: ${CLASS_PAGED_TILE_LAYOUT_LISTENER}#$METHOD_ON_PAGE_SCROLLED", t)
+            compatHitQsPageScroll = "MISS (method)"
+            Log.e(TAG, "Hook G mount FAILED: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED", t)
         }
     }
 
@@ -6371,7 +6726,7 @@ object BlurDrawHook {
         val cornerRadius = entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
         val params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight)
-        val shader = obtainShader(id)
+        val shader = obtainShader(id, metaball = entry.metaBall != null)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
         LiquidGlassShader.setUniforms(
             shader, params, sourceShader, sourceShader,
@@ -8903,7 +9258,7 @@ object BlurDrawHook {
      * 结果可能变）→ miss 重算。仅缓存 radius>0 的有效结果（blurConfig 反射失败返回 (0,"none") 不缓存，
      * 防永久方形）；限容 512（同 lastRenderScreenRegion 模式），超限整体清空防内存膨胀。
      */
-    private fun resolveCornerRadius(proxy: Any?, bounds: Rect, hostView: View? = null): CornerInfo {
+    private fun resolveCornerRadius(proxy: Any?, bounds: Rect, hostView: View? = null, drawable: Any? = null): CornerInfo {
         if (mViewProxyGetBlurConfig == null) return CornerInfo(DEFAULT_CORNER_RADIUS_PX, "default")
         // 缓存命中：seekbar 级 6 兜底按量化 minSide 档位判定（active 拖动时填充高度每帧小幅变化，
         // 量化档位不变 → 命中缓存，避免每帧 5-6 级反射）；其他级（反射真实值）bounds 精确判定
@@ -8930,7 +9285,7 @@ object BlurDrawHook {
                 return cached.info
             }
         }
-        val info = resolveCornerRadiusUncached(proxy, bounds, hostView)
+        val info = resolveCornerRadiusUncached(proxy, bounds, hostView, drawable)
         // 仅缓存有效结果（radius>0 且非默认兜底）：反射失败 / 默认 30px 回退（source="default"）不缓存，
         // 防锁死默认值——每次 draw 可重试反射，一旦反射恢复立即用真实圆角
         if (info.radius > 0f && info.source != "default") {
@@ -8980,7 +9335,7 @@ object BlurDrawHook {
     private const val SEEKBAR_CORNER_QUANT_STEP = 16
 
     /** 无缓存的原始解析（5-6 级降级链 + seekbar 启发式兜底；仅由 [resolveCornerRadius] 调用）。 */
-    private fun resolveCornerRadiusUncached(proxy: Any?, bounds: Rect, hostView: View? = null): CornerInfo {
+    private fun resolveCornerRadiusUncached(proxy: Any?, bounds: Rect, hostView: View? = null, drawable: Any? = null): CornerInfo {
         if (mViewProxyGetBlurConfig == null) return CornerInfo(DEFAULT_CORNER_RADIUS_PX, "default")
         try {
             val blurConfig = mViewProxyGetBlurConfig?.invoke(proxy)
@@ -8999,7 +9354,7 @@ object BlurDrawHook {
                             shadowOwn.ownSource != "ovalProvider"
                         val srcS = if (rS < shadowOwn.ownBase) "${shadowOwn.ownSource}-clamped" else shadowOwn.ownSource
                         return if (conicS) {
-                            val (cS, wS) = cornerConicInfo(blurConfig, rS)
+                            val (cS, wS) = cornerConicInfo(blurConfig, rS, drawable)
                             CornerInfo(rS, srcS, cS, wS)
                         } else {
                             CornerInfo(rS, srcS)
@@ -9057,9 +9412,25 @@ object BlurDrawHook {
                         }
                     }
                 }
+                // 级 3d（[spec/114] 16.00.14 旧架构）：BlurConfig 无 getPathProvider → 改从
+                // BaseDrawable.pathProvider 私有字段取 provider，仍走 R10 BaseRoundRectPathProvider.getMaxRadius。
+                // 门控 = mBlurConfigGetPathProvider 未解析（现役版本恒解析到 → 永不进本级，零回归）。
+                if (r <= 0f && mBlurConfigGetPathProvider == null && drawable != null && mLegacyPathProviderField != null) {
+                    val pp4 = try {
+                        mLegacyPathProviderField?.get(drawable)
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    if (pp4 != null && mBaseRoundRectPathProviderClass?.isInstance(pp4) == true) {
+                        val ppR4 = try {
+                            (mBaseRoundRectPathProviderGetMaxRadius?.invoke(pp4) as? Number)?.toFloat() ?: 0f
+                        } catch (t: Throwable) { 0f }
+                        if (ppR4 > 0f) { r = ppR4; src = "smoothRoundPathProvider" }
+                    }
+                }
                 // 级 4：getGradientStrokeCornerParam().getRadius()（侧滑按钮/MetaBall）
                 if (r <= 0f) {
-                    val cp = mBlurConfigGetGradientStrokeCornerParam?.invoke(blurConfig)
+                    val cp = cornerParamsHolder(blurConfig, drawable)
                     if (cp != null && mCornerParamsGetRadius != null) {
                         val cpR = try {
                             (mCornerParamsGetRadius?.invoke(cp) as? Number)?.toFloat() ?: 0f
@@ -9084,7 +9455,7 @@ object BlurDrawHook {
                     // [spec/22] ovalProvider 级同理强制 isConic=false：正圆/胶囊须用 RBox 圆弧
                     //（radius=min/2 → 精确圆），CONIC 三次贝塞尔 cc=1.5×min/2 > halfSize 会破坏 SDF 定义域。
                     return if (src != "pathProvider" && src != "smoothRoundPathProvider" && src != "ovalProvider") {
-                        val (c, w) = cornerConicInfo(blurConfig, r)
+                        val (c, w) = cornerConicInfo(blurConfig, r, drawable)
                         CornerInfo(r, src, c, w)
                     } else {
                         CornerInfo(r, src)
@@ -9109,7 +9480,7 @@ object BlurDrawHook {
                 if (minSide > 0f && (isSeekbarHost || isLongStrip)) {
                     val r6 = minSide * 0.16f
                     if (r6 > 0f && r6 <= maxValid + 1f) {
-                        val (c, w) = cornerConicInfo(blurConfig, r6)
+                        val (c, w) = cornerConicInfo(blurConfig, r6, drawable)
                         return CornerInfo(r6, "seekbar-heuristic", c, w)
                     }
                 }
@@ -9169,13 +9540,14 @@ object BlurDrawHook {
      *  不误伤：pathProvider 元素（QS tile 弧线）getPathProvider()!=null → 不进分支 B 保持圆弧；
      *  ovalProvider 同理；seekbar active 层（radiusWeight=null）不进。
      * @param radius resolveCornerRadius 前级已解析的有效半径（>0 才可能走分支 B）
+     * @param drawable posteffect drawable（[spec/114] 16.00.14 无 BlurConfig.gradientStroke 级时的旧 holder 来源）
      * @return (isConic, 变换后 weight)；weight 恒 >0（DEFAULT_CORNER_WEIGHT 兜底）
      */
-    private fun cornerConicInfo(blurConfig: Any?, radius: Float): Pair<Boolean, Float> {
+    private fun cornerConicInfo(blurConfig: Any?, radius: Float, drawable: Any? = null): Pair<Boolean, Float> {
         return try {
             // 分支 A：CornerParams.getType()==CONIC（通知卡/custom 卡默认 CONIC；spec/18）
             if (mCornerParamsGetType != null && mCornerTypeConic != null) {
-                val cp = mBlurConfigGetGradientStrokeCornerParam?.invoke(blurConfig)
+                val cp = cornerParamsHolder(blurConfig, drawable)
                 if (cp != null && mCornerParamsGetType?.invoke(cp) == mCornerTypeConic) {
                     val w = (mCornerParamsGetWeight?.invoke(cp) as? Number)?.toFloat() ?: 0f
                     val weight = if (w > 0f) (8f * w) / (3f * w + 3f) else DEFAULT_CORNER_WEIGHT
@@ -9197,9 +9569,35 @@ object BlurDrawHook {
         }
     }
 
+    /**
+     * [spec/114] 级 4 / CONIC 分支 A 的 CornerParams 持有者：
+     * ① BlurConfig.getGradientStrokeCornerParam()（16.99.12 / 17.99.02）；
+     * ② 仅当 ① 这个方法在本版本根本不存在时（16.00.14），改从
+     *    BaseDrawable.getBlurShader().getGradientStrokeCornerParams() 取（旧架构 holder）。
+     * 现役版本 ① 恒解析到 → ② 永不进入，行为零变化。
+     */
+    private fun cornerParamsHolder(blurConfig: Any?, drawable: Any?): Any? {
+        val cfgGetter = mBlurConfigGetGradientStrokeCornerParam
+        if (cfgGetter != null) {
+            try {
+                cfgGetter.invoke(blurConfig)?.let { return it }
+            } catch (t: Throwable) {
+                Log.e(TAG, "map: BlurConfig.getGradientStrokeCornerParam failed", t)
+            }
+            return null
+        }
+        if (drawable == null || mLegacyShaderGetGradientStrokeParams == null || mGetDrawableShader == null) return null
+        return try {
+            val shader = mGetDrawableShader?.invoke(drawable)
+            if (shader == null) null else mLegacyShaderGetGradientStrokeParams?.invoke(shader)
+        } catch (t: Throwable) {
+            Log.e(TAG, "map: legacy BlurDrawableShader.getGradientStrokeCornerParams failed", t)
+            null
+        }
+    }
+
     /** 反射调用结果中取首个 >0 的半径（四角 getter 级；invoke 异常按 0 处理，跳过该角）。 */
-    private fun firstNonZeroRadius(vararg values: Any?): Float {
-        for (v in values) {
+    private fun firstNonZeroRadius(vararg values: Any?): Float {        for (v in values) {
             val r = (v as? Number)?.toFloat() ?: 0f
             if (r > 0f) return r
         }
@@ -9290,11 +9688,28 @@ object BlurDrawHook {
     private fun mountOnBlurReady(api: XposedInterface, classLoader: ClassLoader) {
         try {
             val clazz = Class.forName(CLASS_BLUR_DRAWABLE_MANAGER, false, classLoader)
-            val method = clazz.getDeclaredMethod(
-                METHOD_ON_BLUR_READY,
-                List::class.java, HardwareBuffer::class.java,
-                Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
-            )
+            // [spec/114] 双签解析：4 参（16.x）第一优先；NoSuchMethodException 再试 5 参（17.99.02 末参 Rect，
+            // intercept 只挂信号不改参数，rect 忽略）。
+            val method = try {
+                clazz.getDeclaredMethod(
+                    METHOD_ON_BLUR_READY,
+                    List::class.java, HardwareBuffer::class.java,
+                    Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
+                ).also {
+                    compatHitOnBlurReady = "4-arg (16.x)"
+                    Log.i(TAG, "lg-hook: onBlurReady @ 4-arg (16.x)")
+                }
+            } catch (e: NoSuchMethodException) {
+                clazz.getDeclaredMethod(
+                    METHOD_ON_BLUR_READY,
+                    List::class.java, HardwareBuffer::class.java,
+                    Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
+                    Rect::class.java,
+                ).also {
+                    compatHitOnBlurReady = "5-arg (17.99.02, Rect ignored)"
+                    Log.i(TAG, "lg-hook: onBlurReady @ 5-arg (17.99.02, Rect ignored)")
+                }
+            }
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
@@ -9305,8 +9720,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY(List, HardwareBuffer, int, float)")
+            Log.i(TAG, "Hook B mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY (${compatHitOnBlurReady})")
         } catch (t: Throwable) {
+            compatHitOnBlurReady = "MISS (disabled)"
             Log.e(TAG, "Hook B mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
         }
     }
@@ -9572,6 +9988,62 @@ object BlurDrawHook {
             } catch (t: Throwable) {
                 Log.e(TAG, "Hook B mount FAILED: $clsName#$METHOD_ON_DRAW_CONTENT", t)
             }
+        }
+    }
+
+    /**
+     * [spec/114] 16.00.14 旧架构兜底（#43/#44 等价）：该版无 onDrawContent，shader 不可用时
+     * 系统改走 BaseDrawable.drawBlur 位图平铺（ContinuousBlurDrawable:159-164：getShaderOrNull()
+     * 为 null → drawBlur）。挂它作等价入口 —— 接管时改写 blurShaderPaint 并触发 drawBlurShader
+     * 画玻璃；接管失败照旧走系统位图平铺。仅旧架构挂载，现役直接返回（零回归）。
+     */
+    private fun mountLegacyDrawBlur(api: XposedInterface, classLoader: ClassLoader) {
+        if (!legacyPosteffectArch) return
+        try {
+            val clazz = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
+            val fgCls = Class.forName(CLASS_FOREGROUND_BLUR_PARAM, false, classLoader)
+            val method = clazz.getDeclaredMethod(
+                METHOD_DRAW_BLUR, Canvas::class.java, Paint::class.java, Bitmap::class.java, fgCls
+            )
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val drawable = try {
+                        chain.getThisObject()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "legacy-drawBlur: getThisObject failed", t); null
+                    }
+                    val canvas = try {
+                        chain.getArg(0) as? Canvas
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "legacy-drawBlur: getArg(0) failed", t); null
+                    }
+                    var handled = false
+                    if (drawable != null && canvas != null) {
+                        try {
+                            handled = tryRenderLegacyDrawBlur(drawable, canvas)
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "legacy-drawBlur: intercept error", t)
+                        }
+                    }
+                    if (!handled) chain.proceed()
+                }
+            Log.i(TAG, "lg-hook: 16.00.14 旧架构挂载 $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR(Canvas,Paint,Bitmap,ForegroundBlurParam)（#43/#44 等价兜底）")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR (legacy fallback off)", t)
+        }
+    }
+
+    /** [spec/114] 旧架构 shader 不可用兜底：改写 blurShaderPaint 为液态玻璃后触发 drawBlurShader。 */
+    private fun tryRenderLegacyDrawBlur(drawable: Any, canvas: Canvas): Boolean {
+        if (mDrawBlurShader == null) return false
+        if (!replaceShaderIfPossible(drawable)) return false
+        return try {
+            mDrawBlurShader?.invoke(drawable, canvas)
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "legacy-drawBlur: drawBlurShader invoke failed", t)
+            false
         }
     }
 
@@ -10353,10 +10825,10 @@ object BlurDrawHook {
             }
             // [spec/24 修复方向 1] 掩码与本体 CONIC 几何全等 → 传 maskCornerRadius=0（shader 掩码走 O(1)
             // 直角路径，shapeAlpha 已兜底圆角外裁剪；零视觉变化，通知卡 CONIC 成本减半）
-            // [doc/spec/100] metaball 元素 maskRect 已置 null → 掩码一律走直角全视口（否则圆角掩码会啃
-            // 到视口四角、可能切掉桥的末端），轮廓由 shapeAlpha（融合 SDF）单独裁。
+            // [2026-10-14 幽灵修复] 恒保留 maskRect 裁扩张区（伴球 raw shape 幽灵），恒用圆角掩码。
+            val mbHasBridge = false  // 2026-10-14: 恒 false = 恒用 mask 裁扩张区（幽灵修复）
             val maskCornerRadius = if (geo.bodyRect != null) {
-                0f
+                if (mbHasBridge) 0f else cornerRadius
             } else if (isMaskRedundant(geo, entry, effMaskCornerRadius)) 0f else effMaskCornerRadius
             // [2026-08-13 用户决定·角形状恒 CONIC] 本体角 CONIC 分支恒保持，cornerConicBlend 恒 1
             //（shader 恒 CONIC，对齐系统 spec/12）。非 CONIC 元素（uCornerIsConic=0）blend 忽略。
@@ -10369,6 +10841,7 @@ object BlurDrawHook {
                 bounds = Rect(bounds),
                 frame = 0L,  // [2026-08-13] 无全局帧概念（BlurService 端全移除）；源变化靠 sourceBitmapId
                 viewport = viewport,
+                // [2026-10-14 幽灵修复] 恒用 geo.maskRect 裁扩张区（伴球 raw shape 幽灵）
                 maskRect = geo.maskRect,
                 maskCornerRadius = maskCornerRadius,
                 maskOffsetX = geo.offsetX,
@@ -10454,6 +10927,20 @@ object BlurDrawHook {
         val geo = computeRealGeometry(bounds, entry, shape)
         // [doc/spec/100 方案2] metaball uniform 输入（geo.bodyRect==null → null → shader 端零变化）
         val mbNow = resolveMetaBalls(entry, geo.bodyRect, geo.viewport)
+        // [2026-10-14 诊断] 幽灵浮层排查：打印几何与 metaball 状态
+        if (moduleLogEnabled) {
+            val mbSnapNow = entry.metaBall
+            val compDetail = mbSnapNow?.companions?.joinToString(";") { c ->
+                "c(pos=${c.posX},${c.posY} hw=${c.halfW} hh=${c.halfH} bs=${c.blendShape})"
+            } ?: "-"
+            Log.i(TAG, "ghost-diag: id=$id view=${entry.hostViewName} bounds=$bounds " +
+                "mbSnap=${mbSnapNow != null} companions=${mbSnapNow?.companions?.size ?: -1} " +
+                "body(pos=${mbSnapNow?.body?.posX},${mbSnapNow?.body?.posY} " +
+                "hw=${mbSnapNow?.body?.halfW} hh=${mbSnapNow?.body?.halfH}) " +
+                "comp=[$compDetail] " +
+                "geo.vp=${geo.viewport} geo.mask=${geo.maskRect} geo.body=${geo.bodyRect} " +
+                "geo.off=(${geo.offsetX},${geo.offsetY}) mbNow=${mbNow != null} balls=${mbNow?.balls?.size ?: -1}")
+        }
         // [R2] viewport = 真实绘制尺寸（元素自身尺寸；无扩张 = drawable getBounds 宽高）。符合已验证契约：
         // coord=元素局部坐标、uViewport=元素尺寸（不再用 canvas clipBounds 当 viewport——
         // RenderNode 录制 canvas 的 clipBounds 可能是整面板裁剪区或带非零偏移）。
@@ -10500,10 +10987,12 @@ object BlurDrawHook {
             entry.maskCornerRadius
         }
         // [spec/24 修复方向 1] 掩码与本体 CONIC 几何全等 → maskCornerRadius=0（掩码走 O(1) 直角，shapeAlpha 兜底）
-        // [doc/spec/100] metaball 元素 maskRect 已置 null → 掩码一律走直角全视口（圆角掩码会啃视口四角、
-        // 可能切掉桥的末端），轮廓由 shapeAlpha（融合 SDF）单独裁。
+        // [2026-10-14 幽灵修复] 伴球（通知卡的球）raw shape 并进 union → 扩张区 sdRaw≤0 → shapeAlpha>0 = 幽灵。
+        // mbBridge 判定太粗（只看 companions.size>0）→ 改为恒保留 geo.maskRect 裁掉扩张区；
+        // 桥由卡侧 drawable 的 viewport 覆盖绘制（卡 bounds 含按钮方向扩张），按钮侧只需裁自身体。
+        val hasMbBridge = false  // 2026-10-14: 恒 false = 恒用 mask 裁扩张区（幽灵修复）
         val maskCornerRadius = if (geo.bodyRect != null) {
-            0f
+            if (hasMbBridge) 0f else regionCornerRadius
         } else if (isMaskRedundant(geo, entry, effMaskCornerRadius)) 0f else effMaskCornerRadius
         // [2026-08-13 用户决定·角形状恒 CONIC] 本体角 CONIC 分支恒保持，cornerConicBlend 恒 1
         //（shader 恒 CONIC；滑动降级 + 过渡动画已废弃——两种角切换 = 边缘闪根因，只保留一种即不闪）
@@ -10524,6 +11013,8 @@ object BlurDrawHook {
             cornerWeight = entry.cornerWeight,
             // [任务 A] 掩码 = 真实卡片区域（raw coord 空间，与 body 几何同形同位置）；无扩张 = entry.maskRect
             //（仅 swipe 设置）。扩张区之外 alpha=0，但不再"切边"——掩码形状即玻璃本体形状。
+            // [2026-10-14 幽灵修复] 恒用 geo.maskRect 裁掉扩张区（伴球 raw shape 幽灵）；
+            // 桥由卡侧 drawable 覆盖绘制，按钮侧只需裁自身体。
             maskRect = geo.maskRect,
             maskCornerRadius = maskCornerRadius,
         )
@@ -10568,13 +11059,20 @@ object BlurDrawHook {
 
         // 每个 drawable 独立 RuntimeShader（AGSL 编译一次，进程内复用；uniform 各管各的）。
         // [doc/spec/105 P1-3] 原「size>128 整表 clear」改 LRU 淘汰，见 obtainShader。
-        val shader = obtainShader(region.id)
+        // [doc/spec/119 拆源] 有 metaball 黏连桥 → FULL 源；否则 BASE（-31% 编译量）。
+        val shader = obtainShader(region.id, metaball = mbNow != null)
         // uViewport 必须与 shader coord 空间一致（main 里 halfSize=uViewport×0.5），用元素自身尺寸
         // [任务 D] uCornerRadius = RegionEntry 真实圆角（反射 BlurConfig / 启发式），替代硬编码 28；
         // [spec/18 修正] CONIC 本体（通知卡/custom 卡/seekbar）→ uCornerIsConic/uCornerWeight
         val params = buildParams(viewport.width(), viewport.height(), region.cornerRadius, effectiveCornerIsConic, region.cornerWeight)
         // uDebugCoord 实验开关：coord 决定性实验用。0=玻璃正常渲染；1=直接输出红/绿周期调试网格（不走玻璃管线）。
         // 正常关闭，需复测 coord 空间时临时开 1f。uDebugCoord 分支保留在 LiquidGlassShader.kt 供后续实验。
+        // [2026-10-14 诊断] 打印最终传入 setUniforms 的 maskRect
+        if (moduleLogEnabled) {
+            Log.i(TAG, "ghost-diag-set: id=${region.id} maskRect=${region.maskRect} " +
+                "maskCornerRadius=${region.maskCornerRadius} vp=$viewport " +
+                "mbBridge=${mbNow != null && mbNow.balls.isNotEmpty()}")
+        }
         LiquidGlassShader.setUniforms(
             shader, params, sourceShader, lowResShader,
             sourceRect = region.srcRect,
@@ -10876,8 +11374,20 @@ object BlurDrawHook {
                 mbBody.left >= -0.5f && mbBody.top >= -0.5f &&
                 mbBody.right <= mbVpW + 0.5f && mbBody.bottom <= mbVpH + 0.5f
             ) {
+                // [2026-10-14 bug 修复] 独立按钮（无伴球，如垃圾桶/齿轮）bodyRect 可能含扩张余量，
+                // 旧实现 maskRect=null → 扩张区漏出一圈幽灵玻璃。按 bounds 扩张算真实按钮 maskRect；
+                // 有伴球（桥存在）时由 buildLiquidShader 置回 null 放行桥（否则掩码会切桥末端）。
+                val mbOffX = if (bounds.left < 0) (-bounds.left).toFloat() else 0f
+                val mbOffY = if (bounds.top < 0) (-bounds.top).toFloat() else 0f
+                val mbMask = if (mbOffX > 0f || mbOffY > 0f) {
+                    val mbRealW = mbVpW - 2f * mbOffX
+                    val mbRealH = mbVpH - 2f * mbOffY
+                    if (mbRealW > 1f && mbRealH > 1f) {
+                        RectF(mbOffX, mbOffY, mbOffX + mbRealW, mbOffY + mbRealH)
+                    } else null
+                } else null
                 return RealGeometry(
-                    RectF(0f, 0f, mbVpW, mbVpH), 0f, 0f, null, screenRegion, bodyRect = mbBody,
+                    RectF(0f, 0f, mbVpW, mbVpH), 0f, 0f, mbMask, screenRegion, bodyRect = mbBody,
                 )
             }
         }

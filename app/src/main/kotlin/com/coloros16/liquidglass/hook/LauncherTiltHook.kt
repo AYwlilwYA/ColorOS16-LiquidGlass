@@ -15,6 +15,7 @@ import java.util.WeakHashMap
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * [doc/spec/65 iOS 动态倾斜/透视 2026-09-16] Launcher 进程：应用启动/退出/打断动画期间的 3D 倾斜。
@@ -211,6 +212,96 @@ object LauncherTiltHook {
                 "listener=${mAddAnimatorListener != null}, " +
                 "cleanupTx=${mSurfaceTransactionCtor != null && mGetTransaction != null})",
         )
+    }
+
+    // ------------------------------------------------------ [doc/spec/116 P2] 17.3.12 原生 zuyqa 路径
+
+    /** [spec/116 P2] 新路径日志 tag。 */
+    private const val TAG_NATIVE = "lg-hook"
+
+    private const val CLASS_ZUYQA_WINDOW_TILT = "com.android.quickstep.util.animation.ZuyqaWindowTilt"
+    private const val CLASS_ZUYQA_TUNING = "com.android.common.util.ZuyqaAnimationTuning"
+    private const val METHOD_IS_ENABLED = "isEnabled"
+    private const val METHOD_GET_INT = "getInt"
+
+    /** 原生倾斜强度键（与 [Prefs.KEY_ANIM_TILT_STRENGTH] 同语义，量程同为 0~200%）。 */
+    private const val NATIVE_KEY_TILT_STRENGTH = "zuyqa_tilt_strength_percent"
+
+    /** 原生透视键（与 [Prefs.KEY_ANIM_TILT_PERSPECTIVE] 同语义，量程同为 0~150%）。 */
+    private const val NATIVE_KEY_TILT_PERSPECTIVE = "zuyqa_tilt_perspective_percent"
+
+    @Volatile
+    private var nativeActivatedLogged = false
+
+    /**
+     * [doc/spec/116 P2] 桌面 17.3.12+ 入口：把模块开关与强度/透视参数注入原生 zuyqa tilt 的
+     * 「总开关」（`ZuyqaWindowTilt#isEnabled`）与「参数读取入口」（`ZuyqaAnimationTuning#getInt`），
+     * 配置、逐帧施加、结束复位全由原生完成。
+     * 与 [install]（16.x 路径）互斥，由 XposedEntry 按 versionCode 选择。
+     */
+    fun installNativeZuyqa(api: XposedInterface, classLoader: ClassLoader) {
+        this.api = api
+        var mounted = 0
+        // 挂点① 原生总开关：模块开关开 = 强制开；关 = 原样透传（原生默认关）。
+        try {
+            val cls = Class.forName(CLASS_ZUYQA_WINDOW_TILT, false, classLoader)
+            val m = cls.getMethod(METHOD_IS_ENABLED)
+            api.hook(m)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val nativeValue = chain.proceed()
+                    if (config().enabled) {
+                        logNativeActivated()
+                        true
+                    } else {
+                        nativeValue
+                    }
+                }
+            mounted++
+            Log.i(TAG_NATIVE, "mounted native tilt gate: ZuyqaWindowTilt#isEnabled()")
+        } catch (t: Throwable) {
+            Log.e(TAG_NATIVE, "mount native tilt gate FAILED: ZuyqaWindowTilt#isEnabled()", t)
+        }
+        // 挂点② 原生参数读取入口：模块开关开 = strength/perspective 用模块值；关 = 原样透传。
+        try {
+            val cls = Class.forName(CLASS_ZUYQA_TUNING, false, classLoader)
+            val m = cls.getMethod(
+                METHOD_GET_INT,
+                android.content.Context::class.java,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+            )
+            api.hook(m)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val nativeValue = chain.proceed()
+                    val c = config()
+                    if (!c.enabled) return@intercept nativeValue
+                    val key = try {
+                        chain.getArg(1) as? String
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    val raw = when (key) {
+                        NATIVE_KEY_TILT_STRENGTH -> (c.strength * 100f).roundToInt()
+                        NATIVE_KEY_TILT_PERSPECTIVE -> (c.perspective * 100f).roundToInt()
+                        else -> -1
+                    }
+                    if (raw < 0) nativeValue else raw
+                }
+            mounted++
+            Log.i(TAG_NATIVE, "mounted native tilt params: ZuyqaAnimationTuning#getInt(Context,String,int)")
+        } catch (t: Throwable) {
+            Log.e(TAG_NATIVE, "mount native tilt params FAILED: ZuyqaAnimationTuning#getInt(Context,String,int)", t)
+        }
+        Log.i(TAG_NATIVE, "LauncherTiltHook native(17.3.12) install done, mounted=$mounted/2")
+    }
+
+    /** 原生 tilt 被模块开关打开时打一条 INFO（进程内一次），用于真机确认新路径真的生效。 */
+    private fun logNativeActivated() {
+        if (nativeActivatedLogged) return
+        nativeActivatedLogged = true
+        Log.i(TAG_NATIVE, "native zuyqa tilt forced on by module switch (strength/perspective injected)")
     }
 
     // ------------------------------------------------------------ 反射解析

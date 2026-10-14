@@ -6,73 +6,75 @@ import android.util.Log
 import java.util.concurrent.LinkedBlockingQueue
 
 /**
- * [doc/spec/118] RuntimeShader 实例池：AGSL 源 50k 字符（spec/100 metaball 内联后 +59%），
- * 每元素 [RuntimeShader] 构造都要在**调用线程**（渲染线程）做一遍 AGSL 解析 ——
- * 「增加玻璃元素更卡」的线性 CPU 成本。本池在 idle 后台线程预构造实例，渲染线程 miss 时
- * 直接 poll，把解析成本从渲染关键路径挪走。
- *
- * 与已停用的 ShaderPreheat（spec/111 GPU 预热）不同：预热赌的是 driver program 缓存可跨
- * HardwareRenderer/真实 UI 共享（spec/118 TOP2 存疑=很可能白做）；本池只做 **CPU 侧构造**，
- * 与绘制路径同一 [LiquidGlassShader.create] 入口，产物语义完全一致、零 GPU 假设。
- *
- * 线程安全：[LinkedBlockingQueue] 自带同步；refill 单线程 daemon。池空时调用方回退
- * 同步 create()（行为与无池时相同，只是回到旧成本）。
+ * [doc/spec/118 + spec/119 拆源] RuntimeShader 实例池（双源）。
+ * AGSL FULL ≈50k 字符（metaball 融合内联）；BASE 剥离后 ≈-31% 纯代码。
+ * 通知卡等 MetaBall 元素走 full 池；QS/音量条等小元素走 base 池，互不混用。
+ * idle 后台预构造，渲染线程 miss 直接 poll；池空回退同步 create()（与无池相同）。
  */
 object ShaderInstancePool {
 
     private const val TAG = "LiquidGlass"
 
-    /** 池容量上限（预构造缓冲；LRU 语义不需要，实例等价）。 */
-    private const val CAPACITY = 12
+    /** 每源池容量（FULL 编译更贵，保留更多；BASE 更轻）。 */
+    private const val CAPACITY_FULL = 8
+    private const val CAPACITY_BASE = 8
 
     /** 低于此数触发补货。 */
-    private const val REFILL_BELOW = 4
+    private const val REFILL_BELOW = 2
 
-    private val pool = LinkedBlockingQueue<RuntimeShader>(CAPACITY)
+    private val fullPool = LinkedBlockingQueue<RuntimeShader>(CAPACITY_FULL)
+    private val basePool = LinkedBlockingQueue<RuntimeShader>(CAPACITY_BASE)
 
-    @Volatile
-    private var refillScheduled = false
+    @Volatile private var fullRefilling = false
+    @Volatile private var baseRefilling = false
 
-    /** 预构造一个实例（与渲染路径 create() 同一入口，语义零差异）。 */
-    fun pollOrCreate(): RuntimeShader {
+    /**
+     * @param metaball true=FULL 源（MetaBall 黏连桥）；false=BASE 源（小元素）。
+     */
+    fun pollOrCreate(metaball: Boolean = false): RuntimeShader {
+        val pool = if (metaball) fullPool else basePool
         pool.poll()?.let {
-            scheduleRefill()
+            scheduleRefill(metaball)
             return it
         }
-        scheduleRefill()
-        return LiquidGlassShader.create()
+        scheduleRefill(metaball)
+        return LiquidGlassShader.create(metaball)
     }
 
-    /** 池空/将空时起一次补货（幂等节流：同一时刻最多一个补货线程）。 */
-    private fun scheduleRefill() {
+    private fun scheduleRefill(metaball: Boolean) {
+        val pool = if (metaball) fullPool else basePool
+        val cap = if (metaball) CAPACITY_FULL else CAPACITY_BASE
         if (pool.size >= REFILL_BELOW) return
-        if (refillScheduled) return
+        if (metaball && fullRefilling) return
+        if (!metaball && baseRefilling) return
         synchronized(this) {
-            if (refillScheduled) return
-            refillScheduled = true
+            if (metaball && fullRefilling) return
+            if (!metaball && baseRefilling) return
+            if (metaball) fullRefilling = true else baseRefilling = true
         }
         try {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                refillScheduled = false
+                if (metaball) fullRefilling = false else baseRefilling = false
                 return
             }
+            val flagRef = if (metaball) ({ fullRefilling = false }) else ({ baseRefilling = false })
             Thread({
                 try {
-                    while (pool.size < CAPACITY) {
-                        pool.offer(LiquidGlassShader.create())
+                    while (pool.size < cap) {
+                        pool.offer(LiquidGlassShader.create(metaball))
                     }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "shader-pool: refill failed", t)
+                    Log.w(TAG, "shader-pool: refill failed metaball=$metaball", t)
                 } finally {
-                    refillScheduled = false
+                    flagRef()
                 }
-            }, "lg-shader-pool").apply {
+            }, if (metaball) "lg-shader-pool-full" else "lg-shader-pool-base").apply {
                 isDaemon = true
                 priority = Thread.MIN_PRIORITY
             }.start()
         } catch (t: Throwable) {
-            refillScheduled = false
-            Log.w(TAG, "shader-pool: start refill failed", t)
+            if (metaball) fullRefilling = false else baseRefilling = false
+            Log.w(TAG, "shader-pool: start refill failed metaball=$metaball", t)
         }
     }
 }

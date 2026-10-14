@@ -4,6 +4,7 @@ import android.os.Build
 import android.util.Log
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.hook.BlurDrawHook
+import com.coloros16.liquidglass.hook.HostVersion
 import com.coloros16.liquidglass.hook.LauncherAnimHook
 import com.coloros16.liquidglass.hook.LauncherHook
 import com.coloros16.liquidglass.hook.LauncherTiltHook
@@ -136,14 +137,29 @@ class XposedEntry : XposedModule() {
             // SystemUI：Hook B 绘制替换 / Hook C 场景过滤（占位实现，保持现状）。
             // [2026-08-13 用户决定] BlurService 端全移除：模块不再干预 com.oplus.blur 进程，
             // 系统模糊管线完全原样；玻璃完全靠 SystemUI 端每元素背景源。
-            PACKAGE_SYSTEMUI -> installHooks(classLoader)
+            // [spec/116 P0] 只读 versionCode 打日志铺观测，不做门控（SystemUI 适配是后续阶段）。
+            PACKAGE_SYSTEMUI -> {
+                val hostVer = HostVersion.hostVersionCode(PACKAGE_SYSTEMUI)
+                Log.i(TAG, "host version: pkg=$PACKAGE_SYSTEMUI versionCode=$hostVer (SystemUI no gating in P0)")
+                installHooks(classLoader)
+            }
             // [spec/10] Launcher：桌面文件夹背景液态玻璃化（闭合文件夹图标 + 打开文件夹卡片）。
             // [spec/64] Launcher：桌面动画参数调节（弹簧刚度/阻尼 + 图标透明度时长，默认全关）。
             // [spec/65] Launcher：iOS 动态倾斜/透视（实验性，默认关）。
+            // [spec/116 P0/P2] 版本门控：<17.3.12（或读取失败 -1）三 hook 全装、tilt 走 16.x 现状路径；
+            // >=17.3.12 禁用 anim hook，tilt 改走原生 zuyqa 参数注入路径。
             PACKAGE_LAUNCHER -> {
-                LauncherHook.install(this, classLoader)
-                LauncherAnimHook.install(this, classLoader)
-                LauncherTiltHook.install(this, classLoader)
+                val hostVer = HostVersion.hostVersionCode(PACKAGE_LAUNCHER)
+                if (hostVer >= VERSION_LAUNCHER_17_3_12) {
+                    Log.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=17.3.12+: skip LauncherAnimHook (17.x fields obfuscated), tilt=native zuyqa path")
+                    LauncherHook.install(this, classLoader)
+                    LauncherTiltHook.installNativeZuyqa(this, classLoader)
+                } else {
+                    Log.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=<17.3.12 (or unknown -1): install all 3 hooks")
+                    LauncherHook.install(this, classLoader)
+                    LauncherAnimHook.install(this, classLoader)
+                    LauncherTiltHook.install(this, classLoader)
+                }
             }
         }
     }
@@ -226,6 +242,8 @@ class XposedEntry : XposedModule() {
         private var cachedLauncherLoader: ClassLoader? = null
         /** [doc/spec/110] 模块版本标记（热重载完成日志用，便于 daemon 侧对账 loaded version）。 */
         private const val MODULE_VERSION = "spec-113"
+        /** [spec/116 P0] 桌面 17.3.12 versionCode：达到该版本后禁用 LauncherAnimHook（弹簧字段全灭）。 */
+        private const val VERSION_LAUNCHER_17_3_12 = 170030012L
         private const val TAG = "LiquidGlass"
     }
 }

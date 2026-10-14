@@ -5,8 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RenderNode
 import android.graphics.RuntimeShader
 import android.graphics.drawable.Drawable
 import android.hardware.HardwareBuffer
@@ -27,6 +29,7 @@ import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.LinkedHashSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -80,6 +83,37 @@ object LauncherHook {
     private const val METHOD_GET_BLUR_SHADER_PAINT = "getBlurShaderPaint"
     private const val METHOD_GET_PAINT = "getPaint"
     private const val METHOD_GET_BOUNDS = "getBounds"
+
+    // ---- [spec/117] 17.3.12 玻璃渲染链指纹（BaseDrawable→b、drawBlurShader 内联进 static a(d)） ----
+    /** 指纹/17.x 兼容日志 tag（logcat `-s lg-hook`） */
+    private const val TAG_FINGERPRINT = "lg-hook"
+    /** [spec/116 P0/P1] 桌面 17.3.12 versionCode 门槛 */
+    private const val VERSION_LAUNCHER_17_3_12 = 170030012L
+    /** 稳定探针：内部类名未混淆，可反查外层 BaseDrawable（17.3.12 = drawable.b） */
+    private const val PROBE_BASE_DRAWABLE_INNER =
+        "com.oplus.posteffect.drawable.BaseDrawable\$configurationChangeObserver\$1"
+    /** 17.3.12 blurShaderPaint getter 被拆 → public final 字段 M */
+    private const val FIELD_BLUR_SHADER_PAINT_17 = "M"
+    /** 17.3.12 paint getter 被拆 → public final 字段 f28547f */
+    private const val FIELD_PAINT_17 = "f28547f"
+    /** 17.3.12 renderNode → f28549h（路径 A 自录用） */
+    private const val FIELD_RENDER_NODE_17 = "f28549h"
+    /** 17.3.12 drawablePath → f28550i（路径 A 自录用） */
+    private const val FIELD_DRAWABLE_PATH_17 = "f28550i"
+    /** 17.3.12 paintAlpha → F（路径 A 自录用，等价旧 drawBlurShader 的 setAlpha） */
+    private const val FIELD_PAINT_ALPHA_17 = "F"
+    /** 17.3.12 enableBlurShader → f28542a（false 时系统跳过 shader 分支） */
+    private const val FIELD_ENABLE_BLUR_SHADER_17 = "f28542a"
+    /** 17.3.12 drawBlurShader 内联目标：static void a(d)，按指纹确认防撞名 */
+    private const val INLINE_RECORD_STATIC_NAME = "a"
+    /** 17.3.12 onBlurReady 单 drawable 重载改名 f（同签名 List,HardwareBuffer,int,float） */
+    private const val METHOD_ON_BLUR_READY_17 = "f"
+    /** 17.3.12 CornerType 迁移 FQCN（常量名混淆，用 values()[2]） */
+    private const val CLASS_CORNER_TYPE_17 = "com.oplus.posteffect.params.CornerType"
+    /** 17.3.12 CornerParams 混淆类（旧 GradientStrokeCornerParams） */
+    private const val CLASS_CORNER_PARAMS_17 = "zn.c"
+    /** 17.3.12 指纹扫描候选：drawable 包单字母类（有限枚举，不整包扫） */
+    private const val PROBE_SCAN_LETTERS = "bcdefghijklmnop"
 
     // ---- 闭合文件夹图标映射 hook（spec/10） ----
     private const val CLASS_OPLUS_PREVIEW_BACKGROUND = "com.android.launcher3.folder.OplusPreviewBackground"
@@ -240,6 +274,32 @@ object LauncherHook {
     private var mGetBlurShaderPaint: Method? = null
     private var mGetPaint: Method? = null
     private var mGetBounds: Method? = null
+
+    // ---- [spec/117] 17.3.12 指纹解析缓存（旧名命中时全部为空，16.x 行为零变化） ----
+    /** 解析出的 BaseDrawable 类（旧名或指纹） */
+    private var mBaseDrawableCls: Class<*>? = null
+    /** 类指纹来源：old-name / probe-inner / probe-scan（仅日志） */
+    private var mBaseDrawableFp: String? = null
+    /** 17.3.12 blurShaderPaint 字段 M（旧名路径下为 null） */
+    private var mBlurShaderPaintField: Field? = null
+    /** 17.3.12 paint 字段 f28547f */
+    private var mPaintField: Field? = null
+    /** 17.3.12 renderNode 字段 f28549h（路径 A 自录） */
+    private var mRenderNodeField: Field? = null
+    /** 17.3.12 drawablePath 字段 f28550i（路径 A 自录） */
+    private var mDrawablePathField: Field? = null
+    /** 17.3.12 paintAlpha 字段 F（路径 A 自录） */
+    private var mPaintAlphaField: Field? = null
+    /** 17.3.12 enableBlurShader 字段 f28542a */
+    private var mEnableBlurShaderField: Field? = null
+    /** 17.3.12 内联录制方法 static void a(d)（16.x 恒 null） */
+    private var mInlineRecordMethod: Method? = null
+    /** CornerType.CONIC 兼容解析结果（旧 getField(CONIC) / 17.x values()[2]；当前渲染未消费，兼容链预留） */
+    @Suppress("unused")
+    private var mCornerTypeConic: Any? = null
+    /** 版本门控缓存：宿主 ≥17.3.12（-1/读失败按 false 处理，指纹路径不触发） */
+    @Volatile
+    private var launcherVer17Plus: Boolean? = null
 
     private var mBgDrawableField: Field? = null
     private var mBgViewField: Field? = null
@@ -424,15 +484,12 @@ object LauncherHook {
     // ------------------------------------------------------------ 反射解析
 
     private fun resolveMethods(classLoader: ClassLoader) {
-        // 渲染 hook 反射（失败只禁 drawBlurShader 替换，不崩）
-        try {
-            val base = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
-            mGetBlurShaderPaint = base.getMethod(METHOD_GET_BLUR_SHADER_PAINT)
-            mGetPaint = base.getMethod(METHOD_GET_PAINT)
-            mGetBounds = base.getMethod(METHOD_GET_BOUNDS)
-            Log.i(TAG, "LauncherHook resolved BaseDrawable: $METHOD_GET_BLUR_SHADER_PAINT/$METHOD_GET_BOUNDS/$METHOD_GET_PAINT")
-        } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook resolve BaseDrawable methods failed, drawBlurShader replace disabled", t)
+        // 渲染 hook 反射：旧名优先，17.3.12 走指纹（失败只禁 drawBlurShader 替换，不崩）
+        val base = resolveBaseDrawableClass(classLoader)
+        if (base != null) {
+            resolveBaseDrawableMembers(base, classLoader)
+        } else {
+            Log.e(TAG, "LauncherHook resolve BaseDrawable class failed, drawBlurShader replace disabled")
         }
         // 闭合文件夹图标映射反射（失败只禁文件夹图标映射）
         try {
@@ -455,17 +512,260 @@ object LauncherHook {
         } catch (t: Throwable) {
             Log.e(TAG, "LauncherHook resolve FolderRoundImageView failed, folder icon map uses fallback radius", t)
         }
-        // [doc/spec/66] Dock 借壳反射（createBlurDrawable 是 private → getDeclaredMethod + setAccessible）
+        // [doc/spec/66] Dock 借壳反射：createBlurDrawable 在 17.3.12 不存在（BlurProperties 新体系），
+        // 与 mShortcutsAndWidgetsField 拆开解析，字段仍可用于 onDraw 映射
+        try {
+            val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
+            mShortcutsAndWidgetsField = findFieldAlongHierarchy(hotseat, FIELD_SHORTCUTS_AND_WIDGETS)
+            Log.i(TAG, "LauncherHook resolved OplusHotseat.mShortcutsAndWidgets (dock map)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook resolve OplusHotseat.mShortcutsAndWidgets failed, dock map disabled", t)
+        }
         try {
             val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
             mCreateBlurDrawable = hotseat.getDeclaredMethod(METHOD_CREATE_BLUR_DRAWABLE)
                 .apply { isAccessible = true }
-            // mShortcutsAndWidgets 定义在父类（CellLayout）→ 沿继承链找，不写死所在类
-            mShortcutsAndWidgetsField = findFieldAlongHierarchy(hotseat, FIELD_SHORTCUTS_AND_WIDGETS)
-            Log.i(TAG, "LauncherHook resolved OplusHotseat.createBlurDrawable/mShortcutsAndWidgets (dock glass)")
+            Log.i(TAG, "LauncherHook resolved OplusHotseat.createBlurDrawable (dock glass)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook resolve OplusHotseat failed, dock glass disabled", t)
+            if (isLauncher17Plus()) {
+                Log.i(
+                    TAG_FINGERPRINT,
+                    "launcher-glass: OplusHotseat.createBlurDrawable missing on 17.x (BlurProperties path), dock shell-borrow disabled",
+                )
+            } else {
+                Log.e(TAG, "LauncherHook resolve OplusHotseat.createBlurDrawable failed, dock glass disabled", t)
+            }
+            mCreateBlurDrawable = null
         }
+    }
+
+    /** [spec/117 A1] BaseDrawable 类指纹解析：旧名 → 探针1（内部类反查）→ 探针2（单字母扫描）。
+     *  旧名命中即返回，指纹路径不执行（16.x 零风险）。 */
+    private fun resolveBaseDrawableClass(classLoader: ClassLoader): Class<*>? {
+        mBaseDrawableCls?.let { return it }
+        // ① 旧名（16.x 直接命中）
+        try {
+            val c = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
+            mBaseDrawableCls = c
+            mBaseDrawableFp = "old-name"
+            Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ old-name ($CLASS_BASE_DRAWABLE)")
+            return c
+        } catch (_: ClassNotFoundException) {
+            Log.i(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name miss, try fingerprint")
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name load error", t)
+        }
+        // ② 指纹探针仅在 ≥17.3.12 启用（版本未知/-1 不探，防误判）
+        if (!isLauncher17Plus()) {
+            Log.w(
+                TAG_FINGERPRINT,
+                "launcher-glass: BaseDrawable unresolved and host <17.3.12 (or version unknown), skip fingerprint probe",
+            )
+            return null
+        }
+        // 探针1：内部类 configurationChangeObserver$1 未混淆 → 反查外层类
+        try {
+            val inner = Class.forName(PROBE_BASE_DRAWABLE_INNER, false, classLoader)
+            val outer = try {
+                inner.enclosingClass
+            } catch (t: Throwable) {
+                null
+            }
+            if (outer != null && isBaseDrawableFingerprint(outer)) {
+                mBaseDrawableCls = outer
+                mBaseDrawableFp = "probe-inner"
+                Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-inner (${outer.name} via $PROBE_BASE_DRAWABLE_INNER)")
+                return outer
+            }
+        } catch (_: ClassNotFoundException) {
+            Log.i(TAG_FINGERPRINT, "launcher-glass: probe-inner miss, try probe-scan")
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: probe-inner failed", t)
+        }
+        // 探针2：drawable 包单字母有限枚举，找「extends Drawable + 持有 DrawableShader 字段 + Paint 字段」
+        for (ch in PROBE_SCAN_LETTERS) {
+            val name = "com.oplus.posteffect.drawable.$ch"
+            try {
+                val c = Class.forName(name, false, classLoader)
+                if (isBaseDrawableFingerprint(c)) {
+                    mBaseDrawableCls = c
+                    mBaseDrawableFp = "probe-scan"
+                    Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-scan ($name)")
+                    return c
+                }
+            } catch (_: ClassNotFoundException) {
+                continue
+            } catch (_: Throwable) {
+                continue
+            }
+        }
+        Log.e(TAG_FINGERPRINT, "launcher-glass: BaseDrawable fingerprint resolve failed (all probes miss)")
+        return null
+    }
+
+    /** [spec/117 §2] BaseDrawable 指纹判据：extends Drawable 且【自身声明】同时持有 DrawableShader + Paint 字段。
+     *  子类（d/f）继承 L/M 但不声明 → 被排除，精确落到 BaseDrawable 本体。 */
+    private fun isBaseDrawableFingerprint(c: Class<*>): Boolean {
+        if (!Drawable::class.java.isAssignableFrom(c)) return false
+        var hasDrawableShader = false
+        var hasPaint = false
+        for (f in c.declaredFields) {
+            val ft = f.type
+            if (ft.name == "com.oplus.posteffect.agsl.DrawableShader" || ft.simpleName == "DrawableShader") {
+                hasDrawableShader = true
+            }
+            if (ft == Paint::class.java) {
+                hasPaint = true
+            }
+        }
+        return hasDrawableShader && hasPaint
+    }
+
+    /** [spec/117 A2] 对已解析 BaseDrawable 逐项解析方法/字段：旧名优先，17.3.12 名/字段兜底。 */
+    private fun resolveBaseDrawableMembers(base: Class<*>, classLoader: ClassLoader) {
+        // getBlurShaderPaint：旧方法 → 17.x 字段 M
+        try {
+            mGetBlurShaderPaint = base.getMethod(METHOD_GET_BLUR_SHADER_PAINT)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ method (old-name)")
+        } catch (_: NoSuchMethodException) {
+            try {
+                mBlurShaderPaintField = base.getDeclaredField(FIELD_BLUR_SHADER_PAINT_17)
+                Log.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ field $FIELD_BLUR_SHADER_PAINT_17 (17.3.12)")
+            } catch (t: Throwable) {
+                Log.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint unresolved (no method, no field $FIELD_BLUR_SHADER_PAINT_17)", t)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint resolve error", t)
+        }
+        // getPaint：旧方法 → 17.x 字段 f28547f（当前渲染链未消费，兼容预留）
+        try {
+            mGetPaint = base.getMethod(METHOD_GET_PAINT)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ method (old-name)")
+        } catch (_: NoSuchMethodException) {
+            try {
+                mPaintField = base.getDeclaredField(FIELD_PAINT_17)
+                Log.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ field $FIELD_PAINT_17 (17.3.12)")
+            } catch (t: Throwable) {
+                Log.w(TAG_FINGERPRINT, "launcher-glass: getPaint unresolved (no method, no field $FIELD_PAINT_17)", t)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: getPaint resolve error", t)
+        }
+        // getBounds：继承 framework Drawable，旧名/17.x 均可用
+        try {
+            mGetBounds = base.getMethod(METHOD_GET_BOUNDS)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: getBounds @ method (inherited)")
+        } catch (t: Throwable) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: getBounds unresolved", t)
+        }
+        // drawBlurShader：17.x 不存在独立方法 → 标记内联路径（mount 阶段挂 static a(d)）
+        try {
+            base.getDeclaredMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: drawBlurShader @ method (old-name)")
+        } catch (_: NoSuchMethodException) {
+            if (isLauncher17Plus()) {
+                mInlineRecordMethod = resolveInlineRecordMethod(base)
+                Log.i(
+                    TAG_FINGERPRINT,
+                    "launcher-glass: drawBlurShader @ inline " +
+                        (mInlineRecordMethod?.let { "${it.declaringClass.name}#${it.name}(d)" } ?: "UNRESOLVED"),
+                )
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: drawBlurShader resolve error", t)
+        }
+        // 路径 A 自录所需字段（仅 17.3.12；16.x 不解析不触发）
+        if (isLauncher17Plus() && mInlineRecordMethod != null) {
+            try {
+                mRenderNodeField = base.getDeclaredField(FIELD_RENDER_NODE_17)
+                mDrawablePathField = base.getDeclaredField(FIELD_DRAWABLE_PATH_17)
+                mPaintAlphaField = base.getDeclaredField(FIELD_PAINT_ALPHA_17)
+                mEnableBlurShaderField = base.getDeclaredField(FIELD_ENABLE_BLUR_SHADER_17)
+                Log.i(
+                    TAG_FINGERPRINT,
+                    "launcher-glass: inline record fields @ $FIELD_RENDER_NODE_17/$FIELD_DRAWABLE_PATH_17/" +
+                        "$FIELD_PAINT_ALPHA_17/$FIELD_ENABLE_BLUR_SHADER_17",
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG_FINGERPRINT, "launcher-glass: inline record fields unresolved, path A disabled", t)
+                mInlineRecordMethod = null
+            }
+        }
+        // onBlurReady 兼容链在 mountOnBlurReady 内逐签名尝试
+        // CornerType/CornerParams 兼容解析（当前 Launcher 渲染未消费 CONIC，兼容链预留）
+        resolveCornerCompat(classLoader)
+    }
+
+    /** [spec/117 §6 路径 A] 定位内联录制方法：static void a(d)，d 为 BaseDrawable 子类，防单字母撞名。 */
+    private fun resolveInlineRecordMethod(base: Class<*>): Method? {
+        var fallback: Method? = null
+        for (m in base.declaredMethods) {
+            if (!Modifier.isStatic(m.modifiers)) continue
+            if (m.returnType != Void.TYPE) continue
+            val params = m.parameterTypes
+            if (params.size != 1) continue
+            if (!base.isAssignableFrom(params[0])) continue
+            if (m.name == INLINE_RECORD_STATIC_NAME) return m
+            if (fallback == null) fallback = m
+        }
+        return fallback
+    }
+
+    /** [spec/117 §4] CornerType/CornerParams 兼容链：旧 FQCN → 17.x params.CornerType / zn.c。 */
+    private fun resolveCornerCompat(classLoader: ClassLoader) {
+        // CornerType：旧 com.oplus.posteffect.CornerType#getField("CONIC")
+        try {
+            val old = Class.forName("com.oplus.posteffect.CornerType", false, classLoader)
+            mCornerTypeConic = old.getField("CONIC").get(null)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field CONIC (old-name)")
+        } catch (_: ClassNotFoundException) {
+            try {
+                val ct17 = Class.forName(CLASS_CORNER_TYPE_17, false, classLoader)
+                // 17.x 常量名混淆（a/b/c/d），values() 顺序 NONE,FULL,CONIC,G2 → CONIC = values()[2]
+                val conic = ct17.getMethod("values").invoke(null)?.let { arr ->
+                    (arr as? Array<*>)?.getOrNull(2)
+                }
+                if (conic != null) {
+                    mCornerTypeConic = conic
+                    Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ values()[2] ($CLASS_CORNER_TYPE_17)")
+                } else {
+                    try {
+                        mCornerTypeConic = ct17.getField("f28674c").get(null)
+                        Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field f28674c ($CLASS_CORNER_TYPE_17)")
+                    } catch (t: Throwable) {
+                        Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC unresolved on 17.3.12", t)
+                    }
+                }
+            } catch (t2: Throwable) {
+                Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType unresolved (old miss,17.x miss)", t2)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType old-name CONIC field failed", t)
+        }
+        // CornerParams 类：旧 FQCN → zn.c（仅确认类在，无 getter 可反射）
+        try {
+            Class.forName("com.oplus.posteffect.CornerParams", false, classLoader)
+            Log.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ old-name")
+        } catch (_: ClassNotFoundException) {
+            try {
+                Class.forName(CLASS_CORNER_PARAMS_17, false, classLoader)
+                Log.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ $CLASS_CORNER_PARAMS_17 (17.3.12)")
+            } catch (t: Throwable) {
+                Log.w(TAG_FINGERPRINT, "launcher-glass: CornerParams unresolved (old miss,17.x miss)", t)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG_FINGERPRINT, "launcher-glass: CornerParams old-name load error", t)
+        }
+    }
+
+    /** [spec/116 P0/P1] 宿主 ≥17.3.12 判定（进程内缓存；读失败/-1 按 false，指纹路径不触发）。 */
+    private fun isLauncher17Plus(): Boolean {
+        launcherVer17Plus?.let { return it }
+        val ver = HostVersion.hostVersionCode("com.android.launcher")
+        val v = ver >= VERSION_LAUNCHER_17_3_12
+        launcherVer17Plus = v
+        Log.i(TAG_FINGERPRINT, "launcher-glass: host versionCode=$ver,17.3.12+=$v")
+        return v
     }
 
     /** [doc/spec/66] 沿继承链找字段（superclass 逐层 getDeclaredField），找不到返回 null。 */
@@ -489,36 +789,150 @@ object LauncherHook {
      * 渲染 hook：替换 Launcher posteffect BaseDrawable.drawBlurShader 的 blurShaderPaint.shader
      * 为液态玻璃 RuntimeShader。与 SystemUI BlurDrawHook.mountDrawBlurShader 同款，仅 Paint getter 名不同。
      * 命中对象：闭合文件夹图标（LayerBlurDrawable.mBlurDrawable，与映射 hook 注册的实例同 identityHashCode）。
+     * [spec/117] 17.3.12：独立 drawBlurShader 消失 → 挂内联 static a(d)（路径 A 自录 + skip proceed）。
      */
     private fun mountDrawBlurShader(api: XposedInterface, classLoader: ClassLoader) {
-        if (mGetBlurShaderPaint == null) {
-            Log.w(TAG, "LauncherHook BaseDrawable methods unresolved, drawBlurShader replace disabled")
+        // ① 16.x 旧路径：drawBlurShader(Canvas)（旧名命中时恒走此分支，指纹路径不执行）
+        val oldMethod = try {
+            mBaseDrawableCls?.getDeclaredMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
+        } catch (_: NoSuchMethodException) {
+            null
+        } catch (t: Throwable) {
+            Log.e(TAG, "LauncherHook drawBlurShader old-name lookup error", t)
+            null
+        }
+        if (oldMethod != null) {
+            if (mGetBlurShaderPaint == null && mBlurShaderPaintField == null) {
+                Log.w(TAG, "LauncherHook BaseDrawable paint unresolved, drawBlurShader replace disabled")
+                return
+            }
+            try {
+                api.hook(oldMethod)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val drawable = try {
+                            chain.getThisObject()
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "launcher drawBlurShader: getThisObject failed", t); null
+                        }
+                        if (drawable != null) {
+                            try {
+                                replaceShaderIfPossible(drawable)
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "launcher render: drawBlurShader intercept error", t)
+                            }
+                        }
+                        chain.proceed()
+                    }
+                Log.i(TAG, "LauncherHook mounted: ${oldMethod.declaringClass.name}#$METHOD_DRAW_BLUR_SHADER(Canvas)")
+            } catch (t: Throwable) {
+                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
+            }
+            return
+        }
+        // ② 17.3.12 路径 A：内联 static a(d)，before 自录玻璃路径并 skip proceed；失败回退 proceed
+        mountInlineRecordPathA(api)
+    }
+
+    /**
+     * [spec/117 §6 路径 A] 17.3.12 渲染主链：hook static void a(d) before。
+     * 玻璃就绪 → 自行 beginRecording/drawPath/endRecording 后 skip proceed；
+     * 任一步失败 → ERROR 并 proceed 原方法（系统模糊），不留半残状态。16.x 不触发（mInlineRecordMethod 恒 null）。
+     */
+    private fun mountInlineRecordPathA(api: XposedInterface) {
+        val method = mInlineRecordMethod
+        if (method == null) {
+            if (isLauncher17Plus()) {
+                Log.e(TAG_FINGERPRINT, "launcher-glass: P1 主链未启用（inline a(d) 未解析），回退系统模糊")
+            }
+            return
+        }
+        if (mBlurShaderPaintField == null || mRenderNodeField == null ||
+            mDrawablePathField == null || mPaintAlphaField == null
+        ) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: path A fields incomplete, inline hook disabled")
             return
         }
         try {
-            val clazz = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
-            val method = clazz.getDeclaredMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     val drawable = try {
-                        chain.getThisObject()
+                        chain.getArgs()?.getOrNull(0)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher drawBlurShader: getThisObject failed", t); null
+                        Log.e(TAG_FINGERPRINT, "launcher-glass: inline getArgs failed", t); null
                     }
+                    var handled = false
                     if (drawable != null) {
-                        try {
-                            replaceShaderIfPossible(drawable)
+                        handled = try {
+                            recordGlassInline(drawable)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "launcher render: drawBlurShader intercept error", t)
+                            Log.e(TAG_FINGERPRINT, "launcher-glass: inline record error, fallback proceed", t)
+                            false
                         }
                     }
-                    chain.proceed()
+                    if (!handled) chain.proceed()
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER(Canvas)")
+            Log.i(
+                TAG_FINGERPRINT,
+                "launcher-glass: mounted path A ${method.declaringClass.name}#${method.name}(d) (inline record + skip proceed)",
+            )
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
+            Log.e(TAG_FINGERPRINT, "launcher-glass: path A mount FAILED, system blur fallback", t)
         }
+    }
+
+    /**
+     * [spec/117 路径 A] 自录玻璃：替换 shader 后 beginRecording → drawPath(glassPaint) → endRecording。
+     * 返回 true = 已自录，调用方 skip proceed；false = 回退原方法。
+     */
+    private fun recordGlassInline(drawable: Any): Boolean {
+        // enableBlurShader=false 时系统跳过 shader 分支 → 我们也回退原方法
+        val enable = try {
+            mEnableBlurShaderField?.getBoolean(drawable) ?: true
+        } catch (t: Throwable) {
+            true
+        }
+        if (!enable) return false
+        // 门控 + 建玻璃 shader（与16.x 同一函数：省电/开关/映射/源全在这里判）
+        if (!replaceShaderIfPossible(drawable)) return false
+        val paint = getBlurShaderPaintOf(drawable) ?: return false
+        val rn = try {
+            mRenderNodeField?.get(drawable) as? RenderNode
+        } catch (t: Throwable) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: read renderNode failed", t); null
+        } ?: return false
+        val path = try {
+            mDrawablePathField?.get(drawable) as? Path
+        } catch (t: Throwable) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: read drawablePath failed", t); null
+        } ?: return false
+        // 等价旧 drawBlurShader 的 setAlpha(paintAlpha)
+        try {
+            mPaintAlphaField?.getInt(drawable)?.let { paint.alpha = it }
+        } catch (ignored: Throwable) {
+        }
+        var recorded = false
+        val canvas = try {
+            rn.beginRecording()
+        } catch (t: Throwable) {
+            Log.e(TAG_FINGERPRINT, "launcher-glass: beginRecording failed, fallback proceed", t); null
+        } ?: return false
+        try {
+            canvas.drawPath(path, paint)
+            recorded = true
+        } finally {
+            try {
+                rn.endRecording()
+            } catch (t: Throwable) {
+                Log.e(TAG_FINGERPRINT, "launcher-glass: endRecording failed", t)
+                recorded = false
+            }
+        }
+        if (recorded) {
+            logRenderMode(System.identityHashCode(drawable), "GLASS")
+        }
+        return recorded
     }
 
     // ------------------------------------------------------------ Hook 2：闭合文件夹图标映射
@@ -542,20 +956,40 @@ object LauncherHook {
             Log.w(TAG, "LauncherHook folder icon fields unresolved, folder icon map disabled")
             return
         }
+        // 候选签名链：16.x (Canvas,View) 优先 → 17.3.12 (Canvas) → 17.3.12 (Canvas,ConvertBgParams,ItemInfo)
         try {
             val clazz = Class.forName(CLASS_OPLUS_PREVIEW_BACKGROUND, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW_BACKGROUND, Canvas::class.java, View::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        registerPreviewRegion(chain)
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "launcher preview: drawBackground intercept error", t)
-                    }
-                    chain.proceed()
+            val candidates = clazz.declaredMethods
+                .filter { it.name == METHOD_DRAW_BACKGROUND && it.parameterTypes.isNotEmpty() }
+                .sortedBy { m ->
+                    // (Canvas,View) 排最前（16.x 命中后不再尝试其余）
+                    if (m.parameterTypes.size == 2 && m.parameterTypes[1] == View::class.java) 0 else 1
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND(Canvas, View) (folder icon map, drag-delegated state)")
+            var mounted = false
+            for (method in candidates) {
+                try {
+                    api.hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .intercept { chain ->
+                            try {
+                                registerPreviewRegion(chain)
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "launcher preview: drawBackground intercept error", t)
+                            }
+                            chain.proceed()
+                        }
+                    val sig = method.parameterTypes.joinToString(", ") { it.simpleName }
+                    Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND($sig) (folder icon map)")
+                    mounted = true
+                    // 16.x 双参命中即停；17.x 多签名只挂最靠前的一个（避免重复注册映射）
+                    break
+                } catch (t: Throwable) {
+                    Log.w(TAG, "LauncherHook mount drawBackground(${method.parameterTypes.joinToString { it.simpleName }}) failed, try next", t)
+                }
+            }
+            if (!mounted) {
+                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND (all candidate signatures)")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND", t)
         }
@@ -756,24 +1190,47 @@ object LauncherHook {
     private fun mountOnBlurReady(api: XposedInterface, classLoader: ClassLoader) {
         try {
             val clazz = Class.forName(CLASS_BLUR_DRAWABLE_MANAGER, false, classLoader)
-            val method = clazz.getDeclaredMethod(
-                METHOD_ON_BLUR_READY,
-                List::class.java, HardwareBuffer::class.java,
-                Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
-            )
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        // 系统模糊文件夹背景刷新 = 内容变化信号 → 触发整屏快照重抓（无节流立即；
-                        // pending 去重防 onBlurReady 多 drawable 同帧连调重复入队）
-                        triggerBackgroundCapture()
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "launcher blur-refresh: onBlurReady intercept error", t)
-                    }
-                    chain.proceed()
+            // 候选名链：16.x onBlurReady → 17.3.12 改名 f（同签名）
+            val candidates = if (isLauncher17Plus()) {
+                listOf(METHOD_ON_BLUR_READY, METHOD_ON_BLUR_READY_17)
+            } else {
+                listOf(METHOD_ON_BLUR_READY)
+            }
+            var mounted = false
+            for (name in candidates) {
+                try {
+                    val method = clazz.getDeclaredMethod(
+                        name,
+                        List::class.java, HardwareBuffer::class.java,
+                        Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
+                    )
+                    api.hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .intercept { chain ->
+                            try {
+                                // 系统模糊文件夹背景刷新 = 内容变化信号 → 触发整屏快照重抓（无节流立即；
+                                // pending 去重防 onBlurReady 多 drawable 同帧连调重复入队）
+                                triggerBackgroundCapture()
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "launcher blur-refresh: onBlurReady intercept error", t)
+                            }
+                            chain.proceed()
+                        }
+                    Log.i(
+                        TAG,
+                        "LauncherHook mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$name(List, HardwareBuffer, int, float) (folder bg blur refresh signal)",
+                    )
+                    mounted = true
+                    break
+                } catch (_: NoSuchMethodException) {
+                    continue
+                } catch (t: Throwable) {
+                    Log.w(TAG, "LauncherHook mount $CLASS_BLUR_DRAWABLE_MANAGER#$name failed, try next", t)
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY(List, HardwareBuffer, int, float) (folder bg blur refresh signal)")
+            }
+            if (!mounted) {
+                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#onBlurReady/f (all candidate names)")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
         }
@@ -1030,6 +1487,25 @@ object LauncherHook {
 
     // ------------------------------------------------------------ 核心：替换 shader（强兜底）
 
+    /** [spec/117 A2] blurShaderPaint 双路径读取：16.x 方法 getBlurShaderPaint() → 17.3.12 字段 M。 */
+    private fun getBlurShaderPaintOf(drawable: Any): Paint? {
+        mGetBlurShaderPaint?.let { m ->
+            return try {
+                m.invoke(drawable) as? Paint
+            } catch (t: Throwable) {
+                Log.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
+            }
+        }
+        mBlurShaderPaintField?.let { f ->
+            return try {
+                f.get(drawable) as? Paint
+            } catch (t: Throwable) {
+                Log.e(TAG, "launcher render: read blurShaderPaint field failed", t); null
+            }
+        }
+        return null
+    }
+
     /**
      * 把 blurShaderPaint.shader 替换为液态玻璃 RuntimeShader。
      * 强兜底契约：任何失败都不动 paint（保持系统原样），返回 false → 调用方回退系统绘制。
@@ -1041,7 +1517,7 @@ object LauncherHook {
         // getShaderOrNull 语义同 SystemUI 侧：通常 null）。只 return false 不还原会残留玻璃。
         if (isPowerSaveGlassOff()) {
             try {
-                val p = mGetBlurShaderPaint?.invoke(drawable) as? Paint
+                val p = getBlurShaderPaintOf(drawable)
                 val cur = p?.shader
                 if (cur is RuntimeShader && shaderOwnerSet.contains(cur)) {
                     p.shader = null
@@ -1056,7 +1532,7 @@ object LauncherHook {
         // [2026-10-13 玻璃总开关] 关 → 还原模块 shader 回退系统模糊（与 SystemUI 同门控）
         if (!Prefs.glassEnabled(api)) {
             try {
-                val p = mGetBlurShaderPaint?.invoke(drawable) as? Paint
+                val p = getBlurShaderPaintOf(drawable)
                 val cur = p?.shader
                 if (cur is RuntimeShader && shaderOwnerSet.contains(cur)) {
                     p.shader = null
@@ -1069,7 +1545,7 @@ object LauncherHook {
             return false
         }
         val paint = try {
-            mGetBlurShaderPaint?.invoke(drawable) as? Paint
+            getBlurShaderPaintOf(drawable)
         } catch (t: Throwable) {
             Log.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
         }

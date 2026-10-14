@@ -15,15 +15,13 @@ import kotlin.math.sin
  * 液态玻璃 AGSL RuntimeShader 组装。
  *
  * M1 重构（2026-08-12）：Kyant 分层液态玻璃 —— **清晰内部透镜 + 内侧折射环带（可选色散）+ vibrancy
- * 鲜艳度 + 定向边缘高光** + ColorOS MixColor 双层着色（默认透明）。此前版本"全区域高斯模糊 +
+ * 鲜艳度 + 定向边缘高光**。此前版本"全区域高斯模糊 +
  * 正向（向外）折射"实为普通毛玻璃（demo 截图实证：灰蒙暗色块、无透镜感、无边缘弯折），已废弃；
  * 模糊降级为内部可选轻效果（uBlurRadius 默认 0）。算法对齐 Kyant0/AndroidLiquidGlass
  * （KMP/Skiko → Android 原生 AGSL）：
  * - `backdrop/.../internal/Shaders.kt`：RoundedRectSDF（sdRoundedRect/gradSdRoundedRect）、
  *   RoundedRectRefraction（circleMap + 折射位移）、RoundedRectRefractionWithDispersion（7 通道光谱色散）、
  *   DefaultHighlightShader（定向高光）
- * - MixColor 混合：移植 ColorOS 反编译 `com/oplus/posteffect/agsl/BlurDrawableShaderStringKt`
- *   （GLSL→AGSL，保留 blendMode 枚举 0~10 语义；uMixColorA/B = BlurParam.blendColorA/B）
  *
  * uniform 接口按 doc/spec/04-技术方案.md 第 4 节；采样为 AGSL 的 `uSource.eval(coord)`（shader 类型采样，
  * 非 GLSL texture()）。AGSL 差异处理：float/int 严格（循环计数器须 cast 为 float 再参与向量运算）、
@@ -46,16 +44,12 @@ object LiquidGlassShader {
         //   旧的 gradSdRoundedRect(mix)+球面径向在宽元素内部转成"从中心径向"（偏离局部法线 70~80°）
         //   → 玻璃内部出现奇怪扭曲图案；gradSdRoundedRect 自本版起**只喂高光 hl**。
         // - 高斯模糊：自研 5x5 可分离，仅作内部可选轻效果（uBlurRadius=0 时完全不采样 uSourceLowRes）
-        // - MixColor：ColorOS 反编译 BlendMode 语义（BlurDrawableShaderStringKt，GLSL→AGSL），默认透明无操作
         // ============================================================================
         uniform shader uSource;          // 未模糊原图（全分辨率；折射/色散/锐化采样用，Hook A 喂入）
         uniform shader uSourceLowRes;    // 未模糊原图 1/4 降采样（高斯模糊采样用；消除全分辨率欠采样网格伪影）
         uniform vec4  uSourceRect;       // uSource 原图 srcRect（xy=原点, zw=尺寸）
         uniform vec4  uSourceLowResRect; // uSourceLowRes 低分辨率 srcRect（xy=原点, zw=尺寸）
         uniform vec2  uViewport;         // 面板绘制尺寸 px（fragCoord ∈ [0,W]×[0,H]，local 坐标）
-        uniform vec4  uMixColorA;        // 上层着色（BlurParam.blendColorA，straight rgba）
-        uniform vec4  uMixColorB;        // 下层着色（BlurParam.blendColorB，straight rgba）
-        uniform int   uBlendMode;        // ColorOS BlendMode 枚举 0~10（见 Kotlin BlendMode）
         uniform float uCornerRadius;     // SDF 圆角半径 px（几何/折射/高光用，与模糊半径解耦）
         uniform float uCornerIsConic;    // 本体角 CONIC 开关（1=三次贝塞尔 sdBezierDistance + shader 内 1.5×半径；0=RBox 圆弧）
         uniform float uCornerWeight;     // 本体 CONIC 角权重（系统 CornerParamsKt fMax=(8·w)/(3·w+3) 变换后值；uCornerIsConic=0 时忽略）
@@ -270,6 +264,7 @@ object LiquidGlassShader {
         }
 
         // ================= [doc/spec/100 方案2] 系统 metaball 黏连桥（smooth-min 移植） =================
+        // @LG-MB-START （spec/119 拆源：BASE 源整段剥离，仅 FULL 源保留）
         // 移植对象：reference/systemui-16.99.12 的
         //   com/oplus/posteffect/agsl/BlurDrawableShaderMetaBallStringKt.java
         //   · :22 平滑并集   h = clamp(0.5 + 0.5*(d1-d2)/k, 0, 1); d = mix(d1,d2,h) - k*h*(1-h)
@@ -296,6 +291,7 @@ object LiquidGlassShader {
             float a = 0.5 * pow(2.0 * ((x < 0.5) ? x : (1.0 - x)), k);
             return (x < 0.5) ? a : (1.0 - a);
         }
+        // @LG-MB-END （mbGain 前一段剥离；mbShapeSDF 主渲染无条件使用，BASE 必须保留）
 
         // 本体 / 伴球共用的圆角矩形 SDF —— 与 main() 改动前的 sdRaw 段**逐行等价**
         // （[spec/18] 本体角 CONIC：cc=1.5×radius、圆弧↔CONIC 平滑过渡、半径≥短边一半退化为胶囊）。
@@ -319,6 +315,7 @@ object LiquidGlassShader {
             return d;
         }
 
+        // @LG-MB-START （MbPair + mbFuse 仅 metaball 需要，BASE 剥离）
         // 单个「本体 ↔ 伴球」pairwise 融合的结果：SDF + 两个方向场（高光 / 折射）
         struct MbPair {
             float d;
@@ -464,6 +461,7 @@ object LiquidGlassShader {
             }
             return o;
         }
+        // @LG-MB-END
 
         // 圆形边缘映射：x∈[0,1] → [0,1]，先快后缓（折射位移包络）
         float circleMap(float x) {
@@ -546,189 +544,6 @@ object LiquidGlassShader {
             return color;
         }
 
-        // ---------- ColorOS MixColor BlendMode 移植（BlurDrawableShaderStringKt 反编译） ----------
-        // 语义：doBlend(col, mode, blendColor)：col=玻璃色，blendColor=straight rgba（BlurParam 颜色）
-        // 原 GLSL 用 dst[i] 动态索引，AGSL 改为显式 .r/.g/.b
-        float4 colorDodgeBlend(float4 src, float4 dst) {
-            float alphaOut = src.a + dst.a - src.a * dst.a;
-            float r = 0.0;
-            if (dst.r == 0.0) {
-                r = src.r * (1.0 - dst.a);
-            } else {
-                float cR = abs(src.a - src.r);
-                if (cR == 0.0) {
-                    r = src.a * dst.a + src.r * (1.0 - dst.a) + dst.r * (1.0 - src.a);
-                } else {
-                    cR = min(dst.a, (dst.r * src.a) / (cR + 0.00000001));
-                    r = (cR * src.a + src.r * (1.0 - dst.a)) + dst.r * (1.0 - src.a);
-                }
-            }
-            float g = 0.0;
-            if (dst.g == 0.0) {
-                g = src.g * (1.0 - dst.a);
-            } else {
-                float cG = abs(src.a - src.g);
-                if (cG == 0.0) {
-                    g = src.a * dst.a + src.g * (1.0 - dst.a) + dst.g * (1.0 - src.a);
-                } else {
-                    cG = min(dst.a, (dst.g * src.a) / (cG + 0.00000001));
-                    g = (cG * src.a + src.g * (1.0 - dst.a)) + dst.g * (1.0 - src.a);
-                }
-            }
-            float b = 0.0;
-            if (dst.b == 0.0) {
-                b = src.b * (1.0 - dst.a);
-            } else {
-                float cB = abs(src.a - src.b);
-                if (cB == 0.0) {
-                    b = src.a * dst.a + src.b * (1.0 - dst.a) + dst.b * (1.0 - src.a);
-                } else {
-                    cB = min(dst.a, (dst.b * src.a) / (cB + 0.00000001));
-                    b = (cB * src.a + src.b * (1.0 - dst.a)) + dst.b * (1.0 - src.a);
-                }
-            }
-            return float4(r, g, b, alphaOut);
-        }
-
-        float colorDodge(float s, float d) {
-            return d / (1.0 - s + 0.00000001);
-        }
-
-        float3 colorDodge3(float3 s, float3 d) {
-            return float3(colorDodge(s.x, d.x), colorDodge(s.y, d.y), colorDodge(s.z, d.z));
-        }
-
-        float4 lighter(float4 src, float4 dst) {
-            float r = (1.0 - dst.a) * src.r + (1.0 - src.a) * dst.r + max(src.r, dst.r);
-            float g = (1.0 - dst.a) * src.g + (1.0 - src.a) * dst.g + max(src.g, dst.g);
-            float b = (1.0 - dst.a) * src.b + (1.0 - src.a) * dst.b + max(src.b, dst.b);
-            float a = src.a + dst.a - src.a * dst.a;
-            return float4(r, g, b, a);
-        }
-
-        float3 luminosity(float3 s, float3 d) {
-            float dLum = dot(d, float3(0.3, 0.59, 0.11));
-            float sLum = dot(s, float3(0.3, 0.59, 0.11));
-            float lum = sLum - dLum;
-            float3 c = d + lum;
-            float minC = min(min(c.x, c.y), c.z);
-            float maxC = max(max(c.x, c.y), c.z);
-            if (minC < 0.0) {
-                return sLum + ((c - sLum) * sLum) / (sLum - minC);
-            } else if (maxC > 1.0) {
-                return sLum + ((c - sLum) * (1.0 - sLum)) / (maxC - sLum);
-            } else {
-                return c;
-            }
-        }
-
-        float overlay(float s, float d) {
-            if (d < 0.5) {
-                return 2.0 * s * d;
-            } else {
-                return 1.0 - 2.0 * (1.0 - s) * (1.0 - d);
-            }
-        }
-
-        float3 overlay3(float3 s, float3 d) {
-            return float3(overlay(s.x, d.x), overlay(s.y, d.y), overlay(s.z, d.z));
-        }
-
-        float4 plusDarker(float4 src, float4 dst) {
-            return float4(
-                clamp(src.r + dst.r - 1.0, 0.0, 1.0),
-                clamp(src.g + dst.g - 1.0, 0.0, 1.0),
-                clamp(src.b + dst.b - 1.0, 0.0, 1.0),
-                clamp(src.a + dst.a - 1.0, 0.0, 1.0)
-            );
-        }
-
-        float4 plusLighter(float4 src, float4 dst) {
-            return float4(
-                clamp(src.r + dst.r, 0.0, 1.0),
-                clamp(src.g + dst.g, 0.0, 1.0),
-                clamp(src.b + dst.b, 0.0, 1.0),
-                clamp(src.a + dst.a, 0.0, 1.0)
-            );
-        }
-
-        float3 rgb2hsv(float3 c) {
-            float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-            float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
-            float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
-            float d = q.x - min(q.w, q.y);
-            float e = 1.0e-10;
-            return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-        }
-
-        float3 hsv2rgb(float3 c) {
-            float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-            float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-        }
-
-        float4 saturation(float4 src, float4 dst) {
-            float a = src.a + dst.a - src.a * dst.a;
-            float3 srcHsv = rgb2hsv(src.rgb);
-            float3 dstHsv = rgb2hsv(dst.rgb);
-            dstHsv = float3(dstHsv.x, srcHsv.y, dstHsv.z);
-            return float4(hsv2rgb(dstHsv), a);
-        }
-
-        float softLight(float2 s, float2 d) {
-            if (2.0 * s.x <= s.y) {
-                return (d.x * d.x * (s.y - 2.0 * s.x) / (d.y + 0.00000001)) + (1.0 - d.y) * s.x + d.x * (-s.y + 2.0 * s.x + 1.0);
-            } else if (4.0 * d.x <= d.y) {
-                float DSqd = d.x * d.x;
-                float DCub = DSqd * d.x;
-                float DaSqd = d.y * d.y;
-                float DaCub = DaSqd * d.y;
-                return (DaSqd * (s.x - d.x * (3.0 * s.y - 6.0 * s.x - 1.0)) + 12.0 * d.y * DSqd * (s.y - 2.0 * s.x) - 16.0 * DCub * (s.y - 2.0 * s.x) - DaCub * s.x) / (DaSqd + 0.00000001);
-            } else {
-                return d.x * (s.y - 2.0 * s.x + 1.0) + s.x - sqrt(d.y * d.x) * (s.y - 2.0 * s.x) - d.y * s.x;
-            }
-        }
-
-        float4 soft_light(float4 src, float4 dst) {
-            if (dst.a == 0.0) {
-                return src;
-            }
-            float a = src.a + (1.0 - src.a) * dst.a;
-            float r = softLight(float2(src.r, src.a), float2(dst.r, dst.a));
-            float g = softLight(float2(src.g, src.a), float2(dst.g, dst.a));
-            float b = softLight(float2(src.b, src.a), float2(dst.b, dst.a));
-            return float4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), a);
-        }
-
-        // ColorOS BlendMode 枚举（0~10）；主函数对 uMixColorA/B 各调一次
-        float4 doBlend(float4 col, int blendMode, float4 blendColor) {
-            if (blendMode == 1) {              // MIX
-                col = float4(mix(col.rgb, blendColor.rgb, blendColor.a), col.a);
-            } else if (blendMode == 2) {       // OVERLAY
-                float3 overlayCol = overlay3(blendColor.rgb, col.rgb);
-                col = float4(mix(col.rgb, overlayCol, blendColor.a), col.a);
-            } else if (blendMode == 3) {       // DODGE_BG
-                float3 dodgeCol = colorDodge3(blendColor.rgb, col.rgb);
-                col = float4(mix(col.rgb, dodgeCol, blendColor.a), col.a);
-            } else if (blendMode == 4) {       // DODGE_FG
-                col = colorDodgeBlend(blendColor, col);
-            } else if (blendMode == 5) {       // LUMINOSITY
-                float3 lumCol = luminosity(blendColor.rgb, col.rgb);
-                col = float4(mix(col.rgb, lumCol, blendColor.a), col.a);
-            } else if (blendMode == 6) {       // LIGHTEN
-                col = lighter(blendColor, col);
-            } else if (blendMode == 7) {       // SATURATION
-                col = saturation(blendColor, col);
-            } else if (blendMode == 8) {       // SOFT_LIGHT
-                col = soft_light(blendColor, col);
-            } else if (blendMode == 9) {       // PLUS_DARKER
-                col = plusDarker(blendColor, col);
-            } else if (blendMode == 10) {      // PLUS_LIGHTER
-                col = plusLighter(blendColor, col);
-            }
-            return col;
-        }
-
         // ================= [doc/spec/112] 通知卡倾斜：屏幕坐标 → 平面（采样）坐标 逆映射 =================
         // 模型：卡片平面绕过 [c] 的水平轴旋转 θ（θ>0 = 顶边靠近观察者、底边远去），透视距离 D；
         // 正变换 screenY = v·cosθ·D/(D + v·sinθ)、screenX = u·D/(D + v·sinθ)，此处解其逆：
@@ -767,10 +582,12 @@ object LiquidGlassShader {
             // bodyCenter=halfSize=viewport/2，与改动前**逐位一致**（回归基准）。
             float2 halfSize = uViewport * 0.5;
             float2 bodyCenter = halfSize;
+            // @LG-MB-START （本体矩形改写仅 metaball 需要，BASE 剥离 → 恒 viewport/2）
             if (uMetaballEnable > 0.5) {
                 bodyCenter = uBodyRect.xy;
                 halfSize = uBodyRect.zw;
             }
+            // @LG-MB-END
             // [doc/spec/112 通知卡倾斜] 一次性把 coord 变换到倾斜坐标系：作用于下方 SDF（centeredCoord）
             // 与背景采样（coord − uMaskOffset）两处，二者同变换才不撕裂（spec/94 §三 路线 B）。
             // 顺序 = 先 tilt 后 maskOffset/parallax（spec/94 §五.2）：pivot 取玻璃中心的 raw coord 位置
@@ -792,6 +609,7 @@ object LiquidGlassShader {
             float2 mbGrad = float2(0.0, 1.0);
             float2 mbRefr = float2(0.0, 1.0);
             float mbOn = 0.0;
+            // @LG-MB-START （union 调用段仅 metaball 需要，BASE 剥离；mbGrad/mbRefr/mbOn 声明保留在外）
             if (uMetaballEnable > 0.5) {
                 float2 w = coord + uParallax - uMaskOffset;
                 float mbBs = max(uMetaballParam.x, 0.0);
@@ -815,6 +633,7 @@ object LiquidGlassShader {
                 mbRefr = rAcc;
                 mbOn = 1.0;
             }
+            // @LG-MB-END
             float sd = min(sdRaw, 0.0);   // Kyant：外部像素 clamp 到 0（circleMap 定义域 [0,1] 防 NaN）
             // 纯 SDF 梯度（高光专用；Kyant 高光不混 depth 径向分量）
             float2 sdfGrad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
@@ -898,10 +717,6 @@ object LiquidGlassShader {
             // 3. vibrancy：饱和度提升（Kyant colorControls saturation=1.5 的矩阵等价：mix(luma, rgb, s)）
             float luma = dot(glass.rgb, float3(0.213, 0.715, 0.072));
             glass.rgb = mix(float3(luma), glass.rgb, uVibrancy);
-
-            // 5. MixColor 双层着色（默认透明→无操作；压暗交给面板背景层，不在玻璃内叠加深色）
-            glass = doBlend(glass, uBlendMode, uMixColorA);
-            glass = doBlend(glass, uBlendMode, uMixColorB);
 
             // 5.5 [2026-08-14 恢复] 遮罩压暗已在上方步骤 2.5 恢复（uMaskAlpha/uMaskColor 生效）；
             //     玻璃内部压暗与卡片间 scrim 黑 tint 展开态统一（`壁纸×(1-maskAlpha)`）。
@@ -1004,28 +819,10 @@ object LiquidGlassShader {
      *  6° 时顶/底边缘缩放差实测顶 +3.8% / 底 −4.5%（上下差约 8.7%，观感安全档）。 */
     private const val TILT_PERSPECTIVE_PX = 400f
 
-    /** ColorOS BlendMode 枚举（事实依据：反编译 BlurDrawableShaderStringKt，doBlend 分支 0~10）。 */
-    object BlendMode {
-        const val NONE = 0         // 不混合（doBlend 原样返回）
-        const val MIX = 1          // col.xyz = mix(col.xyz, blendColor.xyz, blendColor.a)
-        const val OVERLAY = 2
-        const val DODGE_BG = 3
-        const val DODGE_FG = 4
-        const val LUMINOSITY = 5
-        const val LIGHTEN = 6
-        const val SATURATION = 7
-        const val SOFT_LIGHT = 8
-        const val PLUS_DARKER = 9
-        const val PLUS_LIGHTER = 10
-    }
-
     /** 液态玻璃材质参数（uniform 镜像，见 AGSL_SOURCE 各 uniform 注释）。 */
     data class Params(
         val viewportWidth: Float,
         val viewportHeight: Float,
-        val mixColorA: Int = 0,          // ARGB（BlurParam.blendColorA）
-        val mixColorB: Int = 0,          // ARGB（BlurParam.blendColorB）
-        val blendMode: Int = BlendMode.MIX,
         val cornerRadius: Float = 28f,   // SDF 圆角半径 px（uCornerRadius；几何/折射/高光用）
         val cornerIsConic: Boolean = false,  // 本体角 CONIC 开关（true=三次贝塞尔 + shader 内 1.5×半径；false=RBox 圆弧）
         val cornerWeight: Float = DEFAULT_MASK_WEIGHT, // 本体 CONIC 角权重（系统 CornerParamsKt (8·w)/(3·w+3) 变换后值；默认 1.3968）
@@ -1089,7 +886,48 @@ object LiquidGlassShader {
     private var cachedShader: RuntimeShader? = null
 
     /** 编译一个新的液态玻璃 RuntimeShader（每次调用都会重新编译 AGSL，开销大；常规绘制请用 [getShader]）。 */
-    fun create(): RuntimeShader = RuntimeShader(AGSL_SOURCE)
+    /**
+     * [doc/spec/119 拆源] BASE 源 = AGSL_SOURCE 剥离全部 @LG-MB-START/END 段
+     * （mbGain/MbPair/mbFuse/union 调用/本体矩形改写 ≈31% 纯代码）。
+     * mbShapeSDF（主渲染无条件使用）与 mbGrad/mbOn 声明保留在标记外，BASE 语义完整。
+     * 小元素（QS/音量条/非 MetaBall drawable）走此源，编译量立减；通知卡等 metaball 元素走 FULL。
+     */
+    val AGSL_SOURCE_BASE: String by lazy { stripMetaballSections(AGSL_SOURCE) }
+
+    /** 剥离所有 @LG-MB-START … @LG-MB-END 区段（含标记行）。配对标记缺失 → 返回原文（安全兜底）。 */
+    private fun stripMetaballSections(src: String): String {
+        val sb = StringBuilder(src.length)
+        var i = 0
+        var stripping = false
+        while (i < src.length) {
+            if (!stripping && src.startsWith(MB_START_MARK, i)) {
+                // 跳过标记行到行尾
+                while (i < src.length && src[i] != '\n') i++
+                if (i < src.length) i++
+                stripping = true
+                continue
+            }
+            if (stripping && src.startsWith(MB_END_MARK, i)) {
+                while (i < src.length && src[i] != '\n') i++
+                if (i < src.length) i++
+                stripping = false
+                continue
+            }
+            if (!stripping) sb.append(src[i])
+            i++
+        }
+        return if (stripping) src else sb.toString() // 未闭合 → 原文兜底
+    }
+
+    private const val MB_START_MARK = "// @LG-MB-START"
+    private const val MB_END_MARK = "// @LG-MB-END"
+
+    /**
+     * @param metaball true = FULL 源（通知卡/侧滑等 MetaBall 元素，需黏连桥）；
+     *                 false = BASE 源（小元素，编译量 -31%）。默认 BASE。
+     */
+    fun create(metaball: Boolean = false): RuntimeShader =
+        RuntimeShader(if (metaball) AGSL_SOURCE else AGSL_SOURCE_BASE)
 
     /** 兼容别名（BlurDrawHook 注释引用 createShader()，语义同 [create]）。 */
     fun createShader(): RuntimeShader = create()
@@ -1169,9 +1007,6 @@ object LiquidGlassShader {
         shader.setFloatUniform("uSourceRect", sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height())
         shader.setFloatUniform("uSourceLowResRect", lowResSourceRect.left, lowResSourceRect.top, lowResSourceRect.width(), lowResSourceRect.height())
         shader.setFloatUniform("uViewport", max(params.viewportWidth, 1f), max(params.viewportHeight, 1f))
-        shader.setFloatUniform("uMixColorA", argbToFloat4(params.mixColorA))
-        shader.setFloatUniform("uMixColorB", argbToFloat4(params.mixColorB))
-        shader.setIntUniform("uBlendMode", params.blendMode)
         shader.setFloatUniform("uCornerRadius", params.cornerRadius)
         shader.setFloatUniform("uCornerIsConic", if (params.cornerIsConic) 1f else 0f)
         shader.setFloatUniform("uCornerWeight", params.cornerWeight)
@@ -1239,7 +1074,7 @@ object LiquidGlassShader {
      * [doc/spec/24 任务 A2 2026-08-13] 轻量 uniform 更新：仅重设 uSourceRect / uSourceLowResRect。
      *
      * 滑动热路径专用——srcRect 每帧变（元素移动 → AGSL 采样坐标实时折算），但源位图 / viewport /
-     * 掩码 / 材质 uniform（uVibrancy/uHighlight/uMixColor 等）均与 srcRect 无关，无需全量重设。
+     * 掩码 / 材质 uniform（uVibrancy/uHighlight 等）均与 srcRect 无关，无需全量重设。
      * 替代 [setUniforms]（~25 次 setFloatUniform + setInputShader + 掩码）→ 每帧仅 2 次 setFloatUniform，
      * 降低滑动时 uniform 重设的 CPU 开销（doc/spec/24 CPU 热点排序 #3）。
      *
@@ -1265,7 +1100,7 @@ object LiquidGlassShader {
      * [2026-08-13 滑动延迟修复] 轻量 uniform 更新：重设 uViewport + uSourceRect / uSourceLowResRect。
      *
      * 拖动时 resize 的控件（音量条 active 进度层填充高度每帧变、媒体卡展开动画、二级菜单）viewport
-     * 每帧变，但材质 uniform（uVibrancy/uHighlight/uMixColor/uRefraction* 等）与 viewport/srcRect 无关，
+     * 每帧变，但材质 uniform（uVibrancy/uHighlight/uRefraction* 等）与 viewport/srcRect 无关，
      * 无需全量重设。替代 [setUniforms]（~25 次 setFloatUniform + 掩码 + buildParams 读 Prefs）→
      * 每帧仅 3~4 次 setFloatUniform（比 [setSourceRectOnly] 多一次 uViewport）。
      *
