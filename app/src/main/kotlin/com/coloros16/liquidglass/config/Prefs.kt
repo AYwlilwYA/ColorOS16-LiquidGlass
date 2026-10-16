@@ -45,6 +45,8 @@ object Prefs {
     /** 模糊半径 UI 上限（px）：shader 为固定 5×5 tap，间隔 = spread/2，过大将出采样条带 */
     const val BLUR_RADIUS_UI_MAX = 32
     const val KEY_REFRACTION_AMOUNT = "refraction_amount"
+    /** 折射强度滑杆 UI 上限（px）；shader 侧位移按元素半短边封顶，小元素不会跨区采样 */
+    const val REFRACTION_AMOUNT_UI_MAX = 250
     /** [2026-09-17 死键清理] 旧键 KEY_REFRACTION_HEIGHT（"refraction_height"，绝对 px）已删除、勿复活。
      *  [doc/spec/95 2026-10-10] 改为**新键 + 新语义**：折射环带高度 = 元素短边 × 本比例
      *  （相对比例，非绝对 px，故键名/语义均与旧键不冲突）。clamp [REFRACTION_HEIGHT_RATIO_MIN,
@@ -71,6 +73,10 @@ object Prefs {
     /** [2026-10-13] 内侧高光衰减（0~1，默认 0=现状）：band 内半向玻璃深处再衰减，1=只剩贴边亮线。 */
     const val KEY_HIGHLIGHT_INNER_ATT = "highlight_inner_att"
     const val DEFAULT_HIGHLIGHT_INNER_ATT = 0f
+    /** 内侧光（0~1，默认 0=关）：边缘向中心的全向发光（区别于定向边缘高光），发光区 = 折射环带。
+     *  调整后 ≤1s 生效（readMaterialParams TTL 缓存）。 */
+    const val KEY_INNER_GLOW = "inner_glow"
+    const val DEFAULT_INNER_GLOW = 0f
     const val KEY_VIBRANCY = "vibrancy"
     const val KEY_LIGHT_ANGLE = "light_angle"
     const val KEY_PARALLAX_X = "parallax_x"
@@ -264,6 +270,13 @@ object Prefs {
     const val KEY_MASK_ALPHA = "mask_alpha"
     /** 黑遮罩不透明度默认值（0.45f；[2026-08-14 用户要求"叠黑增强"：0.35 → 0.45]） */
     const val DEFAULT_MASK_ALPHA = 0.45f
+
+    /** 玻璃内压暗（0~1，clamp；默认 0 = 不压暗）：喂 shader uMaskAlpha（步骤 2.5 混黑），
+     *  与 [KEY_MASK_ENABLE] 开关、[KEY_MASK_ALPHA] 面板黑遮罩**相互独立**（后者只管面板底层
+     *  scrim tint）。调整后 ≤1s 生效（渲染端 TTL 直读）。 */
+    const val KEY_MASK_GLASS_DIM = "mask_glass_dim"
+    /** 玻璃内压暗默认值（0 = 不压暗，玻璃保持亮） */
+    const val DEFAULT_MASK_GLASS_DIM = 0f
 
     /** 遮罩下文字统一颜色（ARGB int，默认纯白 0xFFFFFFFF）。仅对中性色文字生效（app 彩色字尊重 app）。
      *  改动需重启 SystemUI 生效（hook 端 install 时读取并缓存）。 */

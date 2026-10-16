@@ -294,8 +294,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:max="100"
-            android:progress="28" />
+            android:max="250"
+            android:progress="100" />
 
         <TextView
             android:id="@+id/refractionAmountValue"
@@ -496,6 +496,68 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="@string/settings_highlight_inner_att_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:id="@+id/innerGlowLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_inner_glow"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <SeekBar
+            android:id="@+id/seekInnerGlow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100"
+            android:progress="0" />
+
+        <TextView
+            android:id="@+id/innerGlowValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:id="@+id/innerGlowDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_inner_glow_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <TextView
+            android:id="@+id/maskGlassDimLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_mask_glass_dim"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <SeekBar
+            android:id="@+id/seekMaskGlassDim"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100"
+            android:progress="0" />
+
+        <TextView
+            android:id="@+id/maskGlassDimValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:id="@+id/maskGlassDimDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_mask_glass_dim_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 

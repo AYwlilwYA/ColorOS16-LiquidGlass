@@ -36,6 +36,8 @@ object UpdateChecker {
         val pageUrl: String,
         /** APK 直链；该 release 没有 .apk 资产时为 null */
         val apkUrl: String?,
+        /** release 正文（更新简介）；未写正文时为 null */
+        val notes: String? = null,
     )
 
     /** 拉取最新 release。**阻塞**，须在子线程调用；失败返回 null（不抛）。 */
@@ -88,6 +90,7 @@ object UpdateChecker {
                 version = normalize(tag),
                 pageUrl = o.optString("html_url"),
                 apkUrl = apk?.takeIf { it.isNotEmpty() },
+                notes = o.optString("body").trim().takeIf { it.isNotEmpty() },
             )
         }
     } catch (t: Throwable) {

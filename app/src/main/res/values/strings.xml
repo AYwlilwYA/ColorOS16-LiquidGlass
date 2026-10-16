@@ -53,7 +53,10 @@
     <string name="settings_highlight_floor_desc">圆角弧线处的高光保底。0 = 只保留方向性（弧线因法线与光源垂直而偏暗）；1 = 整圈均匀一条亮线（相当于直接描一条边）。</string>
     <string name="settings_highlight_inner_att">内侧高光衰减</string>
     <string name="settings_highlight_inner_att_value">%1$d%%</string>
-    <string name="settings_highlight_inner_att_desc">高光带内半向玻璃深处的再衰减。0 = 现状（内外对称）；越大内半越暗，只剩贴边一条亮线。</string>
+    <string name="settings_highlight_inner_att_desc">高光带内半向玻璃深处的再衰减，同时是内侧光由外向内的衰减强度：0 = 现状（内侧光按 glowT² 衰减）；越大内侧高光越暗、内侧光越贴边。</string>
+    <string name="settings_inner_glow">内侧光</string>
+    <string name="settings_inner_glow_value">%1$d%%</string>
+    <string name="settings_inner_glow_desc">玻璃内侧由边缘向中心的发光（区别于定向边缘高光），沿折射环带向内衰减。0 = 关闭。</string>
     <string name="settings_light_angle">光角度（Light Angle）</string>
     <string name="settings_light_angle_value">%1$d°</string>
     <string name="settings_light_angle_desc">高光光源方向角度。</string>
@@ -124,7 +127,10 @@
     <string name="settings_mask_desc">玻璃元素叠加黑色半透明遮罩压暗背景保证可读性（文字强制白已独立开关）。</string>
     <string name="settings_mask_alpha">遮罩不透明度</string>
     <string name="settings_mask_alpha_value">%1$.2f</string>
-    <string name="settings_mask_alpha_desc">遮罩不透明度，0.00 透明，1.00 全黑，默认 0.45。</string>
+    <string name="settings_mask_alpha_desc">面板底层黑遮罩（scrim）的不透明度，0.00 透明，1.00 全黑，默认 0.45。与玻璃内压暗相互独立。</string>
+    <string name="settings_mask_glass_dim">玻璃内压暗</string>
+    <string name="settings_mask_glass_dim_value">%1$.2f</string>
+    <string name="settings_mask_glass_dim_desc">玻璃内部背景的压暗程度（渲染端直接混黑），0.00 不压暗（默认），1.00 全黑。与遮罩开关、面板遮罩不透明度相互独立。</string>
     <string name="settings_mask_text_color">文字强制白颜色</string>
     <string name="settings_mask_text_color_white">纯白</string>
     <string name="settings_mask_text_color_lightgray">浅灰</string>
@@ -159,6 +165,21 @@
     <!-- 关于 -->
     <string name="cat_about">关于</string>
     <string name="cat_about_desc">联系与反馈</string>
+    <string name="cat_config">配置</string>
+    <string name="cat_config_desc">导出 / 导入全部模块配置</string>
+    <string name="config_export">导出配置（JSON）</string>
+    <string name="config_import">导入配置</string>
+    <string name="config_hint">导出为 JSON 文件，可用于备份与换机迁移；导入会覆盖当前配置，开关类参数需重启 SystemUI 生效。</string>
+    <string name="config_export_done">已导出 %1$d 项配置</string>
+    <string name="config_export_failed">导出失败：%1$s</string>
+    <string name="config_import_confirm_title">导入配置</string>
+    <string name="config_import_confirm_message">将用所选文件覆盖当前 %1$d 项配置，继续？</string>
+    <string name="config_import_confirm_ok">覆盖导入</string>
+    <string name="config_import_done">已导入 %1$d 项配置；开关类参数需重启 SystemUI 生效</string>
+    <string name="config_import_failed">导入失败：%1$s</string>
+    <string name="config_import_invalid">这不是本模块导出的配置文件</string>
+    <string name="config_import_no_items">文件里没有可导入的配置项</string>
+    <string name="config_framework_not_ready">框架服务未就绪，请稍后重试</string>
     <string name="about_title">关于</string>
     <string name="about_tg">Telegram：https://t.me/c16lg666</string>
     <string name="about_qq">QQ 群：1102985644</string>
@@ -264,5 +285,6 @@
     <string name="update_dialog_ignore">忽略此版本</string>
     <string name="update_dialog_later">以后再说</string>
     <string name="update_dialog_open_failed">无法打开链接，请手动访问 GitHub Releases 页下载</string>
+    <string name="update_dialog_notes">更新简介：\n%1$s</string>
 
 </resources>

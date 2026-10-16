@@ -67,6 +67,7 @@ object LiquidGlassShader {
                                          // 必然与光源垂直（dot=0）→ 原实现该处高光归零。0=完全回退原行为
         uniform float uHighlightInnerAtt; // [2026-10-13] 内侧高光衰减 0~1：band 内半向玻璃深处再乘此衰减，
                                          // 0=无内侧衰减（现状）、1=内半几乎归零（只剩贴边一条线）
+        uniform float uInnerGlow;        // 内侧光 0~1：边缘向中心的全向发光强度（区别于定向边缘高光）；0=关
         uniform float uVibrancy;         // 鲜艳度/饱和度倍数（Kyant vibrancy=1.5；1=不变）
         uniform float uLightAngle;       // 光角度（弧度；Kotlin 侧由角度转弧度）
         uniform vec2  uParallax;         // 视差（面板几何中心偏移，可接传感器）
@@ -486,7 +487,9 @@ object LiquidGlassShader {
             // 7×7 + tapStep=spread/3：**覆盖范围不变**（±3 × spread/3 = ±spread）但**采样密度提高 50%**；
             // σ_phys 保持 2.25 × spread/3 = 0.75 × spread 不变 → 模糊强度不变、采样更密、核更接近高斯。
             // 代价：采样 25 → 49 tap（模糊只作用于折射环带，非全屏）。
-            float tapStep = spread / 3.0;
+            // 两次串联同参数高斯 = 单次 σ×√2（方差相加）：tapStep 放大 √2 同步加宽物理 σ 与
+            // 采样窗口，核形状 σ_idx=2.25 不变 → 一次 49 tap 得到两次模糊的磨砂强度
+            float tapStep = spread * 1.41421356 / 3.0;
             float4 sum = float4(0.0);
             float total = 0.0;
             for (int y = -3; y <= 3; y++) {
@@ -689,6 +692,12 @@ object LiquidGlassShader {
                 // 末尾再乘 |nBlend|（方向可信度）：内部多墙面法线相消处位移同步衰减 →
                 // medial axis 上的 180° 方向翻转被幅值归零掩盖，不产生撕裂线。
                 float2 refrVec = -d * n * length(nBlend);
+                // 位移幅值按元素半短边封顶：配置值超过半短边时（小元素）采样点最多到中心、不跨到对面
+                float dispCap = min(halfSize.x, halfSize.y);
+                float dispMag = length(refrVec);
+                if (dispMag > dispCap && dispMag > 0.0001) {
+                    refrVec *= dispCap / dispMag;
+                }
                 float2 refractedCoord = (coord - uMaskOffset) + refrVec;
                 // [2026-09-16 整元素模糊（B 方案）] uBlurRadius>0 时环带也走模糊采样，折射位移作用在
                 // 模糊图上 → 玻璃整体呈磨砂。原实现环带恒读 uSource（全分辨率清晰图）不读 uBlurRadius，
@@ -707,6 +716,19 @@ object LiquidGlassShader {
                     glass = float4(uSource.eval(srcCoord(refractedCoord, uSourceRect)));
                 }
             }
+
+            // 内侧光【放底层】：加在遮罩压暗（2.5）之前，压暗同时作用于背景与光（遮罩拉高压得住）；
+            // shapeAlpha 限形状内（形状外=0，发光不外溢）；
+            // uHighlightInnerAtt = 内侧光由外向内的衰减强度：越大越快向内衰减、越贴边，0 = glowT² 现状；
+            // hw/bandCenter/dIn/innerT/innerAtt 与定向高光共用（band 中心保底内移 2px 防细带被羽化吃掉）
+            float hw = max(uHighlightWidth, 1.0);
+            float bandCenter = max(hw * 0.5, 2.0);
+            float dIn = -sdRaw;
+            float innerT = clamp((dIn - bandCenter) / max(hw * 0.5, 1.0), 0.0, 1.0);
+            float innerAtt = 1.0 - uHighlightInnerAtt * innerT;
+            float shapeAlpha = smoothstep(0.0, -2.0, sdRaw);
+            float glowT = 1.0 - clamp(max(dIn, 0.0) / max(uRefractionHeight, 1.0), 0.0, 1.0);
+            glass.rgb += uInnerGlow * pow(glowT, 2.0 + uHighlightInnerAtt * 3.0) * innerAtt * shapeAlpha;
 
             // 2.5 遮罩压暗 [2026-08-14 恢复 spec/41 语义]：把玻璃采到的背景色向 uMaskColor 压暗
             //     （遮罩→底层背景，玻璃区域与卡片间 scrim 黑 tint 展开态同为 `壁纸×(1-maskAlpha)` 统一）。
@@ -755,23 +777,13 @@ object LiquidGlassShader {
             // 圆角 SDF 之外（sdRaw>0，正方形角区域）alpha 归 0，消除"圆角外多余直角玻璃边"。
             // 这是所有玻璃元素的通用裁剪（不只侧滑）；maskRect 掩码（侧滑专用）在上一行已乘，
             // 此处再乘 shapeAlpha（两者 alpha 相乘），对侧滑按钮的 MetaBall 扩张区裁切职责不变。
-            float shapeAlpha = smoothstep(0.0, -2.0, sdRaw);
             glass *= shapeAlpha;
 
             // 4. 定向边缘高光：加在圆角裁剪【之后】，band 中心偏移到圆角内侧 uHighlightWidth×0.5 处——
             //    [2026-08-23 修复] 原实现带中心在边界（abs(sdRaw)），而 shapeAlpha 在边界（sdRaw=0）=0，
             //    圆角边缘高光被裁掉（外半全裁 + 内半 0~-2 羽化削弱）。偏移内侧后高光带中心落在 alpha=1
             //    区域，完整可见、不超圆角；直边元素同样内侧亮边（不跨边界）。
-            // [2026-09-16 细高光被裁修复] 带中心原为 W/2，W 小时（<4）会落进 shapeAlpha 的
-            // 2px 羽化区（smoothstep(0,-2,sdRaw)）被削弱直至消失——真机反馈「高光带细时边缘
-            // 完全消失、转弯处最明显」。改为带中心保底内移到 2px（=羽化宽度），W>=4 时行为不变。
-            float hw = max(uHighlightWidth, 1.0);
-            float bandCenter = max(hw * 0.5, 2.0);
-            float dIn = -sdRaw;
             float band = 1.0 - smoothstep(0.0, hw, abs(dIn - bandCenter));
-            // 内侧高光衰减：band 中心向玻璃深处（dIn 增大方向）线性再衰减，0=现状
-            float innerT = clamp((dIn - bandCenter) / max(hw * 0.5, 1.0), 0.0, 1.0);
-            float innerAtt = 1.0 - uHighlightInnerAtt * innerT;
             // [2026-09-16 圆角弧线高光修复·方案 C] `sdfGrad` 是**边缘法线**：直边法线固定（与光源夹角恒定
             // → 高光恒定），而圆角弧线法线要**旋转 90°**，其中**必然经过与光源垂直的位置** → 原
             // `pow(abs(dot),fo)` 在该处精确归零，弧线约 60% 跨度高光消失（真机实证：192×192 圆磁贴整圈
@@ -846,6 +858,8 @@ object LiquidGlassShader {
         val lightAngleDegrees: Float = 45f,
         val parallaxX: Float = 0f,
         val parallaxY: Float = 0f,
+        /** 内侧光 0~1（uInnerGlow；0=关）。放末尾带默认值，既有位置实参不受影响。 */
+        val innerGlow: Float = 0f,
     )
 
     /**
@@ -1027,6 +1041,7 @@ object LiquidGlassShader {
         lastHighlightFloor = params.highlightFloor
         shader.setFloatUniform("uHighlightFloor", params.highlightFloor)
         shader.setFloatUniform("uHighlightInnerAtt", params.highlightInnerAtt)
+        shader.setFloatUniform("uInnerGlow", params.innerGlow)
         // 掩码（侧滑按钮裁剪）：默认全视口 → sdMask<=0 恒成立 → step=1 → 无裁剪（不影响其他控件）
         val mr = maskRect ?: RectF(0f, 0f, max(params.viewportWidth, 1f), max(params.viewportHeight, 1f))
         shader.setFloatUniform("uMaskRect", mr.left, mr.top, mr.width(), mr.height())

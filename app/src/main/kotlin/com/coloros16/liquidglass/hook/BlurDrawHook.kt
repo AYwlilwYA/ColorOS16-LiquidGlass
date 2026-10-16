@@ -1558,9 +1558,16 @@ object BlurDrawHook {
     /** 黑遮罩总开关（KEY_MASK_ENABLE；true → SystemUI 下拉面板所有玻璃元素统一压暗背景采样 + 文字统一白/灰）。 */
     @Volatile
     private var maskEnabled = Prefs.DEFAULT_MASK_ENABLE
-    /** 黑遮罩不透明度（KEY_MASK_ALPHA，0~1）。 */
+    /** 黑遮罩不透明度（KEY_MASK_ALPHA，0~1）。仅面板 scrim 黑 tint 用（scrimMaskPaintFor）。 */
     @Volatile
     private var maskAlpha = Prefs.DEFAULT_MASK_ALPHA
+    /** 玻璃内压暗（KEY_MASK_GLASS_DIM，0~1）：喂 shader uMaskAlpha（步骤 2.5 混黑），
+     *  与 maskEnabled/maskAlpha（面板 scrim）独立。 */
+    @Volatile
+    private var maskGlassDim = Prefs.DEFAULT_MASK_GLASS_DIM
+    /** [maskGlassDim] TTL 读取节流时刻（与 MATERIAL_PREFS_CACHE_MS 同拍，热路径零 IPC）。 */
+    @Volatile
+    private var maskGlassDimAtMs = 0L
     /** 遮罩下文字统一颜色 ARGB（KEY_MASK_TEXT_COLOR，默认纯白）。 */
     @Volatile
     private var maskTextColor = Prefs.DEFAULT_MASK_TEXT_COLOR
@@ -1601,19 +1608,28 @@ object BlurDrawHook {
     private var headsUpTextFollowEnabled = Prefs.DEFAULT_HEADS_UP_TEXT_FOLLOW
 
     /**
-     * [spec/41 遮罩整个下拉面板统一] 返回该宿主应叠加的黑遮罩不透明度（0=不叠加）。
-     * - **SystemUI 下拉面板所有玻璃元素统一取值**：不再按宿主 View 类名逐元素判定
-     *   （spec/35 的 MASK_HOST_KEYWORDS 卡片判定已废弃）——通知卡/媒体卡/QS/seekbar/胶囊等
-     *   全部压暗背景采样色，整个 shade 背景统一变暗，玻璃统一透过整体遮罩采底层。
+     * 玻璃内压暗值（[Prefs.KEY_MASK_GLASS_DIM]，0~1，默认 0=不压暗）：喂 shader uMaskAlpha
+     * （步骤 2.5 把玻璃采样色向黑混）。与面板 scrim 遮罩（maskEnabled/maskAlpha）相互独立，
+     * 不受黑遮罩开关门控。[MATERIAL_PREFS_CACHE_MS] TTL 节流直读，调整 ≤1s 生效；
+     * 读失败保持上次值（防瞬时失败闪断）。读取结果恒 clamp 0~1。
+     *
      * - 本函数仅在 BlurDrawHook（SystemUI 进程）内调用；Launcher 进程走 LauncherHook，
-     *   其 setUniforms 不传 maskAlpha（默认 0）→ 文件夹背景无遮罩，天然隔离。
-     * - 遮罩开关/不透明度在 install 时缓存（改动需重启生效），O(1) 返回配置值。
+     *   其 setUniforms 不传 maskAlpha（默认 0）→ 文件夹背景无压暗，天然隔离。
      * - hostViewName 参数保留仅为兼容 3 处调用点签名（computeGeometry / buildLiquidShader
-     *   ×2），不再参与判定。
+     *   ×2），不参与判定。
      */
     private fun maskAlphaFor(hostViewName: String?): Float {
-        if (!maskEnabled || maskAlpha <= 0f) return 0f
-        return maskAlpha
+        val a = api ?: return Prefs.DEFAULT_MASK_GLASS_DIM
+        val now = SystemClock.uptimeMillis()
+        if (now - maskGlassDimAtMs < MATERIAL_PREFS_CACHE_MS) return maskGlassDim
+        maskGlassDimAtMs = now
+        maskGlassDim = try {
+            Prefs.read(a).getFloat(Prefs.KEY_MASK_GLASS_DIM, Prefs.DEFAULT_MASK_GLASS_DIM).coerceIn(0f, 1f)
+        } catch (t: Throwable) {
+            Log.w(TAG, "prefs read mask_glass_dim failed, keep $maskGlassDim", t)
+            maskGlassDim
+        }
+        return maskGlassDim
     }
 
     /**
@@ -11655,6 +11671,8 @@ object BlurDrawHook {
         val highlightFloor: Float = Prefs.DEFAULT_HIGHLIGHT_FLOOR,
         /** [2026-10-13] 内侧高光衰减 0~1（默认 0=现状）。 */
         val highlightInnerAtt: Float = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
+        /** 内侧光 0~1（默认 0=关）。末尾带默认值，兜底分支位置构造不传即用配置默认。 */
+        val innerGlow: Float = Prefs.DEFAULT_INNER_GLOW,
     )
 
     @Volatile
@@ -11699,12 +11717,13 @@ object BlurDrawHook {
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT, def.highlight),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_WIDTH, def.highlightWidth),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FALLOFF),
-                    prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY),
+                    prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY).coerceIn(1.0f, 3.0f),
                     prefs.getFloat(Prefs.KEY_LIGHT_ANGLE, def.lightAngleDegrees),
                     prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),
                     prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_FLOOR, Prefs.DEFAULT_HIGHLIGHT_FLOOR),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
+                    prefs.getFloat(Prefs.KEY_INNER_GLOW, Prefs.DEFAULT_INNER_GLOW).coerceIn(0f, 1f),
                 )
             } catch (t: Throwable) {
                 Log.e(TAG, "buildParams: prefs float read failed, use defaults", t)
@@ -11764,6 +11783,7 @@ object BlurDrawHook {
                 highlightFalloff = m.highlightFalloff,
                 highlightFloor = m.highlightFloor,
                 highlightInnerAtt = m.highlightInnerAtt,
+                innerGlow = m.innerGlow,
                 vibrancy = m.vibrancy,
                 lightAngleDegrees = m.lightAngleDegrees,
                 parallaxX = m.parallaxX,

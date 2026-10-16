@@ -35,6 +35,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -48,6 +49,7 @@ import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import io.github.libxposed.service.XposedService
+import org.json.JSONObject
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -121,6 +123,7 @@ class SettingsActivity : AppCompatActivity() {
         Category("desktop", R.string.cat_desktop, R.string.cat_desktop_desc, R.layout.view_cat_desktop),
         // [2026-09-17] 追踪器分类页已删除（追踪器整体移除，无存活控件）
         Category("log", R.string.cat_log, R.string.cat_log_desc, R.layout.view_cat_log),
+        Category("config", R.string.cat_config, R.string.cat_config_desc, R.layout.view_cat_config),
         Category("about", R.string.cat_about, R.string.cat_about_desc, R.layout.view_cat_about),
     )
 
@@ -197,9 +200,13 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 升级提示弹窗：去下载（跳 release 页/APK 直链）/ 忽略此版本（记本地，不再提示该版本）/ 以后再说。 */
     private fun showUpdateDialog(current: String, latest: UpdateChecker.Release) {
+        val base = getString(R.string.update_dialog_message, current, latest.version)
+        val notes = latest.notes
+            ?.let { n -> if (n.length > 600) n.take(600) + "…" else n }
+            ?.let { n -> getString(R.string.update_dialog_notes, n) }
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.update_dialog_title)
-            .setMessage(getString(R.string.update_dialog_message, current, latest.version))
+            .setMessage(if (notes != null) "$base\n\n$notes" else base)
             .setPositiveButton(R.string.update_dialog_download) { _, _ ->
                 // 优先 APK 直链（一键下载）；无资产则退到 release 页面
                 val target = latest.apkUrl ?: latest.pageUrl
@@ -415,6 +422,7 @@ class SettingsActivity : AppCompatActivity() {
             "tilt" -> bindTilt(view)
             "desktop" -> bindDesktop(view)
             "log" -> bindLog(view)
+            "config" -> bindConfig(view)
             "about" -> bindAbout(view)
         }
     }
@@ -488,12 +496,12 @@ class SettingsActivity : AppCompatActivity() {
             format = { v -> getString(R.string.settings_blur_radius_value, v.roundToInt()) },
             onChanged = { v -> preview?.let { it.blurRadius = v; it.refresh() } },
         )
-        // vibrancy：1.0~2.0（progress 0~100 → 1.0~2.0，默认 1.5）
+        // vibrancy：1.0~3.0（progress 0~100 → 1.0+2.0×p/100，默认 1.54）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekVibrancy), valueText = view.findViewById(R.id.vibrancyValue),
             key = Prefs.KEY_VIBRANCY, default = Prefs.DEFAULT_VIBRANCY,
-            fromProgress = { p -> 1.0f + p / 100f },
-            toProgress = { v -> ((v - 1.0f) * 100f).roundToInt().coerceIn(0, 100) },
+            fromProgress = { p -> 1.0f + p / 50f },
+            toProgress = { v -> ((v - 1.0f) * 50f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_vibrancy_value, v) },
             onChanged = { v -> preview?.let { it.vibrancy = v; it.refresh() } },
         )
@@ -567,12 +575,12 @@ class SettingsActivity : AppCompatActivity() {
             })
         }
         applyRefractionMode(currentMode, persist = false)
-        // refractionAmount：0~100 px（折射强度，默认 28）
+        // refractionAmount：0~150 px（折射强度，默认 100）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekRefractionAmount), valueText = view.findViewById(R.id.refractionAmountValue),
             key = Prefs.KEY_REFRACTION_AMOUNT, default = Prefs.DEFAULT_REFRACTION_AMOUNT,
             fromProgress = { p -> p.toFloat() },
-            toProgress = { v -> v.roundToInt().coerceIn(0, 100) },
+            toProgress = { v -> v.roundToInt().coerceIn(0, Prefs.REFRACTION_AMOUNT_UI_MAX) },
             format = { v -> getString(R.string.settings_refraction_amount_value, v.roundToInt()) },
             onChanged = { v -> preview?.let { it.refractionAmount = v; it.refresh() } },
         )
@@ -587,12 +595,12 @@ class SettingsActivity : AppCompatActivity() {
             format = { v -> getString(R.string.settings_dispersion_value, v) },
             onChanged = { v -> preview?.let { it.dispersion = v; it.refresh() } },
         )
-        // depth：0~100 → 0~6（默认 1；2026-10-13 上限 3→6）
+        // depth：0~100 → 0~15（默认 0.72）
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekDepth), valueText = view.findViewById(R.id.depthValue),
             key = Prefs.KEY_DEPTH, default = Prefs.DEFAULT_DEPTH,
-            fromProgress = { p -> p / 100f * 6f },
-            toProgress = { v -> (v / 6f * 100f).roundToInt().coerceIn(0, 100) },
+            fromProgress = { p -> p / 100f * 15f },
+            toProgress = { v -> (v / 15f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_depth_value, v) },
             onChanged = { v -> preview?.let { it.depth = v; it.refresh() } },
         )
@@ -632,6 +640,24 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_inner_att_value, (v * 100f).roundToInt()) },
             onChanged = { v -> preview?.let { it.highlightInnerAtt = v; it.refresh() } },
+        )
+        // innerGlow：0~100 → 0~1（默认 0=关）。边缘向中心的全向发光（复用折射环带宽度）。
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekInnerGlow), valueText = view.findViewById(R.id.innerGlowValue),
+            key = Prefs.KEY_INNER_GLOW, default = Prefs.DEFAULT_INNER_GLOW,
+            fromProgress = { p -> p / 100f },
+            toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
+            format = { v -> getString(R.string.settings_inner_glow_value, (v * 100f).roundToInt()) },
+            onChanged = { v -> preview?.let { it.innerGlow = v; it.refresh() } },
+        )
+        // 玻璃内压暗：0~100 → 0.00~1.00（默认 0=不压暗）：喂 shader uMaskAlpha，与遮罩开关/面板遮罩独立
+        bindFloatSeekBar(
+            seek = view.findViewById(R.id.seekMaskGlassDim), valueText = view.findViewById(R.id.maskGlassDimValue),
+            key = Prefs.KEY_MASK_GLASS_DIM, default = Prefs.DEFAULT_MASK_GLASS_DIM,
+            fromProgress = { p -> p / 100f },
+            toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
+            format = { v -> getString(R.string.settings_mask_glass_dim_value, v) },
+            onChanged = { v -> preview?.let { it.maskGlassDim = v; it.refresh() } },
         )
         // lightAngle：0~360°（默认 45）
         bindFloatSeekBar(
@@ -827,7 +853,7 @@ class SettingsActivity : AppCompatActivity() {
         switchTextForceWhite.setOnCheckedChangeListener(textForceWhiteListener)
         refreshBooleanSwitch(switchTextForceWhite, textForceWhiteListener, Prefs.KEY_TEXT_FORCE_WHITE_ENABLE, Prefs.DEFAULT_TEXT_FORCE_WHITE_ENABLE)
 
-        // 遮罩不透明度滑杆（0~100 → 0.00~1.00，默认 0.45）
+        // 遮罩不透明度滑杆（0~100 → 0.00~1.00，默认 0.45）：只管面板底层 scrim 黑 tint
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekMaskAlpha), valueText = view.findViewById(R.id.maskAlphaValue),
             key = Prefs.KEY_MASK_ALPHA, default = Prefs.DEFAULT_MASK_ALPHA,
@@ -1120,6 +1146,140 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     /** 关于：TG/GitHub 完整网址点击跳转浏览器，QQ/开发者点击复制。 */
+    // ------------------------------------------------------------ 配置导入导出 ------------------------------------------------------------
+
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri -> uri?.let { exportConfig(it) } }
+
+    private val importLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { confirmImport(it) } }
+
+    /** 配置分类：导出/导入两行按钮。 */
+    private fun bindConfig(view: View) {
+        view.findViewById<View>(R.id.configExportRow).setOnClickListener {
+            exportLauncher.launch("liquid-glass-config.json")
+        }
+        view.findViewById<View>(R.id.configImportRow).setOnClickListener {
+            importLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+        }
+    }
+
+    /** 导出框架侧全部配置键为 JSON；按值类型分四桶，避免回读时 int/float 类型歧义。 */
+    private fun exportConfig(uri: Uri) {
+        val prefs = frameworkPrefs()
+        if (prefs == null) {
+            Toast.makeText(this, R.string.config_framework_not_ready, Toast.LENGTH_SHORT).show()
+            return
+        }
+        Thread {
+            try {
+                val floats = JSONObject()
+                val ints = JSONObject()
+                val bools = JSONObject()
+                val strs = JSONObject()
+                for ((k, v) in prefs.all) when (v) {
+                    is Float -> floats.put(k, v.toDouble())
+                    is Int -> ints.put(k, v)
+                    is Boolean -> bools.put(k, v)
+                    is String -> strs.put(k, v)
+                    else -> {}
+                }
+                val root = JSONObject()
+                    .put("format", "lg-config")
+                    .put("version", 1)
+                    .put("float", floats)
+                    .put("int", ints)
+                    .put("boolean", bools)
+                    .put("string", strs)
+                val count = floats.length() + ints.length() + bools.length() + strs.length()
+                val out = contentResolver.openOutputStream(uri, "w")
+                    ?: throw IllegalStateException("openOutputStream 返回 null")
+                out.use { it.write(root.toString(2).toByteArray(Charsets.UTF_8)) }
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.config_export_done, count), Toast.LENGTH_SHORT).show()
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "export config failed", t)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.config_export_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+
+    /** 读所选文件、校验格式与项数，弹覆盖确认框；确认后走 [applyImport]。 */
+    private fun confirmImport(uri: Uri) {
+        Thread {
+            try {
+                val text = contentResolver.openInputStream(uri)
+                    ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: throw IllegalStateException("openInputStream 返回 null")
+                val root = JSONObject(text)
+                if (root.optString("format") != "lg-config") {
+                    runOnUiThread {
+                        Toast.makeText(this, R.string.config_import_invalid, Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+                val floats = root.optJSONObject("float") ?: JSONObject()
+                val ints = root.optJSONObject("int") ?: JSONObject()
+                val bools = root.optJSONObject("boolean") ?: JSONObject()
+                val strs = root.optJSONObject("string") ?: JSONObject()
+                val count = floats.length() + ints.length() + bools.length() + strs.length()
+                if (count == 0) {
+                    runOnUiThread {
+                        Toast.makeText(this, R.string.config_import_no_items, Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.config_import_confirm_title)
+                        .setMessage(getString(R.string.config_import_confirm_message, count))
+                        .setPositiveButton(R.string.config_import_confirm_ok) { _, _ ->
+                            applyImport(floats, ints, bools, strs, count)
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "import config parse failed", t)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.config_import_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+
+    /** 覆盖写入框架侧（四桶批量一次 apply），成功后刷新当前分类控件值。 */
+    private fun applyImport(floats: JSONObject, ints: JSONObject, bools: JSONObject, strs: JSONObject, count: Int) {
+        val prefs = frameworkPrefs()
+        if (prefs == null) {
+            Toast.makeText(this, R.string.config_framework_not_ready, Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val editor = prefs.edit()
+            var it1 = floats.keys()
+            while (it1.hasNext()) { val k = it1.next(); editor.putFloat(k, floats.getDouble(k).toFloat()) }
+            var it2 = ints.keys()
+            while (it2.hasNext()) { val k = it2.next(); editor.putInt(k, ints.getInt(k)) }
+            var it3 = bools.keys()
+            while (it3.hasNext()) { val k = it3.next(); editor.putBoolean(k, bools.getBoolean(k)) }
+            var it4 = strs.keys()
+            while (it4.hasNext()) { val k = it4.next(); editor.putString(k, strs.getString(k)) }
+            editor.apply()
+            bindCurrentPage()
+            Toast.makeText(this, getString(R.string.config_import_done, count), Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            Log.w(TAG, "import config apply failed", t)
+            Toast.makeText(this, getString(R.string.config_import_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun bindAbout(view: View) {
         // TG 频道完整网址 → 点击跳转浏览器；失败回退复制
         val tgRow = view.findViewById<View>(R.id.aboutTgRow)
@@ -1550,6 +1710,8 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
     var highlightWidth = Prefs.DEFAULT_HIGHLIGHT_WIDTH
     var highlightFloor = Prefs.DEFAULT_HIGHLIGHT_FLOOR
     var highlightInnerAtt = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT
+    var innerGlow = Prefs.DEFAULT_INNER_GLOW
+    var maskGlassDim = Prefs.DEFAULT_MASK_GLASS_DIM
     var lightAngle = Prefs.DEFAULT_LIGHT_ANGLE
 
     /** 参数变了由外部调 [refresh] 重绘；背景滚动则由 [onDraw] 自续帧驱动。 */
@@ -1643,6 +1805,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
             highlightFalloff = highlightFalloff,
             highlightFloor = highlightFloor,
             highlightInnerAtt = highlightInnerAtt,
+            innerGlow = innerGlow,
             vibrancy = vibrancy,
             lightAngleDegrees = lightAngle,
             parallaxX = 0f,
@@ -1658,6 +1821,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
             LiquidGlassShader.setUniforms(
                 sh, params, src, bgLowShader,
                 sourceRect = srcRect, lowResSourceRect = lowRect,
+                maskAlpha = maskGlassDim,
             )
         } catch (t: Throwable) {
             shaderBroken = true
