@@ -1,165 +1,165 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ColorOS16 Liquid Glass</string>
-    <string name="app_description">为 ColorOS 16 通知中心/控制中心实现 iOS 26 液态玻璃效果（LibXposed 模块）</string>
+    <string name="app_name">ColorOS 16 液态玻璃</string>
+    <string name="app_description">让 ColorOS 16 的通知中心和控制中心拥有 iOS 26 液态玻璃效果。</string>
 
     <!-- 导航（[spec/88] 扩大返回键热区的无障碍描述） -->
     <string name="settings_back">返回</string>
 
     <!-- 总开关 -->
     <string name="settings_master">启用模块（默认关闭）</string>
-    <string name="settings_master_desc">模块总开关，默认关闭。开启后重启 SystemUI 让全部 hook 生效。</string>
+    <string name="settings_master_desc">模块总开关，默认关闭。开启后重启系统界面即可生效。</string>
     <string name="settings_glass_enable">液态玻璃渲染</string>
-    <string name="settings_glass_enable_desc">关 = 不套自研玻璃 shader、回退系统模糊（约 0.5 秒生效）；倾斜、横幅飞入等其它功能不受影响。</string>
-    <string name="settings_hint">模块默认关闭，开启后才生效。改动需重启对应进程（SystemUI/Launcher/锁屏）生效。</string>
+    <string name="settings_glass_enable_desc">关闭后改用系统模糊，约半秒生效；倾斜、横幅飞入等效果不受影响。</string>
+    <string name="settings_hint">模块默认关闭，开启后才会生效。部分改动需重启系统界面、桌面或锁屏后生效。</string>
 
     <!-- 液态玻璃材质 -->
     <string name="settings_material_preview">效果预览（实时）</string>
     <string name="settings_section_material">液态玻璃参数</string>
     <string name="settings_blur_radius">模糊半径（px）</string>
     <string name="settings_blur_radius_value">%1$d px</string>
-    <string name="settings_blur_radius_desc">玻璃内部轻模糊，0 = 清晰透镜。过大可能出现采样条带。</string>
-    <string name="settings_vibrancy">鲜艳度（Vibrancy）</string>
+    <string name="settings_blur_radius_desc">玻璃内部的轻微模糊。0 表示完全清晰；调得太大可能出现条纹。</string>
+    <string name="settings_vibrancy">色彩鲜艳度</string>
     <string name="settings_vibrancy_value">%1$.2fx</string>
-    <string name="settings_vibrancy_desc">颜色鲜艳度，1.0 不变，越大越饱和。</string>
-    <string name="settings_highlight_falloff">高光衰减（Highlight Falloff）</string>
+    <string name="settings_vibrancy_desc">1.0 为原始颜色，越大颜色越浓。</string>
+    <string name="settings_highlight_falloff">高光集中度</string>
     <string name="settings_highlight_falloff_value">%1$d</string>
-    <string name="settings_highlight_falloff_desc">高光聚光程度，越大越集中在光源方向。</string>
+    <string name="settings_highlight_falloff_desc">数值越大，高光越集中在光源方向。</string>
     <string name="settings_refraction_amount">折射强度（px）</string>
     <string name="settings_refraction_amount_value">%1$d px</string>
     <string name="settings_refraction_amount_desc">折射位移强度，越大背景扭曲越明显。</string>
-    <string name="settings_refraction_height_ratio">相对（短边比例）</string>
+    <string name="settings_refraction_height_ratio">折射范围：按比例</string>
     <string name="settings_refraction_height_ratio_value">%1$.2f</string>
-    <string name="settings_refraction_height_ratio_desc">折射环带的高度占元素短边的比例，0.50 = 短边一半（默认，即改动前效果），1.00 = 整条短边都是折射带。值越大边缘扭曲的范围越宽。</string>
-    <string name="settings_refraction_height_mode">折射区域</string>
-    <string name="settings_refraction_height_mode_desc">「相对」按元素短边的比例算，元素越大带越宽；「绝对」固定像素数，所有元素一样宽。</string>
-    <string name="settings_refraction_height_px">绝对（像素）</string>
+    <string name="settings_refraction_height_ratio_desc">折射带占元素短边的比例。0.50 为默认，数值越大，边缘扭曲范围越宽。</string>
+    <string name="settings_refraction_height_mode">折射范围</string>
+    <string name="settings_refraction_height_mode_desc">按比例：元素越大，折射带越宽；固定像素：所有元素一样宽。</string>
+    <string name="settings_refraction_height_px">折射范围：固定像素</string>
     <string name="settings_refraction_height_px_value">%1$d px</string>
-    <string name="settings_refraction_height_px_desc">折射环带固定为这么多像素，不随元素大小变化。</string>
-    <string name="settings_dispersion">色散（Dispersion）</string>
+    <string name="settings_refraction_height_px_desc">折射带固定为这么多像素，不随元素大小变化。</string>
+    <string name="settings_dispersion">边缘色散</string>
     <string name="settings_dispersion_value">%1$.2f</string>
     <string name="settings_dispersion_desc">背景边缘彩虹边，0 关闭，0.05~0.3 适中。</string>
-    <string name="settings_depth">深度（Depth）</string>
+    <string name="settings_depth">立体深度</string>
     <string name="settings_depth_value">%1$.2f</string>
     <string name="settings_depth_desc">玻璃曲面深度，越大弯曲/折射越明显。</string>
-    <string name="settings_highlight">高光强度（Highlight）</string>
+    <string name="settings_highlight">高光亮度</string>
     <string name="settings_highlight_value">%1$.2f</string>
     <string name="settings_highlight_desc">高光亮度，越大越亮。</string>
     <string name="settings_highlight_width">高光宽度（px）</string>
     <string name="settings_highlight_width_value">%1$d px</string>
     <string name="settings_highlight_width_desc">高光带宽度，越大越宽。</string>
-    <string name="settings_highlight_floor">弧线高光保底</string>
+    <string name="settings_highlight_floor">圆角高光保底</string>
     <string name="settings_highlight_floor_value">%1$d%%</string>
-    <string name="settings_highlight_floor_desc">圆角弧线处的高光保底。0 = 只保留方向性（弧线因法线与光源垂直而偏暗）；1 = 整圈均匀一条亮线（相当于直接描一条边）。</string>
+    <string name="settings_highlight_floor_desc">圆角处的最低高光。0 只保留方向感，圆角偏暗；1 让整圈都有一条均匀亮边。</string>
     <string name="settings_highlight_inner_att">内侧高光衰减</string>
     <string name="settings_highlight_inner_att_value">%1$d%%</string>
-    <string name="settings_highlight_inner_att_desc">高光带内半向玻璃深处的再衰减，同时是内侧光由外向内的衰减强度：0 = 现状（内侧光按 glowT² 衰减）；越大内侧高光越暗、内侧光越贴边。</string>
+    <string name="settings_highlight_inner_att_desc">控制高光向玻璃内部衰减的程度。0 为默认；越大，内侧高光越暗、内侧光越贴边。</string>
     <string name="settings_inner_glow">内侧光</string>
     <string name="settings_inner_glow_value">%1$d%%</string>
-    <string name="settings_inner_glow_desc">玻璃内侧由边缘向中心的发光（区别于定向边缘高光），沿折射环带向内衰减。0 = 关闭。</string>
-    <string name="settings_light_angle">光角度（Light Angle）</string>
+    <string name="settings_inner_glow_desc">玻璃边缘向中心散发的柔光。0 表示关闭。</string>
+    <string name="settings_light_angle">光源方向</string>
     <string name="settings_light_angle_value">%1$d°</string>
     <string name="settings_light_angle_desc">高光光源方向角度。</string>
-    <string name="settings_parallax_x">视差 X（Parallax X）</string>
+    <string name="settings_parallax_x">背景水平偏移</string>
     <string name="settings_parallax_x_value">%1$d px</string>
-    <string name="settings_parallax_x_desc">背景采样水平偏移，0 关闭视差。</string>
-    <string name="settings_parallax_y">视差 Y（Parallax Y）</string>
+    <string name="settings_parallax_x_desc">背景水平偏移，0 表示关闭。</string>
+    <string name="settings_parallax_y">背景垂直偏移</string>
     <string name="settings_parallax_y_value">%1$d px</string>
-    <string name="settings_parallax_y_desc">背景采样垂直偏移，0 关闭视差。</string>
+    <string name="settings_parallax_y_desc">背景垂直偏移，0 表示关闭。</string>
 
     <!-- 统一界面圆角（通知/控制中心） -->
     <string name="settings_unified_corner">统一界面圆角（通知/控制中心）</string>
-    <string name="settings_unified_corner_desc">开启后，通知中心和控制中心里的元素使用同一个圆角大小。圆形和药丸形的控件会保持原来的形状，不会被压扁；桌面、锁屏等其他界面不受影响。</string>
+    <string name="settings_unified_corner_desc">通知中心和控制中心使用同一圆角。圆形和药丸形控件保持原样；桌面、锁屏不受影响。</string>
     <string name="settings_unified_corner_px">统一圆角（px）</string>
     <string name="settings_unified_corner_px_value">%1$d px</string>
-    <string name="settings_unified_corner_px_desc">统一使用的圆角大小。比控件本身圆角小的会被放大到这个值；圆形和药丸形控件不会变。</string>
+    <string name="settings_unified_corner_px_desc">统一使用的圆角大小。较小的圆角会放大到该值；圆形和药丸形控件不变。</string>
 
     <!-- 背景与抓屏 -->
-    <string name="settings_capture_params_section">抓屏速率</string>
-    <string name="settings_capture_min_interval">抓屏节流（内容变化最小间隔，0=立即抓）</string>
+    <string name="settings_capture_params_section">背景刷新</string>
+    <string name="settings_capture_min_interval">刷新间隔</string>
     <string name="settings_capture_min_interval_value">%1$d ms</string>
-    <string name="settings_capture_min_interval_desc">内容变化后抓屏最小间隔，0 立即抓，越大越省电。</string>
-    <string name="settings_panel_capture_hz">通知横幅抓屏速率（Hz）</string>
+    <string name="settings_capture_min_interval_desc">内容变化后最快多久刷新背景。0 立即刷新；越大越省电。</string>
+    <string name="settings_panel_capture_hz">横幅背景刷新频率</string>
     <string name="settings_panel_capture_hz_value">%1$d Hz</string>
-    <string name="settings_panel_capture_hz_desc">横幅/流体云显示期间抓屏频率，运动满速/静止减半，越大越跟手。</string>
-    <string name="settings_capture_scale">抓屏降采样</string>
+    <string name="settings_panel_capture_hz_desc">横幅或流体云显示时刷新背景的频率。越高越跟手，也越耗电。</string>
+    <string name="settings_capture_scale">背景清晰度</string>
     <string name="settings_capture_scale_value">%1$.2fx</string>
-    <string name="settings_capture_scale_desc">抓屏分辨率倍率，0.5 半分辨率省电，1.0 全分辨率清晰。</string>
-    <string name="settings_periodic_capture">持续抓屏（通知/图标显示期间定期刷新背景，默认开）</string>
-    <string name="settings_periodic_capture_desc">活跃宿主期间按间隔重抓整屏快照，动态背景实时。关闭=仅内容变化时抓屏。</string>
-    <string name="settings_periodic_capture_interval">持续抓屏间隔（毫秒）</string>
+    <string name="settings_capture_scale_desc">背景采样清晰度。0.5 更省电，1.0 更清晰。</string>
+    <string name="settings_periodic_capture">持续刷新背景</string>
+    <string name="settings_periodic_capture_desc">通知或图标显示时定期刷新背景，动态壁纸更实时。关闭后只在内容变化时刷新。</string>
+    <string name="settings_periodic_capture_interval">持续刷新间隔</string>
     <string name="settings_periodic_capture_interval_value">%1$d ms</string>
-    <string name="settings_periodic_capture_interval_desc">持续抓屏间隔，默认 500ms 实时与功耗平衡。</string>
-    <string name="settings_section_capture_retry">抓屏失败重试</string>
-    <string name="settings_capture_retry_ms">抓屏失败重试间隔（毫秒）</string>
+    <string name="settings_periodic_capture_interval_desc">持续刷新背景的间隔，默认 500 毫秒。</string>
+    <string name="settings_section_capture_retry">背景刷新失败重试</string>
+    <string name="settings_capture_retry_ms">重试间隔</string>
     <string name="settings_capture_retry_ms_value">%1$d ms</string>
-    <string name="settings_capture_retry_ms_desc">抓屏失败后的重试间隔。</string>
-    <string name="settings_capture_retry_limit">抓屏失败重试次数</string>
+    <string name="settings_capture_retry_ms_desc">背景刷新失败后的重试间隔。</string>
+    <string name="settings_capture_retry_limit">重试次数</string>
     <string name="settings_capture_retry_limit_value">%1$d</string>
-    <string name="settings_capture_retry_limit_desc">重试次数上限，用尽后暂停到下次内容变化。</string>
-    <string name="settings_bg_uid_filter">文件夹背景只抓壁纸层（默认开）</string>
-    <string name="settings_bg_uid_filter_desc">Launcher 文件夹背景只抓壁纸层，排除 app 轨迹/shade 等非壁纸层。</string>
-    <string name="settings_bg_wallpaper_file_source">文件夹背景用壁纸文件解码（默认开）</string>
-    <string name="settings_bg_wallpaper_file_source_desc">静态壁纸零持续抓屏，仅壁纸变化重解码；动态壁纸自动回退抓屏。</string>
-    <string name="settings_bg_wallpaper_max_dim">壁纸解码最大边长（px）</string>
+    <string name="settings_capture_retry_limit_desc">最多重试几次；用完后等到下次内容变化再试。</string>
+    <string name="settings_bg_uid_filter">文件夹背景只取壁纸</string>
+    <string name="settings_bg_uid_filter_desc">桌面文件夹背景只使用壁纸，不混入应用界面等内容。</string>
+    <string name="settings_bg_wallpaper_file_source">直接读取壁纸文件</string>
+    <string name="settings_bg_wallpaper_file_source_desc">静态壁纸不持续刷新，只在壁纸变化时重新读取；动态壁纸自动改用刷新背景。</string>
+    <string name="settings_bg_wallpaper_max_dim">壁纸处理最大尺寸</string>
     <string name="settings_bg_wallpaper_max_dim_value">%1$d px</string>
-    <string name="settings_bg_wallpaper_max_dim_desc">壁纸整幅解码上限，防内存过高，裁剪精度足够。</string>
+    <string name="settings_bg_wallpaper_max_dim_desc">限制壁纸处理尺寸，避免占用过多内存。</string>
     <string name="settings_section_cc_blur">系统控制中心模糊</string>
     <string name="settings_cc_blur_strength">系统模糊力度（%）</string>
     <string name="settings_cc_blur_strength_value">%1$d%%</string>
-    <string name="settings_cc_blur_strength_desc">调整系统控制中心背景模糊力度，100=系统原值，0=不模糊。开启时阻止界面缩小。</string>
+    <string name="settings_cc_blur_strength_desc">调整控制中心背景模糊程度。100 为系统默认，0 为不模糊。</string>
     <string name="settings_keep_system_cc_blur">保留系统控制中心模糊（默认关）</string>
-    <string name="settings_keep_system_cc_blur_desc">开启保留系统背景模糊（力度可调、阻止缩小）；关闭则背景透明露壁纸。</string>
-    <string name="settings_remove_panel_mix_color">移除面板材质底色（默认开）</string>
-    <string name="settings_remove_panel_mix_color_desc">去掉系统面板背景那层灰底（它不随模糊力度缩放，力度滑杆管不到）；模糊本身照常保留。</string>
+    <string name="settings_keep_system_cc_blur_desc">开启后保留系统模糊；关闭后背景透明，直接显示壁纸。</string>
+    <string name="settings_remove_panel_mix_color">移除面板灰底</string>
+    <string name="settings_remove_panel_mix_color_desc">去掉系统面板背景的灰色底，模糊效果仍然保留。</string>
 
     <!-- 文字与可读性 -->
-    <string name="settings_text_contrast">文字背景反转取色（默认开）</string>
-    <string name="settings_text_contrast_desc">按背景亮度自动反转文字黑白，关闭走系统原逻辑。</string>
-    <string name="settings_heads_up_text_follow">弹出通知文字跟随整体颜色（默认开）</string>
-    <string name="settings_heads_up_text_follow_desc">通知横幅文字：遮罩开强制白，关时按背景深浅自动变字色。</string>
-    <string name="settings_text_force_refresh_interval">文字周期强制刷新间隔</string>
+    <string name="settings_text_contrast">文字自动反色</string>
+    <string name="settings_text_contrast_desc">根据背景明暗自动切换文字黑白；关闭后使用系统默认逻辑。</string>
+    <string name="settings_heads_up_text_follow">横幅文字跟随背景</string>
+    <string name="settings_heads_up_text_follow_desc">弹出通知的文字颜色：开启遮罩时强制白色，关闭时按背景明暗自动调整。</string>
+    <string name="settings_text_force_refresh_interval">文字颜色刷新间隔</string>
     <string name="settings_text_force_refresh_interval_value">%1$d ms</string>
-    <string name="settings_text_force_refresh_interval_desc">按间隔全树重扫文字颜色兜底同屏统一，0=仅事件触发。</string>
+    <string name="settings_text_force_refresh_interval_desc">定期重新检查文字颜色，让同屏颜色更统一。0 表示只在事件发生时检查。</string>
 
     <!-- 遮罩 -->
     <string name="settings_mask">黑遮罩（默认开）</string>
-    <string name="settings_mask_desc">玻璃元素叠加黑色半透明遮罩压暗背景保证可读性（文字强制白已独立开关）。</string>
+    <string name="settings_mask_desc">在玻璃上叠加半透明黑色，让文字更清楚。文字强制白是独立开关。</string>
     <string name="settings_mask_alpha">遮罩不透明度</string>
     <string name="settings_mask_alpha_value">%1$.2f</string>
-    <string name="settings_mask_alpha_desc">面板底层黑遮罩（scrim）的不透明度，0.00 透明，1.00 全黑，默认 0.45。与玻璃内压暗相互独立。</string>
+    <string name="settings_mask_alpha_desc">面板黑色遮罩的浓度。0 为透明，1 为全黑，默认 0.45。</string>
     <string name="settings_mask_glass_dim">玻璃内压暗</string>
     <string name="settings_mask_glass_dim_value">%1$.2f</string>
-    <string name="settings_mask_glass_dim_desc">玻璃内部背景的压暗程度（渲染端直接混黑），0.00 不压暗（默认），1.00 全黑。与遮罩开关、面板遮罩不透明度相互独立。</string>
+    <string name="settings_mask_glass_dim_desc">玻璃内部背景的变暗程度。0 不变暗，1 全黑，默认 0。</string>
     <string name="settings_mask_text_color">文字强制白颜色</string>
     <string name="settings_mask_text_color_white">纯白</string>
     <string name="settings_mask_text_color_lightgray">浅灰</string>
     <string name="settings_mask_text_color_gray">灰</string>
-    <string name="settings_mask_text_color_desc">文字强制白开启时中性色文字统一为该颜色（彩色字尊重 app）。</string>
+    <string name="settings_mask_text_color_desc">开启文字强制白后，中性色文字统一成该颜色；彩色文字保持原样。</string>
     <string name="settings_text_force_white">文字强制白（默认开）</string>
-    <string name="settings_text_force_white_desc">玻璃区域内/横幅中性色文字恒白（与遮罩独立：可只要白字不要压暗，也可单独关解决闪动）。</string>
+    <string name="settings_text_force_white_desc">玻璃区域和横幅中的中性色文字始终为白色。可单独开启，不必同时压暗背景。</string>
 
     <!-- 流体云 -->
     <string name="settings_seedling_card_glass">流体云液态玻璃（默认关）</string>
-    <string name="settings_seedling_card_glass_desc">灵动岛（流体云）液态玻璃化总开关。横幅玻璃共用此开关。</string>
+    <string name="settings_seedling_card_glass_desc">灵动岛/流体云的液态玻璃总开关，横幅玻璃也受此控制。</string>
     <string name="settings_seedling_capsule_glass">小胶囊（小岛）也玻璃化（默认开）</string>
-    <string name="settings_seedling_capsule_glass_desc">缩小状态的小胶囊一并加玻璃，用全圆角胶囊形状；关闭则只处理展开大卡片。</string>
-    <string name="settings_seedling_expand_ratio">展开大卡片判定高度系数</string>
+    <string name="settings_seedling_capsule_glass_desc">小胶囊也显示玻璃效果；关闭后只处理展开的大卡片。</string>
+    <string name="settings_seedling_expand_ratio">展开卡片判定</string>
     <string name="settings_seedling_expand_ratio_value">%1$.2f</string>
-    <string name="settings_seedling_expand_ratio_desc">子卡片高度 ≥ 状态栏高 × 系数判定为展开大卡，默认 0.6。</string>
-    <string name="settings_seedling_corner_ratio">展开大卡片圆角系数</string>
+    <string name="settings_seedling_expand_ratio_desc">判断卡片是否为展开状态的高度阈值，默认 0.6。</string>
+    <string name="settings_seedling_corner_ratio">展开卡片圆角</string>
     <string name="settings_seedling_corner_ratio_value">%1$.2f</string>
-    <string name="settings_seedling_corner_ratio_desc">圆角 = min(宽,高) × 系数，默认 0.22。</string>
+    <string name="settings_seedling_corner_ratio_desc">展开卡片的圆角大小，默认 0.22。</string>
     <string name="settings_seedling_force_transparent_bg">透明卡片背景（默认开）</string>
-    <string name="settings_seedling_force_transparent_bg_desc">展开卡片背景置透明，让液态玻璃透出。</string>
+    <string name="settings_seedling_force_transparent_bg_desc">展开卡片背景透明，让液态玻璃透出。</string>
 
     <!-- [spec/81 2026-09-17] 锁屏时钟相关字符串已随功能停用移除 -->
 
     <!-- [2026-09-17] 追踪器相关字符串已随追踪器整体移除 -->
 
     <!-- 日志与诊断 -->
-    <string name="settings_enable_logs">模块日志（默认开）</string>
-    <string name="settings_enable_logs_desc">关闭后诊断日志静默（保留错误日志），需重启 SystemUI。</string>
+    <string name="settings_enable_logs">运行日志</string>
+    <string name="settings_enable_logs_desc">关闭后只保留错误日志。修改后需重启系统界面。</string>
     <string name="settings_dump_original_note">原图 dump 诊断已改走触发文件机制（/data/local/tmp/lg_dump_trigger → lg_dump.png）。</string>
 
     <!-- 关于 -->
@@ -169,17 +169,17 @@
     <string name="cat_config_desc">导出 / 导入全部模块配置</string>
     <string name="config_export">导出配置（JSON）</string>
     <string name="config_import">导入配置</string>
-    <string name="config_hint">导出为 JSON 文件，可用于备份与换机迁移；导入会覆盖当前配置，开关类参数需重启 SystemUI 生效。</string>
+    <string name="config_hint">导出为文件，用于备份或换机；导入会覆盖当前配置，部分开关需重启系统界面后生效。</string>
     <string name="config_export_done">已导出 %1$d 项配置</string>
     <string name="config_export_failed">导出失败：%1$s</string>
     <string name="config_import_confirm_title">导入配置</string>
     <string name="config_import_confirm_message">将用所选文件覆盖当前 %1$d 项配置，继续？</string>
     <string name="config_import_confirm_ok">覆盖导入</string>
-    <string name="config_import_done">已导入 %1$d 项配置；开关类参数需重启 SystemUI 生效</string>
+    <string name="config_import_done">已导入 %1$d 项配置；部分开关需重启系统界面后生效。</string>
     <string name="config_import_failed">导入失败：%1$s</string>
     <string name="config_import_invalid">这不是本模块导出的配置文件</string>
     <string name="config_import_no_items">文件里没有可导入的配置项</string>
-    <string name="config_framework_not_ready">框架服务未就绪，请稍后重试</string>
+    <string name="config_framework_not_ready">服务还没准备好，请稍后再试。</string>
     <string name="about_title">关于</string>
     <string name="about_tg">Telegram：https://t.me/c16lg666</string>
     <string name="about_qq">QQ 群：1102985644</string>
@@ -198,20 +198,20 @@
     <string name="cat_material">液态玻璃材质</string>
     <string name="cat_material_desc">折射 / 鲜艳度 / 高光等材质参数</string>
     <string name="cat_background">背景与抓屏</string>
-    <string name="cat_background_desc">背景 / 抓屏速率 / 模糊力度</string>
+    <string name="cat_background_desc">背景刷新与模糊</string>
     <string name="cat_text">文字与可读性</string>
     <string name="cat_text_desc">文字反色 / 弹出通知文字跟随</string>
     <string name="cat_mask">遮罩</string>
     <string name="cat_mask_desc">黑遮罩压暗 + 文字强制白</string>
     <string name="cat_seedling">流体云</string>
     <string name="cat_seedling_desc">灵动岛展开卡片液态玻璃</string>
-    <string name="cat_log">日志与诊断</string>
-    <string name="cat_log_desc">模块日志开关</string>
+    <string name="cat_log">日志与诊断（开发者）</string>
+    <string name="cat_log_desc">排查问题时使用</string>
 
     <!-- 桌面动画参数（doc/spec/64，2026-09-16） -->
     <string name="cat_anim">桌面动画</string>
-    <string name="cat_anim_desc">打开 / 关闭 / 打断动画弹簧参数</string>
-    <string name="settings_anim_intro">调整桌面过渡动画的弹簧刚度与阻尼。默认全部关闭，不开启时与原版动画完全一致；修改后立即生效。</string>
+    <string name="cat_anim_desc">打开、关闭、打断动画的弹性参数</string>
+    <string name="settings_anim_intro">调整桌面过渡动画的回弹与速度。默认关闭，开启前与原版一致；修改后立即生效。</string>
     <string name="settings_anim_open_enabled">打开动画</string>
     <string name="settings_anim_open_enabled_desc">从桌面打开应用时的动画（默认关）</string>
     <string name="settings_anim_open_params">打开动画参数 ›</string>
@@ -225,20 +225,20 @@
 
     <string name="settings_anim_enable_custom">启用自定义样式</string>
     <string name="settings_anim_enable_custom_desc">关闭时沿用原版动画参数</string>
-    <string name="settings_anim_sec_x">中心 X 轴</string>
-    <string name="settings_anim_sec_y">中心 Y 轴</string>
-    <string name="settings_anim_sec_width">宽度缩放</string>
-    <string name="settings_anim_sec_height">宽高比例</string>
-    <string name="settings_anim_sec_fade">图标透明度</string>
-    <string name="settings_anim_damping">阻尼</string>
-    <string name="settings_anim_stiffness">刚度</string>
+    <string name="settings_anim_sec_x">水平中心</string>
+    <string name="settings_anim_sec_y">垂直中心</string>
+    <string name="settings_anim_sec_width">宽度变化</string>
+    <string name="settings_anim_sec_height">高度比例</string>
+    <string name="settings_anim_sec_fade">图标淡出</string>
+    <string name="settings_anim_damping">回弹阻尼</string>
+    <string name="settings_anim_stiffness">动画速度</string>
     <string name="settings_anim_damping_value">%1$d（实际 %2$.2f）</string>
     <string name="settings_anim_stiffness_value">%1$d</string>
     <string name="settings_anim_fade_value">%1$d ms</string>
 
     <!-- [spec/64] 一键预设 + 同步打开 -->
     <string name="settings_anim_preset_title">一键预设</string>
-    <string name="settings_anim_preset_desc">三档均为临界阻尼（ζ=1.0，不过冲），仅速度不同。点击后本组全部参数立即套用（需先开启上方开关）。</string>
+    <string name="settings_anim_preset_desc">三档都不会过冲，只是速度不同。点击后立即应用到本组参数（需先开启上方开关）。</string>
     <string name="settings_anim_preset_default">恢复默认</string>
     <string name="settings_anim_preset_soft">柔和 0.50s</string>
     <string name="settings_anim_preset_mid">适中 0.42s</string>
@@ -247,36 +247,36 @@
     <string name="settings_anim_sync_open">同步打开</string>
     <string name="settings_anim_sync_open_desc">把「打开动画」的全部参数整组复制到打断动画。</string>
     <string name="settings_anim_sync_done">已同步「打开动画」的参数</string>
-    <string name="settings_anim_sync_not_ready">框架服务未就绪，请稍后重试</string>
+    <string name="settings_anim_sync_not_ready">服务还没准备好，请稍后再试。</string>
 
     <!-- 桌面 Dock 栏液态玻璃（doc/spec/66，2026-09-16） -->
     <string name="cat_desktop">桌面</string>
     <string name="cat_desktop_desc">桌面元素的液态玻璃</string>
     <string name="settings_dock_glass">Dock 栏液态玻璃</string>
-    <string name="settings_dock_glass_desc">给桌面底部常驻图标条加液态玻璃背景。系统在直板机上原本不对 Dock 绘制任何背景，开启后由模块接管。改动即时生效，无需重启桌面。</string>
+    <string name="settings_dock_glass_desc">为桌面底部 Dock 栏添加液态玻璃背景。开启后立即生效，无需重启桌面。</string>
 
     <!-- iOS 动态倾斜 / 透视（doc/spec/65，2026-09-16，实验性） -->
     <string name="cat_tilt">倾斜与透视</string>
     <string name="cat_tilt_desc">应用打开/退出时的 3D 倾斜（实验性）</string>
     <string name="settings_anim_tilt_enabled">开启动态倾斜</string>
-    <string name="settings_anim_tilt_enabled_desc">实验性功能：应用打开/退出/打断动画期间窗口与图标产生 iOS 风格 3D 倾斜。默认关闭。</string>
+    <string name="settings_anim_tilt_enabled_desc">实验性功能：应用打开、退出或打断动画时，窗口和图标会有 iOS 风格 3D 倾斜。默认关闭。</string>
     <string name="settings_anim_tilt_strength">倾斜强度</string>
     <string name="settings_anim_tilt_strength_desc" formatted="false">调节前后倾斜角度；0% 为不倾斜，200% 为两倍角度。</string>
     <string name="settings_anim_tilt_strength_value">%1$d%%</string>
-    <string name="settings_anim_tilt_perspective">透视扭曲程度</string>
-    <string name="settings_anim_tilt_perspective_desc" formatted="false">调节上下宽度差；0% 无近大远小效果，数值越大透视越明显（倾斜强度为 0% 时此项无效）。</string>
+    <string name="settings_anim_tilt_perspective">透视强度</string>
+    <string name="settings_anim_tilt_perspective_desc" formatted="false">控制近大远小的透视效果。0 表示关闭；倾斜强度为 0 时无效。</string>
     <string name="settings_anim_tilt_perspective_value">%1$d%%</string>
-    <string name="settings_anim_tilt_restart_note">提示：本功能为实验性，改动需重启桌面进程生效。</string>
+    <string name="settings_anim_tilt_restart_note">实验性功能，修改后需重启桌面生效。</string>
 
     <!-- [doc/spec/112+113] 通知卡动效（弹出/收回动画驱动，手指不参与；默认关，改动立即生效） -->
     <string name="settings_notif_tilt_enabled">通知卡动效</string>
-    <string name="settings_notif_tilt_enabled_desc" formatted="false">横幅从摄像头位置飞入并带透视倾斜，收回时向摄像头方向回拉后飞出；落位后自动回正（只斜玻璃不斜文字，不替换系统动画）。默认关闭。</string>
+    <string name="settings_notif_tilt_enabled_desc" formatted="false">通知横幅从摄像头位置飞入，并带倾斜效果；收回时向摄像头方向飞出。只影响玻璃，不影响文字。默认关闭。</string>
     <string name="settings_notif_tilt_strength">通知卡倾斜角度</string>
-    <string name="settings_notif_tilt_strength_desc" formatted="false">0~45° 自由调整，默认 3°；0° 等同关闭。角度越大透视畸变越明显（45° 内分母安全、不会花屏）。</string>
+    <string name="settings_notif_tilt_strength_desc" formatted="false">调整倾斜角度，默认 3°；0° 表示关闭。角度越大透视越明显。</string>
     <string name="settings_notif_tilt_strength_value">%1$d°</string>
     <string name="settings_notif_fly_scale">飞入缩放幅度</string>
     <string name="settings_notif_fly_scale_value">%1$d%%</string>
-    <string name="settings_notif_fly_scale_desc">横幅弹出/收回时的网格缩放幅度（起始缩到 1-幅度，落位 100%）。0 = 不缩放只透视。</string>
+    <string name="settings_notif_fly_scale_desc">横幅弹出和收回时的缩放幅度。0 表示只倾斜不缩放。</string>
 
     <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
     <string name="update_dialog_title">发现新版本</string>

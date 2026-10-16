@@ -1,8 +1,15 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+}
+
+// 签名配置从 local.properties 读取（不入库）；缺失时 release 构建无签名，不阻塞编译
+val signingProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -19,7 +26,19 @@ android {
         // 改用构建时间戳（秒）保证每次构建都递增，框架必然走 `module apk changed: rebuilding cache`
         // 重新解析。注：秒级时间戳 2038-01 起溢出 Int，本项目调试期足够。
         versionCode = (System.currentTimeMillis() / 1000L).toInt()
-        versionName = "0.1.6"
+        versionName = "0.1.7"
+    }
+
+    signingConfigs {
+        create("release") {
+            val sf = signingProps.getProperty("signing.storeFile")
+            if (sf != null) {
+                storeFile = rootProject.file(sf)
+                storePassword = signingProps.getProperty("signing.storePassword")
+                keyAlias = signingProps.getProperty("signing.keyAlias")
+                keyPassword = signingProps.getProperty("signing.keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -31,6 +50,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
+                .takeIf { cfg -> cfg.storeFile?.exists() == true }
         }
     }
 

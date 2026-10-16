@@ -11,7 +11,8 @@
 #
 # 说明:
 #   - 版本号需与 app/build.gradle.kts 的 versionName 保持一致（脚本只提醒，不自动改）
-#   - 默认构建 debug APK（release 未配置签名，产物无法直接安装）
+#   - 0.1.x 阶段发 debug 签名包（与既有用户可覆盖安装）；升级版本时切 assembleRelease 用正式签名
+#     （signing.* 已在 local.properties 配好，切换只需改下面两行）
 #   - 需要已安装并登录 GitHub CLI (gh)
 #
 set -euo pipefail
