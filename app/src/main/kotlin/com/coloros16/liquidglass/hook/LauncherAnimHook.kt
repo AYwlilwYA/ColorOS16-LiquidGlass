@@ -1,7 +1,7 @@
 package com.coloros16.liquidglass.hook
 
-import android.util.Log
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.reflect.Field
@@ -109,7 +109,7 @@ object LauncherAnimHook {
         mountSetAnimParamByType(api, classLoader)
         mountInitAllAnimations(api, classLoader)
         mountGetLauncherViewAnimParam(api, classLoader)
-        Log.i(TAG, "LauncherAnimHook install done (springFields=${springFields.size})")
+        Lg.i(TAG, "LauncherAnimHook install done (springFields=${springFields.size})")
     }
 
     // ------------------------------------------------------------ 反射解析
@@ -123,25 +123,25 @@ object LauncherAnimHook {
                     springFields[param] = clazz.getDeclaredField(fieldName).apply { isAccessible = true }
                     ok++
                 } catch (t: Throwable) {
-                    Log.e(TAG, "resolve field $fieldName failed, param=$param skipped", t)
+                    Lg.e(TAG, "resolve field $fieldName failed, param=$param skipped", t)
                 }
             }
             mAnimTypeField = try {
                 clazz.getDeclaredField(FIELD_M_ANIM_TYPE).apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.e(TAG, "resolve $FIELD_M_ANIM_TYPE failed, initAllAnimations override uses arg type only", t)
+                Lg.e(TAG, "resolve $FIELD_M_ANIM_TYPE failed, initAllAnimations override uses arg type only", t)
                 null
             }
-            Log.i(TAG, "resolved $CLASS_SPRING_ANIM spring fields: $ok/${SPRING_FIELD_NAMES.size}")
+            Lg.i(TAG, "resolved $CLASS_SPRING_ANIM spring fields: $ok/${SPRING_FIELD_NAMES.size}")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve $CLASS_SPRING_ANIM failed, spring override disabled", t)
+            Lg.e(TAG, "resolve $CLASS_SPRING_ANIM failed, spring override disabled", t)
         }
         try {
             val absAnim = Class.forName(CLASS_ABS_ANIMATION, false, classLoader)
             mGetScaledStiffness = absAnim.getMethod(METHOD_GET_SCALED_STIFFNESS, Float::class.javaPrimitiveType)
-            Log.i(TAG, "resolved $CLASS_ABS_ANIMATION#$METHOD_GET_SCALED_STIFFNESS(float)")
+            Lg.i(TAG, "resolved $CLASS_ABS_ANIMATION#$METHOD_GET_SCALED_STIFFNESS(float)")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve $CLASS_ABS_ANIMATION#$METHOD_GET_SCALED_STIFFNESS failed, fade duration disabled", t)
+            Lg.e(TAG, "resolve $CLASS_ABS_ANIMATION#$METHOD_GET_SCALED_STIFFNESS failed, fade duration disabled", t)
         }
     }
 
@@ -167,13 +167,13 @@ object LauncherAnimHook {
                         }
                         applySpringOverride(chain.getThisObject(), animTypeName(animType))
                     } catch (t: Throwable) {
-                        Log.e(TAG, "setAnimParamByType intercept error", t)
+                        Lg.e(TAG, "setAnimParamByType intercept error", t)
                     }
                     result
                 }
-            Log.i(TAG, "mounted: $CLASS_SPRING_ANIM#$METHOD_SET_ANIM_PARAM_BY_TYPE(AnimType, boolean) [after proceed]")
+            Lg.i(TAG, "mounted: $CLASS_SPRING_ANIM#$METHOD_SET_ANIM_PARAM_BY_TYPE(AnimType, boolean) [after proceed]")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount FAILED: $CLASS_SPRING_ANIM#$METHOD_SET_ANIM_PARAM_BY_TYPE", t)
+            Lg.e(TAG, "mount FAILED: $CLASS_SPRING_ANIM#$METHOD_SET_ANIM_PARAM_BY_TYPE", t)
         }
     }
 
@@ -195,13 +195,13 @@ object LauncherAnimHook {
                         // 本方法内只【读取】8 个弹簧字段配置 SpringForce（不写），故在 proceed 前覆盖即可生效
                         applySpringOverride(target, animTypeNameFromField(target))
                     } catch (t: Throwable) {
-                        Log.e(TAG, "initAllAnimations intercept error", t)
+                        Lg.e(TAG, "initAllAnimations intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "mounted: $CLASS_SPRING_ANIM#$METHOD_INIT_ALL_ANIMATIONS() [before proceed]")
+            Lg.i(TAG, "mounted: $CLASS_SPRING_ANIM#$METHOD_INIT_ALL_ANIMATIONS() [before proceed]")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount FAILED: $CLASS_SPRING_ANIM#$METHOD_INIT_ALL_ANIMATIONS", t)
+            Lg.e(TAG, "mount FAILED: $CLASS_SPRING_ANIM#$METHOD_INIT_ALL_ANIMATIONS", t)
         }
     }
 
@@ -209,7 +209,7 @@ object LauncherAnimHook {
 
     private fun mountGetLauncherViewAnimParam(api: XposedInterface, classLoader: ClassLoader) {
         if (mGetScaledStiffness == null) {
-            Log.w(TAG, "getScaledStiffness unresolved, fade duration hook skipped")
+            Lg.w(TAG, "getScaledStiffness unresolved, fade duration hook skipped")
             return
         }
         try {
@@ -237,7 +237,7 @@ object LauncherAnimHook {
                                 val scaled = scaledStiffness(raw)
                                 if (scaled > 0f) {
                                     if (logEnabled) {
-                                        Log.d(
+                                        Lg.d(
                                             TAG,
                                             "fade group=$group dur=${cfg.fadeDuration}ms raw=${"%.2f".format(raw)} -> scaled=${"%.2f".format(scaled)} (was ${"%.2f".format(arr[0])})",
                                         )
@@ -247,13 +247,13 @@ object LauncherAnimHook {
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "getLauncherViewAnimParam intercept error", t)
+                        Lg.e(TAG, "getLauncherViewAnimParam intercept error", t)
                     }
                     result
                 }
-            Log.i(TAG, "mounted: $CLASS_CONTENT_ANIM_MANAGER#$METHOD_GET_LAUNCHER_VIEW_ANIM_PARAM(AnimType) [after proceed]")
+            Lg.i(TAG, "mounted: $CLASS_CONTENT_ANIM_MANAGER#$METHOD_GET_LAUNCHER_VIEW_ANIM_PARAM(AnimType) [after proceed]")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount FAILED: $CLASS_CONTENT_ANIM_MANAGER#$METHOD_GET_LAUNCHER_VIEW_ANIM_PARAM", t)
+            Lg.e(TAG, "mount FAILED: $CLASS_CONTENT_ANIM_MANAGER#$METHOD_GET_LAUNCHER_VIEW_ANIM_PARAM", t)
         }
     }
 
@@ -261,7 +261,7 @@ object LauncherAnimHook {
     private fun scaledStiffness(raw: Float): Float = try {
         (mGetScaledStiffness?.invoke(null, raw) as? Float) ?: 0f
     } catch (t: Throwable) {
-        Log.e(TAG, "getScaledStiffness invoke failed", t)
+        Lg.e(TAG, "getScaledStiffness invoke failed", t)
         0f
     }
 
@@ -293,11 +293,11 @@ object LauncherAnimHook {
                 applied++
             } catch (t: Throwable) {
                 skipped++
-                Log.e(TAG, "set ${field.name}=$v failed", t)
+                Lg.e(TAG, "set ${field.name}=$v failed", t)
             }
         }
         if (logEnabled) {
-            Log.d(TAG, "spring override animType=$name group=$group applied=$applied skipped=$skipped")
+            Lg.d(TAG, "spring override animType=$name group=$group applied=$applied skipped=$skipped")
         }
     }
 
@@ -331,7 +331,7 @@ object LauncherAnimHook {
             cfgCache = try {
                 readAllConfig()
             } catch (t: Throwable) {
-                Log.e(TAG, "read config failed, treat as disabled", t)
+                Lg.e(TAG, "read config failed, treat as disabled", t)
                 emptyMap()
             }
             cfgReadAtMs = now

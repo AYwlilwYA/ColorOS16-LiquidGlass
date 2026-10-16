@@ -1,6 +1,6 @@
 package com.coloros16.liquidglass.hook
 
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 
@@ -29,13 +29,13 @@ object SceneFilter {
 
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         val clazz = resolveClass(classLoader) ?: run {
-            Log.i(TAG, "lg-hook: SceneFilter 目标类缺失，降级（不挂载）")
+            Lg.i(TAG, "lg-hook: SceneFilter 目标类缺失，降级（不挂载）")
             return
         }
         val method = try {
             clazz.getDeclaredMethod(METHOD_GET_HOST_VIEW_NAME)
         } catch (t: Throwable) {
-            Log.i(TAG, "lg-hook: SceneFilter ${clazz.name} 无 $METHOD_GET_HOST_VIEW_NAME() 方法（只有 Function0 字段），M3 未启用，不挂载")
+            Lg.i(TAG, "lg-hook: SceneFilter ${clazz.name} 无 $METHOD_GET_HOST_VIEW_NAME() 方法（只有 Function0 字段），M3 未启用，不挂载")
             return
         }
         try {
@@ -45,10 +45,10 @@ object SceneFilter {
                     // TODO(M3)：读取 getHostViewName() 返回值，按 Prefs 白名单放行/拦截
                     chain.proceed()
                 }
-            Log.i(TAG, "lg-hook: SceneFilter 挂载 @ ${clazz.name}#$METHOD_GET_HOST_VIEW_NAME（逻辑仍为 M3 TODO，透传）")
+            Lg.i(TAG, "lg-hook: SceneFilter 挂载 @ ${clazz.name}#$METHOD_GET_HOST_VIEW_NAME（逻辑仍为 M3 TODO，透传）")
         } catch (t: Throwable) {
             // 类/方法签名不匹配即跳过
-            Log.i(TAG, "lg-hook: SceneFilter 挂载失败，降级（不挂载）")
+            Lg.i(TAG, "lg-hook: SceneFilter 挂载失败，降级（不挂载）")
         }
     }
 

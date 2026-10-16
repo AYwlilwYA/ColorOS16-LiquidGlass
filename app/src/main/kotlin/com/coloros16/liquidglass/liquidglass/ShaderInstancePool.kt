@@ -2,7 +2,7 @@ package com.coloros16.liquidglass.liquidglass
 
 import android.graphics.RuntimeShader
 import android.os.Build
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import java.util.concurrent.LinkedBlockingQueue
 
 /**
@@ -64,7 +64,7 @@ object ShaderInstancePool {
                         pool.offer(LiquidGlassShader.create(metaball))
                     }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "shader-pool: refill failed metaball=$metaball", t)
+                    Lg.w(TAG, "shader-pool: refill failed metaball=$metaball", t)
                 } finally {
                     flagRef()
                 }
@@ -74,7 +74,7 @@ object ShaderInstancePool {
             }.start()
         } catch (t: Throwable) {
             if (metaball) fullRefilling = false else baseRefilling = false
-            Log.w(TAG, "shader-pool: start refill failed metaball=$metaball", t)
+            Lg.w(TAG, "shader-pool: start refill failed metaball=$metaball", t)
         }
     }
 }

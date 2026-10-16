@@ -12,7 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -68,14 +68,14 @@ object ShaderPreheat {
         // HardwareRenderer / RenderNode 为 API 29+（本工程 minSdk=26，仅作兜底；
         // XposedEntry.doInstall 已在 SDK<29 时整体跳过 install，正常设备不会走到这里）。
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            if (logEnabled) Log.d(TAG, "preheat: skip (spec/111), SDK=${Build.VERSION.SDK_INT} < 29")
+            if (logEnabled) Lg.d(TAG, "preheat: skip (spec/111), SDK=${Build.VERSION.SDK_INT} < 29")
             return
         }
         try {
             // 只负责延迟：syncAndDraw 阻塞，真正干活在下面的子线程（绝不在主线程跑）。
             Handler(Looper.getMainLooper()).postDelayed({ startWorker(logEnabled) }, PREHEAT_DELAY_MS)
         } catch (t: Throwable) {
-            if (logEnabled) Log.w(TAG, "preheat: schedule failed (spec/111)", t)
+            if (logEnabled) Lg.w(TAG, "preheat: schedule failed (spec/111)", t)
         }
     }
 
@@ -84,7 +84,7 @@ object ShaderPreheat {
         try {
             Thread({ runPreheat(logEnabled) }, "lg-shader-preheat").apply { isDaemon = true }.start()
         } catch (t: Throwable) {
-            if (logEnabled) Log.w(TAG, "preheat: start worker failed (spec/111)", t)
+            if (logEnabled) Lg.w(TAG, "preheat: start worker failed (spec/111)", t)
         }
     }
 
@@ -157,7 +157,7 @@ object ShaderPreheat {
 
             val cost = SystemClock.uptimeMillis() - t0
             if (logEnabled) {
-                Log.i(
+                Lg.i(
                     TAG,
                     "preheat: ok (spec/111) cost=${cost}ms sync=0x${Integer.toHexString(sync)} " +
                         "shaders=liquid-glass(AGSL_SOURCE, metaball+mask 内联同一 program)",
@@ -166,7 +166,7 @@ object ShaderPreheat {
         } catch (t: Throwable) {
             // 失败完全容忍：只打日志（受 moduleLogEnabled 门控），绝不影响渲染。
             if (logEnabled) {
-                Log.w(TAG, "preheat: failed (spec/111) cost=${SystemClock.uptimeMillis() - t0}ms", t)
+                Lg.w(TAG, "preheat: failed (spec/111) cost=${SystemClock.uptimeMillis() - t0}ms", t)
             }
         } finally {
             try {

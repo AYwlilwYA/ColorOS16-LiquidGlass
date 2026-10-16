@@ -1,7 +1,7 @@
 package com.coloros16.liquidglass.liquidglass
 
 import android.graphics.Bitmap
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 
 /**
  * 未模糊原图缓存：Hook A 拦截到的未模糊原图 → Bitmap，供 Hook B 的液态玻璃 shader 采样。
@@ -37,10 +37,10 @@ object OriginalBufferCache {
     fun cacheFromBitmap(bmp: Bitmap): Boolean {
         try {
             setLatest(bmp)
-            Log.i(TAG, "cache: captured ${bmp.width}x${bmp.height} config=${bmp.config}")
+            Lg.i(TAG, "cache: captured ${bmp.width}x${bmp.height} config=${bmp.config}")
             return true
         } catch (t: Throwable) {
-            Log.e(TAG, "cache: store bitmap failed", t)
+            Lg.e(TAG, "cache: store bitmap failed", t)
             return false
         }
     }

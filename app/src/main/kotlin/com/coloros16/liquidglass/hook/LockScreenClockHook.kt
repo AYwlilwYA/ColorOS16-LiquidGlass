@@ -12,12 +12,12 @@ import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.os.Bundle
 import android.text.Layout
-import android.util.Log
 import android.view.View
 import android.view.ViewParent
 import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.util.WeakHashMap
@@ -175,7 +175,7 @@ object LockScreenClockHook {
             Prefs.DEFAULT_LOCKSCREEN_CLOCK_GLASS
         }
         if (!enabled) {
-            Log.i(TAG, "lockscreen-clock-glass disabled by prefs, hooks skipped")
+            Lg.i(TAG, "lockscreen-clock-glass disabled by prefs, hooks skipped")
             return
         }
         val dm = android.content.res.Resources.getSystem().displayMetrics
@@ -184,7 +184,7 @@ object LockScreenClockHook {
         mountSetWallpaperBitmap(api, classLoader)
         mountRenderEffectBlocker(api, classLoader)
         mountViewDraw(api, classLoader)
-        Log.i(TAG, "lockscreen-clock-glass mounted (wallpaper source + RenderEffect blocker + View.draw)")
+        Lg.i(TAG, "lockscreen-clock-glass mounted (wallpaper source + RenderEffect blocker + View.draw)")
     }
 
     // ------------------------------------------------------------ hook 挂载
@@ -210,18 +210,18 @@ object LockScreenClockHook {
                         val mine = bmp?.let { adoptWallpaper(it) }
                         if (mine != null) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: wallpaper bitmap adopted ${mine.width}x${mine.height}")
+                                Lg.i(TAG, "lockscreen-clock: wallpaper bitmap adopted ${mine.width}x${mine.height}")
                             }
                             invalidateClockDigits()
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: setWallpaperBitmapInternal intercept error", t)
+                        Lg.e(TAG, "lockscreen-clock: setWallpaperBitmapInternal intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "lockscreen-clock-glass mounted: ThemePlugin#setWallpaperBitmapInternal")
+            Lg.i(TAG, "lockscreen-clock-glass mounted: ThemePlugin#setWallpaperBitmapInternal")
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: ThemePlugin#setWallpaperBitmapInternal", t)
+            Lg.e(TAG, "lockscreen-clock-glass mount FAILED: ThemePlugin#setWallpaperBitmapInternal", t)
         }
     }
 
@@ -244,20 +244,20 @@ object LockScreenClockHook {
                         val effect = chain.getArg(0) as? android.graphics.RenderEffect
                         if (view != null && effect != null && isClockDigitView(view)) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: BLOCKED View.setRenderEffect on clock digit ${view.javaClass.name}")
+                                Lg.i(TAG, "lockscreen-clock: BLOCKED View.setRenderEffect on clock digit ${view.javaClass.name}")
                             }
                             val args = chain.getArgs().toTypedArray()
                             args[0] = null
                             return@intercept chain.proceed(args)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: View.setRenderEffect intercept error", t)
+                        Lg.e(TAG, "lockscreen-clock: View.setRenderEffect intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "lockscreen-clock-glass mounted: View#setRenderEffect blocker")
+            Lg.i(TAG, "lockscreen-clock-glass mounted: View#setRenderEffect blocker")
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: View#setRenderEffect blocker", t)
+            Lg.e(TAG, "lockscreen-clock-glass mount FAILED: View#setRenderEffect blocker", t)
         }
 
         try {
@@ -273,20 +273,20 @@ object LockScreenClockHook {
                         val effect = chain.getArg(1) as? android.graphics.RenderEffect
                         if (view != null && effect != null && isClockDigitView(view)) {
                             if (moduleLogEnabled()) {
-                                Log.i(TAG, "lockscreen-clock: BLOCKED OplusAsyncAnimatorUtils.setRenderEffect on clock digit")
+                                Lg.i(TAG, "lockscreen-clock: BLOCKED OplusAsyncAnimatorUtils.setRenderEffect on clock digit")
                             }
                             val args = chain.getArgs().toTypedArray()
                             args[1] = null
                             return@intercept chain.proceed(args)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: OplusAsyncAnimatorUtils.setRenderEffect intercept error", t)
+                        Lg.e(TAG, "lockscreen-clock: OplusAsyncAnimatorUtils.setRenderEffect intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "lockscreen-clock-glass mounted: OplusAsyncAnimatorUtils#setRenderEffect blocker")
+            Lg.i(TAG, "lockscreen-clock-glass mounted: OplusAsyncAnimatorUtils#setRenderEffect blocker")
         } catch (t: Throwable) {
-            Log.i(TAG, "lockscreen-clock-glass: OplusAsyncAnimatorUtils 不可用（该路径不生效，其余路径兜底）")
+            Lg.i(TAG, "lockscreen-clock-glass: OplusAsyncAnimatorUtils 不可用（该路径不生效，其余路径兜底）")
         }
     }
 
@@ -314,18 +314,18 @@ object LockScreenClockHook {
                                     return@intercept null
                                 }
                                 if (moduleLogEnabled()) {
-                                    Log.i(TAG, "lockscreen-clock: self-draw skipped, fallback to system (ready=${state.ready})")
+                                    Lg.i(TAG, "lockscreen-clock: self-draw skipped, fallback to system (ready=${state.ready})")
                                 }
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "lockscreen-clock: View.draw intercept error", t)
+                        Lg.e(TAG, "lockscreen-clock: View.draw intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "lockscreen-clock-glass mounted: View#draw")
+            Lg.i(TAG, "lockscreen-clock-glass mounted: View#draw")
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock-glass mount FAILED: View#draw", t)
+            Lg.e(TAG, "lockscreen-clock-glass mount FAILED: View#draw", t)
         }
     }
 
@@ -530,7 +530,7 @@ object LockScreenClockHook {
             wallpaperBitmap = copy
             copy
         } catch (t: Throwable) {
-            Log.w(TAG, "lockscreen-clock: wallpaper copy failed", t)
+            Lg.w(TAG, "lockscreen-clock: wallpaper copy failed", t)
             null
         }
     }
@@ -574,10 +574,10 @@ object LockScreenClockHook {
             wallpaperOffsetX = xs[0]
             wallpaperOffsetY = ys[0]
             if (moduleLogEnabled()) {
-                Log.i(TAG, "lockscreen-clock: wallpaper offsets x=${xs[0]} y=${ys[0]}")
+                Lg.i(TAG, "lockscreen-clock: wallpaper offsets x=${xs[0]} y=${ys[0]}")
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "lockscreen-clock: getWallpaperOffsets read failed (keep 0)", t)
+            Lg.w(TAG, "lockscreen-clock: getWallpaperOffsets read failed (keep 0)", t)
         }
     }
 
@@ -588,7 +588,7 @@ object LockScreenClockHook {
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: return null
             WallpaperManager.getInstance(app)
         } catch (t: Throwable) {
-            Log.w(TAG, "lockscreen-clock: WallpaperManager.getInstance failed", t)
+            Lg.w(TAG, "lockscreen-clock: WallpaperManager.getInstance failed", t)
             null
         }
     }
@@ -635,12 +635,12 @@ object LockScreenClockHook {
                 originalWallpaperId = id
                 wallpaperOffsetsSynced = false
                 if (moduleLogEnabled()) {
-                    Log.i(TAG, "lockscreen-clock: original wallpaper decoded ${bmp.width}x${bmp.height} id=$id")
+                    Lg.i(TAG, "lockscreen-clock: original wallpaper decoded ${bmp.width}x${bmp.height} id=$id")
                 }
                 return bmp
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "lockscreen-clock: original wallpaper decode failed", t)
+            Lg.e(TAG, "lockscreen-clock: original wallpaper decode failed", t)
         } finally {
             try {
                 pfd.close()

@@ -6,9 +6,9 @@ import android.graphics.Rect
 import android.hardware.HardwareBuffer
 import android.hardware.display.DisplayManager
 import android.os.IBinder
-import android.util.Log
 import android.view.Display
 import android.view.SurfaceControl
+import com.coloros16.liquidglass.log.Lg
 
 /**
  * [spec/82] display 抓屏源：**进程内静态 `ScreenCapture.captureDisplay` + OPPO display token**。
@@ -91,10 +91,10 @@ object DisplayRootChannel {
             val at = Class.forName("android.app.ActivityThread")
             val thread = at.getMethod("currentActivityThread").invoke(null)
             (at.getMethod("getSystemContext").invoke(thread) as? Context)?.also {
-                Log.i(TAG, "display-token: 用 ActivityThread.getSystemContext() 兜底")
+                Lg.i(TAG, "display-token: 用 ActivityThread.getSystemContext() 兜底")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "display-token: getSystemContext() 兜底失败", t)
+            Lg.e(TAG, "display-token: getSystemContext() 兜底失败", t)
             null
         }
     }
@@ -104,18 +104,18 @@ object DisplayRootChannel {
         return try {
             val c = resolveContext(ctx)
             if (c == null) {
-                Log.w(TAG, "display-token: 无可用 Context（systemUiContext 与 getSystemContext 皆空）")
+                Lg.w(TAG, "display-token: 无可用 Context（systemUiContext 与 getSystemContext 皆空）")
                 return null
             }
             val svc = c.getSystemService(Context.DISPLAY_SERVICE)
             val dm = svc as? DisplayManager
             if (dm == null) {
-                Log.w(TAG, "display-token: getSystemService(DISPLAY_SERVICE) -> ${svc?.javaClass?.name ?: "null"}")
+                Lg.w(TAG, "display-token: getSystemService(DISPLAY_SERVICE) -> ${svc?.javaClass?.name ?: "null"}")
                 return null
             }
             val display = dm.getDisplay(Display.DEFAULT_DISPLAY)
             if (display == null) {
-                Log.w(TAG, "display-token: getDisplay(DEFAULT_DISPLAY) 返回 null")
+                Lg.w(TAG, "display-token: getDisplay(DEFAULT_DISPLAY) 返回 null")
                 return null
             }
             // `Display.getAddress()` 与 `DisplayAddress.Physical.getPhysicalDisplayId()` 都是 @SystemApi
@@ -123,7 +123,7 @@ object DisplayRootChannel {
             val address = try {
                 display.javaClass.getMethod("getAddress").invoke(display)
             } catch (t: Throwable) {
-                Log.e(TAG, "display-token: Display.getAddress() 反射失败", t)
+                Lg.e(TAG, "display-token: Display.getAddress() 反射失败", t)
                 null
             }
             val physId = try {
@@ -132,7 +132,7 @@ object DisplayRootChannel {
                 null
             }
             if (physId == null) {
-                Log.w(TAG, "display-token: 非物理显示地址（address=$address），放弃")
+                Lg.w(TAG, "display-token: 非物理显示地址（address=$address），放弃")
                 return null
             }
             val cls = Class.forName(CLASS_OPLUS_DISPLAY_MANAGER)
@@ -140,14 +140,14 @@ object DisplayRootChannel {
             val token = cls.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType)
                 .invoke(instance, physId) as? IBinder
             if (token == null) {
-                Log.w(TAG, "display-token: getPhysicalDisplayToken 返回 null (physId=$physId)")
+                Lg.w(TAG, "display-token: getPhysicalDisplayToken 返回 null (physId=$physId)")
                 return null
             }
-            Log.i(TAG, "display-token: acquired physId=$physId")
+            Lg.i(TAG, "display-token: acquired physId=$physId")
             cachedToken = token
             token
         } catch (t: Throwable) {
-            Log.e(TAG, "display-token: 获取失败", t)
+            Lg.e(TAG, "display-token: 获取失败", t)
             null
         }
     }
@@ -200,7 +200,7 @@ object DisplayRootChannel {
             // 不打成功日志：本函数在抓屏热路径上（面板拖动期每秒数十次），由调用方按需节流记录。
             bitmap
         } catch (t: Throwable) {
-            Log.e(TAG, "display-token: captureDisplay 失败", t)
+            Lg.e(TAG, "display-token: captureDisplay 失败", t)
             null
         }
     }

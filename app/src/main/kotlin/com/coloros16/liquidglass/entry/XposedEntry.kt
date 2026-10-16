@@ -1,7 +1,6 @@
 package com.coloros16.liquidglass.entry
 
 import android.os.Build
-import android.util.Log
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.hook.BlurDrawHook
 import com.coloros16.liquidglass.hook.HostVersion
@@ -10,6 +9,8 @@ import com.coloros16.liquidglass.hook.LauncherHook
 import com.coloros16.liquidglass.hook.LauncherTiltHook
 import com.coloros16.liquidglass.hook.LockScreenClockHook
 import com.coloros16.liquidglass.hook.SceneFilter
+import com.coloros16.liquidglass.log.FileLog
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
@@ -34,8 +35,22 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 class XposedEntry : XposedModule() {
 
     override fun onModuleLoaded(param: io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam) {
+        // 先装文件日志门控，后面的日志才按「运行日志」开关入文件
+        installLogGate()
         // 模块注入完成（SystemUI 类尚未加载）。标记入口加载成功，便于真机确认模块生效。
-        Log.i(TAG, "module loaded, process=${param.processName}, isSystemServer=${param.isSystemServer()}")
+        Lg.i(TAG, "module loaded, process=${param.processName}, isSystemServer=${param.isSystemServer()}")
+    }
+
+    /** 文件日志门控：读框架侧「运行日志」开关（读失败按默认关处理）。 */
+    private fun installLogGate() {
+        val module = this
+        FileLog.installGateReader {
+            try {
+                Prefs.read(module).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+            } catch (t: Throwable) {
+                Prefs.DEFAULT_ENABLE_LOGS
+            }
+        }
     }
 
     // ⛔ [spec/82 已停用 2026-09-17] 曾在此实现 `onSystemServerStarting`，向 system_server 挂
@@ -66,11 +81,11 @@ class XposedEntry : XposedModule() {
      */
     override fun onHotReloading(param: HotReloadingParam): Boolean {
         // 注意：HotReloadingParam **不**继承 ModuleLoadedParam，只暴露 extras/savedState，拿不到 processName
-        Log.i(TAG, "hot-reload: approving (old-class callback)")
+        Lg.i(TAG, "hot-reload: approving (old-class callback)")
         try {
             BlurDrawHook.shutdownForHotReload()
         } catch (t: Throwable) {
-            Log.w(TAG, "hot-reload: shutdown step failed", t)
+            Lg.w(TAG, "hot-reload: shutdown step failed", t)
         }
         return true
     }
@@ -89,7 +104,7 @@ class XposedEntry : XposedModule() {
     override fun onHotReloaded(param: HotReloadedParam) {
         val pkg = param.processName
         if (pkg == null) {
-            Log.e(TAG, "hot-reload: null processName, keep old hooks")
+            Lg.e(TAG, "hot-reload: null processName, keep old hooks")
             return
         }
         if (pkg != PACKAGE_SYSTEMUI && pkg != PACKAGE_LAUNCHER) {
@@ -104,7 +119,7 @@ class XposedEntry : XposedModule() {
         }
         val cl = resolveClassLoader(pkg, param)
         if (cl == null) {
-            Log.e(TAG, "hot-reload: classLoader unresolved for $pkg, KEEP OLD HOOKS (no unhook)")
+            Lg.e(TAG, "hot-reload: classLoader unresolved for $pkg, KEEP OLD HOOKS (no unhook)")
             return
         }
         // 旧 hook → 新 hook 的交接（等价框架 default，再立即重装）
@@ -116,23 +131,25 @@ class XposedEntry : XposedModule() {
             } catch (t: Throwable) {
             }
         }
-        Log.i(TAG, "hot-reload: old hooks unhooked=$unhooked/$pkg, reinstalling into $pkg")
+        Lg.i(TAG, "hot-reload: old hooks unhooked=$unhooked/$pkg, reinstalling into $pkg")
         doInstall(pkg, cl)
-        Log.i(TAG, "hot-reload: reinstall done for $pkg, version=$MODULE_VERSION")
+        Lg.i(TAG, "hot-reload: reinstall done for $pkg, version=$MODULE_VERSION")
     }
 
     /** [doc/spec/110] 安装主入口（onPackageLoaded 与 onHotReloaded 共用同一套门槛与分发）。 */
     private fun doInstall(packageName: String, classLoader: ClassLoader) {
         // 模块默认全关（Prefs.masterEnabled=false 直接跳过，零侵入）。
         if (!Prefs.masterEnabled(this)) {
-            Log.d(TAG, "package loaded but master disabled, skip install")
+            Lg.d(TAG, "package loaded but master disabled, skip install")
             return
         }
+        // 热重载后新类静态为空，重装一次文件日志门控
+        installLogGate()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Log.w(TAG, "device SDK=${Build.VERSION.SDK_INT} < 29(Q), skip install")
+            Lg.w(TAG, "device SDK=${Build.VERSION.SDK_INT} < 29(Q), skip install")
             return
         }
-        Log.i(TAG, "installing hooks into $packageName")
+        Lg.i(TAG, "installing hooks into $packageName")
         when (packageName) {
             // SystemUI：Hook B 绘制替换 / Hook C 场景过滤（占位实现，保持现状）。
             // [2026-08-13 用户决定] BlurService 端全移除：模块不再干预 com.oplus.blur 进程，
@@ -140,7 +157,7 @@ class XposedEntry : XposedModule() {
             // [spec/116 P0] 只读 versionCode 打日志铺观测，不做门控（SystemUI 适配是后续阶段）。
             PACKAGE_SYSTEMUI -> {
                 val hostVer = HostVersion.hostVersionCode(PACKAGE_SYSTEMUI)
-                Log.i(TAG, "host version: pkg=$PACKAGE_SYSTEMUI versionCode=$hostVer (SystemUI no gating in P0)")
+                Lg.i(TAG, "host version: pkg=$PACKAGE_SYSTEMUI versionCode=$hostVer (SystemUI no gating in P0)")
                 installHooks(classLoader)
             }
             // [spec/10] Launcher：桌面文件夹背景液态玻璃化（闭合文件夹图标 + 打开文件夹卡片）。
@@ -151,11 +168,11 @@ class XposedEntry : XposedModule() {
             PACKAGE_LAUNCHER -> {
                 val hostVer = HostVersion.hostVersionCode(PACKAGE_LAUNCHER)
                 if (hostVer >= VERSION_LAUNCHER_17_3_12) {
-                    Log.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=17.3.12+: skip LauncherAnimHook (17.x fields obfuscated), tilt=native zuyqa path")
+                    Lg.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=17.3.12+: skip LauncherAnimHook (17.x fields obfuscated), tilt=native zuyqa path")
                     LauncherHook.install(this, classLoader)
                     LauncherTiltHook.installNativeZuyqa(this, classLoader)
                 } else {
-                    Log.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=<17.3.12 (or unknown -1): install all 3 hooks")
+                    Lg.i(TAG, "host version: pkg=$PACKAGE_LAUNCHER versionCode=$hostVer, branch=<17.3.12 (or unknown -1): install all 3 hooks")
                     LauncherHook.install(this, classLoader)
                     LauncherAnimHook.install(this, classLoader)
                     LauncherTiltHook.install(this, classLoader)

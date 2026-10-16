@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 分享入口暴露的目录：filesDir/logs/（日志文件所在） -->
+    <files-path
+        name="logs"
+        path="logs/" />
+</paths>

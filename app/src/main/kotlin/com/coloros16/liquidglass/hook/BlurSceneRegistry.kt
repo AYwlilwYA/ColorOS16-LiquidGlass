@@ -1,6 +1,6 @@
 package com.coloros16.liquidglass.hook
 
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 
@@ -69,14 +69,14 @@ object BlurSceneRegistry {
     fun register(drawable: Any, drawableId: Int, layerName: String?, params: Any? = null) {
         try {
             if (entries.size >= MAX_ENTRIES) {
-                Log.w(TAG, "registry: size=$MAX_ENTRIES reached, clear to prevent bloat")
+                Lg.w(TAG, "registry: size=$MAX_ENTRIES reached, clear to prevent bloat")
                 entries.clear()
             }
             entries[System.identityHashCode(drawable)] = SceneEntry(
                 WeakReference(drawable), drawableId, layerName, params
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "registry: register failed", t)
+            Lg.e(TAG, "registry: register failed", t)
         }
     }
 

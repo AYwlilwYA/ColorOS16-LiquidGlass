@@ -3,7 +3,7 @@ package com.coloros16.liquidglass.config
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.SystemClock
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.service.XposedService
 
@@ -569,7 +569,7 @@ object Prefs {
         val v = try {
             read(api).getBoolean(KEY_GLASS_ENABLE, DEFAULT_GLASS_ENABLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read glass_enable failed, default $DEFAULT_GLASS_ENABLE", t)
+            Lg.w(TAG, "prefs read glass_enable failed, default $DEFAULT_GLASS_ENABLE", t)
             DEFAULT_GLASS_ENABLE
         }
         glassEnableCache = v
@@ -606,12 +606,12 @@ object Prefs {
         val raw = try {
             read(api).getFloat(KEY_REFRACTION_HEIGHT_RATIO, DEFAULT_REFRACTION_HEIGHT_RATIO)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read refraction_height_ratio failed, default $DEFAULT_REFRACTION_HEIGHT_RATIO", t)
+            Lg.w(TAG, "prefs read refraction_height_ratio failed, default $DEFAULT_REFRACTION_HEIGHT_RATIO", t)
             DEFAULT_REFRACTION_HEIGHT_RATIO
         }
         val v = raw.coerceIn(REFRACTION_HEIGHT_RATIO_MIN, REFRACTION_HEIGHT_RATIO_MAX)
         if (v != raw) {
-            Log.w(TAG, "refraction_height_ratio=$raw out of range, clamp to $v")
+            Lg.w(TAG, "refraction_height_ratio=$raw out of range, clamp to $v")
         }
         refractionRatioCache = v
         return v
@@ -644,11 +644,11 @@ object Prefs {
         val raw = try {
             readIntCompat(read(api), KEY_REFRACTION_HEIGHT_MODE, DEFAULT_REFRACTION_HEIGHT_MODE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read refraction_height_mode failed, default $DEFAULT_REFRACTION_HEIGHT_MODE", t)
+            Lg.w(TAG, "prefs read refraction_height_mode failed, default $DEFAULT_REFRACTION_HEIGHT_MODE", t)
             DEFAULT_REFRACTION_HEIGHT_MODE
         }
         val v = if (raw == REFRACTION_HEIGHT_MODE_ABS) REFRACTION_HEIGHT_MODE_ABS else REFRACTION_HEIGHT_MODE_RATIO
-        if (v != raw) Log.w(TAG, "refraction_height_mode=$raw unknown, fallback to $v")
+        if (v != raw) Lg.w(TAG, "refraction_height_mode=$raw unknown, fallback to $v")
         refractionModeCache = v
         return v
     }
@@ -665,11 +665,11 @@ object Prefs {
         val raw = try {
             read(api).getFloat(KEY_REFRACTION_HEIGHT_PX, DEFAULT_REFRACTION_HEIGHT_PX)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read refraction_height_px failed, default $DEFAULT_REFRACTION_HEIGHT_PX", t)
+            Lg.w(TAG, "prefs read refraction_height_px failed, default $DEFAULT_REFRACTION_HEIGHT_PX", t)
             DEFAULT_REFRACTION_HEIGHT_PX
         }
         val v = raw.coerceIn(REFRACTION_HEIGHT_PX_MIN, REFRACTION_HEIGHT_PX_MAX)
-        if (v != raw) Log.w(TAG, "refraction_height_px=$raw out of range, clamp to $v")
+        if (v != raw) Lg.w(TAG, "refraction_height_px=$raw out of range, clamp to $v")
         refractionAbsPxCache = v
         return v
     }
@@ -775,7 +775,7 @@ object Prefs {
         val v = try {
             read(api).getBoolean(KEY_UNIFIED_CORNER_ENABLE, DEFAULT_UNIFIED_CORNER_ENABLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read unified_corner_enable failed, default $DEFAULT_UNIFIED_CORNER_ENABLE", t)
+            Lg.w(TAG, "prefs read unified_corner_enable failed, default $DEFAULT_UNIFIED_CORNER_ENABLE", t)
             DEFAULT_UNIFIED_CORNER_ENABLE
         }
         unifiedCornerEnableCache = v
@@ -794,11 +794,11 @@ object Prefs {
         val raw = try {
             read(api).getFloat(KEY_UNIFIED_CORNER_PX, DEFAULT_UNIFIED_CORNER_PX)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read unified_corner_px failed, default $DEFAULT_UNIFIED_CORNER_PX", t)
+            Lg.w(TAG, "prefs read unified_corner_px failed, default $DEFAULT_UNIFIED_CORNER_PX", t)
             DEFAULT_UNIFIED_CORNER_PX
         }
         val v = raw.coerceIn(UNIFIED_CORNER_PX_MIN, UNIFIED_CORNER_PX_MAX)
-        if (v != raw) Log.w(TAG, "unified_corner_px=$raw out of range, clamp to $v")
+        if (v != raw) Lg.w(TAG, "unified_corner_px=$raw out of range, clamp to $v")
         unifiedCornerPxCache = v
         return v
     }
@@ -858,7 +858,7 @@ object Prefs {
         val v = try {
             read(api).getBoolean(KEY_NOTIF_TILT_ENABLE, DEFAULT_NOTIF_TILT_ENABLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read notif_tilt_enable failed, default $DEFAULT_NOTIF_TILT_ENABLE", t)
+            Lg.w(TAG, "prefs read notif_tilt_enable failed, default $DEFAULT_NOTIF_TILT_ENABLE", t)
             DEFAULT_NOTIF_TILT_ENABLE
         }
         notifTiltEnableCache = v
@@ -877,11 +877,11 @@ object Prefs {
         val raw = try {
             readIntCompat(read(api), KEY_NOTIF_TILT_DEG, DEFAULT_NOTIF_TILT_DEG)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read notif_tilt_deg failed, default $DEFAULT_NOTIF_TILT_DEG", t)
+            Lg.w(TAG, "prefs read notif_tilt_deg failed, default $DEFAULT_NOTIF_TILT_DEG", t)
             DEFAULT_NOTIF_TILT_DEG
         }
         val v = raw.coerceIn(0, NOTIF_TILT_DEG_MAX)
-        if (v != raw) Log.w(TAG, "notif_tilt_deg=$raw out of range, clamp to $v")
+        if (v != raw) Lg.w(TAG, "notif_tilt_deg=$raw out of range, clamp to $v")
         notifTiltDegCache = v
         return v
     }
@@ -901,7 +901,7 @@ object Prefs {
         val raw = try {
             readIntCompat(read(api), KEY_NOTIF_FLY_SCALE, DEFAULT_NOTIF_FLY_SCALE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read notif_fly_scale failed, default $DEFAULT_NOTIF_FLY_SCALE", t)
+            Lg.w(TAG, "prefs read notif_fly_scale failed, default $DEFAULT_NOTIF_FLY_SCALE", t)
             DEFAULT_NOTIF_FLY_SCALE
         }
         val v = raw.coerceIn(0, 80)

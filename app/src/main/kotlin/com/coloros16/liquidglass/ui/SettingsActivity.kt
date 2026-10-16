@@ -21,7 +21,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.AttributeSet
-import android.util.Log
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.AdapterView
@@ -37,12 +36,14 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
+import com.coloros16.liquidglass.log.Lg
 import com.coloros16.liquidglass.update.UpdateChecker
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -50,6 +51,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import io.github.libxposed.service.XposedService
 import org.json.JSONObject
+import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -194,7 +196,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun appVersionName(): String? = try {
         packageManager.getPackageInfo(packageName, 0).versionName
     } catch (t: Throwable) {
-        Log.w(TAG, "read versionName failed", t)
+        Lg.w(TAG, "read versionName failed", t)
         null
     }
 
@@ -213,7 +215,7 @@ class SettingsActivity : AppCompatActivity() {
                 try {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
                 } catch (t: Throwable) {
-                    Log.w(TAG, "open update url failed: $target", t)
+                    Lg.w(TAG, "open update url failed: $target", t)
                     Toast.makeText(this, R.string.update_dialog_open_failed, Toast.LENGTH_SHORT).show()
                 }
             }
@@ -295,12 +297,12 @@ class SettingsActivity : AppCompatActivity() {
         if (need != appliedSpacerHeight) {
             spacerAdjustCount++
             if (spacerAdjustCount > MAX_SPACER_ADJUST) {
-                Log.e(TAG, "toolbar inset settle failed, keep spacer=$appliedSpacerHeight (baseTop=$baseTop insetTop=$insetTop)")
+                Lg.e(TAG, "toolbar inset settle failed, keep spacer=$appliedSpacerHeight (baseTop=$baseTop insetTop=$insetTop)")
                 return
             }
             appliedSpacerHeight = need
             toolbarTopSpacer.layoutParams = toolbarTopSpacer.layoutParams.apply { height = need }
-            Log.i(TAG, "toolbar inset adjust #$spacerAdjustCount: baseTop=$baseTop insetTop=$insetTop -> spacer=$need")
+            Lg.i(TAG, "toolbar inset adjust #$spacerAdjustCount: baseTop=$baseTop insetTop=$insetTop -> spacer=$need")
         }
         logInset(baseTop, need)
     }
@@ -323,7 +325,7 @@ class SettingsActivity : AppCompatActivity() {
         val padB = (insetBottom - gapBottom).coerceAtLeast(0)
         if (padL != content.paddingLeft || padR != content.paddingRight || padB != content.paddingBottom) {
             content.setPadding(padL, 0, padR, padB)
-            Log.i(
+            Lg.i(
                 TAG,
                 "content inset: inset=${insetLeft},${insetTop},${insetRight},${insetBottom} " +
                     "gap(L/R/B)=$gapLeft/$gapRight/$gapBottom -> pad(L/R/B)=$padL/$padR/$padB"
@@ -336,7 +338,7 @@ class SettingsActivity : AppCompatActivity() {
         val msg = "toolbar inset: insetTop=$insetTop baseTop=$baseTop spacer=$need applied=$appliedSpacerHeight"
         if (msg != lastInsetLog) {
             lastInsetLog = msg
-            Log.i(TAG, msg)
+            Lg.i(TAG, msg)
         }
     }
 
@@ -1143,6 +1145,28 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchLogs.setOnCheckedChangeListener(logsListener)
         refreshBooleanSwitch(switchLogs, logsListener, Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+        // 分享日志文件（经 FileProvider 换 content uri，交给系统分享面板）
+        view.findViewById<View>(R.id.shareLogRow).setOnClickListener { shareLogFile() }
+    }
+
+    /** 分享 lg.log；没有日志时提示先开「运行日志」并下拉一次通知栏。 */
+    private fun shareLogFile() {
+        val file = File(filesDir, "logs/lg.log")
+        if (!file.exists() || file.length() == 0L) {
+            Toast.makeText(this, R.string.settings_share_log_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(send, getString(R.string.settings_share_log)))
+        } catch (t: Throwable) {
+            Toast.makeText(this, getString(R.string.settings_share_log_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 关于：TG/GitHub 完整网址点击跳转浏览器，QQ/开发者点击复制。 */
@@ -1201,7 +1225,7 @@ class SettingsActivity : AppCompatActivity() {
                     Toast.makeText(this, getString(R.string.config_export_done, count), Toast.LENGTH_SHORT).show()
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "export config failed", t)
+                Lg.w(TAG, "export config failed", t)
                 runOnUiThread {
                     Toast.makeText(this, getString(R.string.config_export_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
                 }
@@ -1246,7 +1270,7 @@ class SettingsActivity : AppCompatActivity() {
                         .show()
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "import config parse failed", t)
+                Lg.w(TAG, "import config parse failed", t)
                 runOnUiThread {
                     Toast.makeText(this, getString(R.string.config_import_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
                 }
@@ -1275,7 +1299,7 @@ class SettingsActivity : AppCompatActivity() {
             bindCurrentPage()
             Toast.makeText(this, getString(R.string.config_import_done, count), Toast.LENGTH_SHORT).show()
         } catch (t: Throwable) {
-            Log.w(TAG, "import config apply failed", t)
+            Lg.w(TAG, "import config apply failed", t)
             Toast.makeText(this, getString(R.string.config_import_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
         }
     }
@@ -1287,7 +1311,7 @@ class SettingsActivity : AppCompatActivity() {
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/c16lg666")))
             } catch (t: Throwable) {
-                Log.w(TAG, "about open tg failed, fallback copy", t)
+                Lg.w(TAG, "about open tg failed, fallback copy", t)
                 bindCopyRow(tgRow, getString(R.string.about_tg))
             }
         }
@@ -1299,7 +1323,7 @@ class SettingsActivity : AppCompatActivity() {
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AYwlilwYA/ColorOS16-LiquidGlass")))
             } catch (t: Throwable) {
-                Log.w(TAG, "about open github failed, fallback copy", t)
+                Lg.w(TAG, "about open github failed, fallback copy", t)
                 bindCopyRow(githubRow, getString(R.string.about_github))
             }
         }
@@ -1313,7 +1337,7 @@ class SettingsActivity : AppCompatActivity() {
                 cm.setPrimaryClip(ClipData.newPlainText("about", text))
                 Toast.makeText(this, getString(R.string.about_copy_hint), Toast.LENGTH_SHORT).show()
             } catch (t: Throwable) {
-                Log.w(TAG, "about copy failed", t)
+                Lg.w(TAG, "about copy failed", t)
             }
         }
     }
@@ -1340,16 +1364,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun writeMasterEnabled(checked: Boolean) {
         val framework = frameworkPrefs()
         if (framework != null) {
-            Log.i(TAG, "write master_enabled=$checked -> framework prefs")
+            Lg.i(TAG, "write master_enabled=$checked -> framework prefs")
             framework.edit().putBoolean(Prefs.KEY_MASTER, checked).apply()
             return
         }
-        Log.w(TAG, "framework service not ready yet, queue write master_enabled=$checked")
+        Lg.w(TAG, "framework service not ready yet, queue write master_enabled=$checked")
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
                     App.removeServiceStateListener(this)
-                    Log.i(TAG, "queued write master_enabled=$checked -> framework prefs")
+                    Lg.i(TAG, "queued write master_enabled=$checked -> framework prefs")
                     Prefs.remote(service).edit().putBoolean(Prefs.KEY_MASTER, checked).apply()
                 }
             }
@@ -1375,16 +1399,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun writePrefBoolean(key: String, value: Boolean) {
         val framework = frameworkPrefs()
         if (framework != null) {
-            Log.i(TAG, "write $key=$value -> framework prefs")
+            Lg.i(TAG, "write $key=$value -> framework prefs")
             framework.edit().putBoolean(key, value).apply()
             return
         }
-        Log.w(TAG, "framework service not ready yet, queue write $key=$value")
+        Lg.w(TAG, "framework service not ready yet, queue write $key=$value")
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
                     App.removeServiceStateListener(this)
-                    Log.i(TAG, "queued write $key=$value -> framework prefs")
+                    Lg.i(TAG, "queued write $key=$value -> framework prefs")
                     Prefs.remote(service).edit().putBoolean(key, value).apply()
                 }
             }
@@ -1398,16 +1422,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun writePrefString(key: String, value: String) {
         val framework = frameworkPrefs()
         if (framework != null) {
-            Log.i(TAG, "write $key=$value -> framework prefs")
+            Lg.i(TAG, "write $key=$value -> framework prefs")
             framework.edit().putString(key, value).apply()
             return
         }
-        Log.w(TAG, "framework service not ready yet, queue write $key=$value")
+        Lg.w(TAG, "framework service not ready yet, queue write $key=$value")
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
                     App.removeServiceStateListener(this)
-                    Log.i(TAG, "queued write $key=$value -> framework prefs")
+                    Lg.i(TAG, "queued write $key=$value -> framework prefs")
                     Prefs.remote(service).edit().putString(key, value).apply()
                 }
             }
@@ -1458,16 +1482,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun writePrefFloat(key: String, value: Float) {
         val framework = frameworkPrefs()
         if (framework != null) {
-            Log.i(TAG, "write $key=$value -> framework prefs")
+            Lg.i(TAG, "write $key=$value -> framework prefs")
             framework.edit().putFloat(key, value).apply()
             return
         }
-        Log.w(TAG, "framework service not ready yet, queue write $key=$value")
+        Lg.w(TAG, "framework service not ready yet, queue write $key=$value")
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
                     App.removeServiceStateListener(this)
-                    Log.i(TAG, "queued write $key=$value -> framework prefs")
+                    Lg.i(TAG, "queued write $key=$value -> framework prefs")
                     Prefs.remote(service).edit().putFloat(key, value).apply()
                 }
             }
@@ -1569,16 +1593,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun writePrefInt(key: String, value: Int) {
         val framework = frameworkPrefs()
         if (framework != null) {
-            Log.i(TAG, "write $key=$value -> framework prefs")
+            Lg.i(TAG, "write $key=$value -> framework prefs")
             framework.edit().putInt(key, value).apply()
             return
         }
-        Log.w(TAG, "framework service not ready yet, queue write $key=$value")
+        Lg.w(TAG, "framework service not ready yet, queue write $key=$value")
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
                     App.removeServiceStateListener(this)
-                    Log.i(TAG, "queued write $key=$value -> framework prefs")
+                    Lg.i(TAG, "queued write $key=$value -> framework prefs")
                     Prefs.remote(service).edit().putInt(key, value).apply()
                 }
             }
@@ -1825,7 +1849,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
             )
         } catch (t: Throwable) {
             shaderBroken = true
-            Log.e(TAG, "preview setUniforms failed, fallback", t)
+            Lg.e(TAG, "preview setUniforms failed, fallback", t)
             drawFallback(canvas, pad, cw, ch)
             return
         }
@@ -1860,7 +1884,7 @@ class LiquidGlassPreviewView @JvmOverloads constructor(
             LiquidGlassShader.create().also { shader = it }
         } catch (t: Throwable) {
             shaderBroken = true
-            Log.e(TAG, "preview AGSL compile failed", t)
+            Lg.e(TAG, "preview AGSL compile failed", t)
             null
         }
     }

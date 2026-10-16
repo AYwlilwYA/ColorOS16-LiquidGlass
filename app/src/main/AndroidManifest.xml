@@ -23,6 +23,12 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 日志通道要识别 SystemUI / 桌面这两个调用方（包可见性声明） -->
+    <queries>
+        <package android:name="com.android.systemui" />
+        <package android:name="com.android.launcher" />
+    </queries>
+
     <application
         android:name=".App"
         android:label="@string/app_name"
@@ -43,6 +49,23 @@
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
+
+        <!-- 日志文件写入通道：hook 进程把日志写进模块数据目录（LogProvider 内部校验调用方） -->
+        <provider
+            android:name=".log.LogProvider"
+            android:authorities="${applicationId}.lgfile"
+            android:exported="true" />
+
+        <!-- 日志文件分享通道：设置页「分享日志」把 lg.log 变成可分享的 content uri -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

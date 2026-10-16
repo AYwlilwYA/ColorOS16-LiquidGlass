@@ -16,7 +16,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
-import android.util.Log
 import android.view.Choreographer
 import android.view.SurfaceControl
 import android.view.View
@@ -24,6 +23,7 @@ import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -428,7 +428,7 @@ object LauncherHook {
                     applyWallpaperZoom(scale)
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "wallpaper zoom: tick failed", t)
+                Lg.e(TAG, "wallpaper zoom: tick failed", t)
                 zoomAnimRunning = false
             }
         }
@@ -455,7 +455,7 @@ object LauncherHook {
             false
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Log.w(TAG, "LauncherHook skipped: SDK=${Build.VERSION.SDK_INT} < Q")
+            Lg.w(TAG, "LauncherHook skipped: SDK=${Build.VERSION.SDK_INT} < Q")
             return
         }
         resolveMethods(classLoader)
@@ -471,7 +471,7 @@ object LauncherHook {
         mountWallpaperZoomCommand(api, classLoader)
         // [spec/85 补接] 省电模式广播（开 → 即刻门控 + 重录宿主；关 → 下一帧恢复玻璃）
         registerPowerSaveBroadcastReceiver()
-        Log.i(TAG, "LauncherHook install done")
+        Lg.i(TAG, "LauncherHook install done")
     }
 
     private fun mainHandler(): android.os.Handler {
@@ -489,7 +489,7 @@ object LauncherHook {
         if (base != null) {
             resolveBaseDrawableMembers(base, classLoader)
         } else {
-            Log.e(TAG, "LauncherHook resolve BaseDrawable class failed, drawBlurShader replace disabled")
+            Lg.e(TAG, "LauncherHook resolve BaseDrawable class failed, drawBlurShader replace disabled")
         }
         // 闭合文件夹图标映射反射（失败只禁文件夹图标映射）
         try {
@@ -500,40 +500,40 @@ object LauncherHook {
             val layer = Class.forName(CLASS_LAYER_BLUR_DRAWABLE, false, classLoader)
             mLayerCls = layer
             mLayerBlurInnerField = layer.getDeclaredField(FIELD_MBLUR_DRAWABLE).apply { isAccessible = true }
-            Log.i(TAG, "LauncherHook resolved OplusPreviewBackground/LayerBlurDrawable fields (folder icon map)")
+            Lg.i(TAG, "LauncherHook resolved OplusPreviewBackground/LayerBlurDrawable fields (folder icon map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook resolve folder icon fields failed, folder icon map disabled", t)
+            Lg.e(TAG, "LauncherHook resolve folder icon fields failed, folder icon map disabled", t)
         }
         // 闭合文件夹图标常态映射反射（FolderRoundImageView.onDraw → imageDrawable → 内层 BlurDrawable）
         try {
             val friv = Class.forName(CLASS_FOLDER_ROUND_IMAGE_VIEW, false, classLoader)
             mGetFrivRadius = friv.getMethod(METHOD_GET_M_RADIUS)
-            Log.i(TAG, "LauncherHook resolved FolderRoundImageView.getMRadius (folder icon normal-state map)")
+            Lg.i(TAG, "LauncherHook resolved FolderRoundImageView.getMRadius (folder icon normal-state map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook resolve FolderRoundImageView failed, folder icon map uses fallback radius", t)
+            Lg.e(TAG, "LauncherHook resolve FolderRoundImageView failed, folder icon map uses fallback radius", t)
         }
         // [doc/spec/66] Dock 借壳反射：createBlurDrawable 在 17.3.12 不存在（BlurProperties 新体系），
         // 与 mShortcutsAndWidgetsField 拆开解析，字段仍可用于 onDraw 映射
         try {
             val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
             mShortcutsAndWidgetsField = findFieldAlongHierarchy(hotseat, FIELD_SHORTCUTS_AND_WIDGETS)
-            Log.i(TAG, "LauncherHook resolved OplusHotseat.mShortcutsAndWidgets (dock map)")
+            Lg.i(TAG, "LauncherHook resolved OplusHotseat.mShortcutsAndWidgets (dock map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook resolve OplusHotseat.mShortcutsAndWidgets failed, dock map disabled", t)
+            Lg.e(TAG, "LauncherHook resolve OplusHotseat.mShortcutsAndWidgets failed, dock map disabled", t)
         }
         try {
             val hotseat = Class.forName(CLASS_OPLUS_HOTSEAT, false, classLoader)
             mCreateBlurDrawable = hotseat.getDeclaredMethod(METHOD_CREATE_BLUR_DRAWABLE)
                 .apply { isAccessible = true }
-            Log.i(TAG, "LauncherHook resolved OplusHotseat.createBlurDrawable (dock glass)")
+            Lg.i(TAG, "LauncherHook resolved OplusHotseat.createBlurDrawable (dock glass)")
         } catch (t: Throwable) {
             if (isLauncher17Plus()) {
-                Log.i(
+                Lg.i(
                     TAG_FINGERPRINT,
                     "launcher-glass: OplusHotseat.createBlurDrawable missing on 17.x (BlurProperties path), dock shell-borrow disabled",
                 )
             } else {
-                Log.e(TAG, "LauncherHook resolve OplusHotseat.createBlurDrawable failed, dock glass disabled", t)
+                Lg.e(TAG, "LauncherHook resolve OplusHotseat.createBlurDrawable failed, dock glass disabled", t)
             }
             mCreateBlurDrawable = null
         }
@@ -548,16 +548,16 @@ object LauncherHook {
             val c = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
             mBaseDrawableCls = c
             mBaseDrawableFp = "old-name"
-            Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ old-name ($CLASS_BASE_DRAWABLE)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: resolved @ old-name ($CLASS_BASE_DRAWABLE)")
             return c
         } catch (_: ClassNotFoundException) {
-            Log.i(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name miss, try fingerprint")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name miss, try fingerprint")
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name load error", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: BaseDrawable old-name load error", t)
         }
         // ② 指纹探针仅在 ≥17.3.12 启用（版本未知/-1 不探，防误判）
         if (!isLauncher17Plus()) {
-            Log.w(
+            Lg.w(
                 TAG_FINGERPRINT,
                 "launcher-glass: BaseDrawable unresolved and host <17.3.12 (or version unknown), skip fingerprint probe",
             )
@@ -574,13 +574,13 @@ object LauncherHook {
             if (outer != null && isBaseDrawableFingerprint(outer)) {
                 mBaseDrawableCls = outer
                 mBaseDrawableFp = "probe-inner"
-                Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-inner (${outer.name} via $PROBE_BASE_DRAWABLE_INNER)")
+                Lg.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-inner (${outer.name} via $PROBE_BASE_DRAWABLE_INNER)")
                 return outer
             }
         } catch (_: ClassNotFoundException) {
-            Log.i(TAG_FINGERPRINT, "launcher-glass: probe-inner miss, try probe-scan")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: probe-inner miss, try probe-scan")
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: probe-inner failed", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: probe-inner failed", t)
         }
         // 探针2：drawable 包单字母有限枚举，找「extends Drawable + 持有 DrawableShader 字段 + Paint 字段」
         for (ch in PROBE_SCAN_LETTERS) {
@@ -590,7 +590,7 @@ object LauncherHook {
                 if (isBaseDrawableFingerprint(c)) {
                     mBaseDrawableCls = c
                     mBaseDrawableFp = "probe-scan"
-                    Log.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-scan ($name)")
+                    Lg.i(TAG_FINGERPRINT, "launcher-glass: resolved @ probe-scan ($name)")
                     return c
                 }
             } catch (_: ClassNotFoundException) {
@@ -599,7 +599,7 @@ object LauncherHook {
                 continue
             }
         }
-        Log.e(TAG_FINGERPRINT, "launcher-glass: BaseDrawable fingerprint resolve failed (all probes miss)")
+        Lg.e(TAG_FINGERPRINT, "launcher-glass: BaseDrawable fingerprint resolve failed (all probes miss)")
         return null
     }
 
@@ -626,53 +626,53 @@ object LauncherHook {
         // getBlurShaderPaint：旧方法 → 17.x 字段 M
         try {
             mGetBlurShaderPaint = base.getMethod(METHOD_GET_BLUR_SHADER_PAINT)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ method (old-name)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ method (old-name)")
         } catch (_: NoSuchMethodException) {
             try {
                 mBlurShaderPaintField = base.getDeclaredField(FIELD_BLUR_SHADER_PAINT_17)
-                Log.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ field $FIELD_BLUR_SHADER_PAINT_17 (17.3.12)")
+                Lg.i(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint @ field $FIELD_BLUR_SHADER_PAINT_17 (17.3.12)")
             } catch (t: Throwable) {
-                Log.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint unresolved (no method, no field $FIELD_BLUR_SHADER_PAINT_17)", t)
+                Lg.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint unresolved (no method, no field $FIELD_BLUR_SHADER_PAINT_17)", t)
             }
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint resolve error", t)
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: getBlurShaderPaint resolve error", t)
         }
         // getPaint：旧方法 → 17.x 字段 f28547f（当前渲染链未消费，兼容预留）
         try {
             mGetPaint = base.getMethod(METHOD_GET_PAINT)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ method (old-name)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ method (old-name)")
         } catch (_: NoSuchMethodException) {
             try {
                 mPaintField = base.getDeclaredField(FIELD_PAINT_17)
-                Log.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ field $FIELD_PAINT_17 (17.3.12)")
+                Lg.i(TAG_FINGERPRINT, "launcher-glass: getPaint @ field $FIELD_PAINT_17 (17.3.12)")
             } catch (t: Throwable) {
-                Log.w(TAG_FINGERPRINT, "launcher-glass: getPaint unresolved (no method, no field $FIELD_PAINT_17)", t)
+                Lg.w(TAG_FINGERPRINT, "launcher-glass: getPaint unresolved (no method, no field $FIELD_PAINT_17)", t)
             }
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: getPaint resolve error", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: getPaint resolve error", t)
         }
         // getBounds：继承 framework Drawable，旧名/17.x 均可用
         try {
             mGetBounds = base.getMethod(METHOD_GET_BOUNDS)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: getBounds @ method (inherited)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: getBounds @ method (inherited)")
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: getBounds unresolved", t)
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: getBounds unresolved", t)
         }
         // drawBlurShader：17.x 不存在独立方法 → 标记内联路径（mount 阶段挂 static a(d)）
         try {
             base.getDeclaredMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: drawBlurShader @ method (old-name)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: drawBlurShader @ method (old-name)")
         } catch (_: NoSuchMethodException) {
             if (isLauncher17Plus()) {
                 mInlineRecordMethod = resolveInlineRecordMethod(base)
-                Log.i(
+                Lg.i(
                     TAG_FINGERPRINT,
                     "launcher-glass: drawBlurShader @ inline " +
                         (mInlineRecordMethod?.let { "${it.declaringClass.name}#${it.name}(d)" } ?: "UNRESOLVED"),
                 )
             }
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: drawBlurShader resolve error", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: drawBlurShader resolve error", t)
         }
         // 路径 A 自录所需字段（仅 17.3.12；16.x 不解析不触发）
         if (isLauncher17Plus() && mInlineRecordMethod != null) {
@@ -681,13 +681,13 @@ object LauncherHook {
                 mDrawablePathField = base.getDeclaredField(FIELD_DRAWABLE_PATH_17)
                 mPaintAlphaField = base.getDeclaredField(FIELD_PAINT_ALPHA_17)
                 mEnableBlurShaderField = base.getDeclaredField(FIELD_ENABLE_BLUR_SHADER_17)
-                Log.i(
+                Lg.i(
                     TAG_FINGERPRINT,
                     "launcher-glass: inline record fields @ $FIELD_RENDER_NODE_17/$FIELD_DRAWABLE_PATH_17/" +
                         "$FIELD_PAINT_ALPHA_17/$FIELD_ENABLE_BLUR_SHADER_17",
                 )
             } catch (t: Throwable) {
-                Log.e(TAG_FINGERPRINT, "launcher-glass: inline record fields unresolved, path A disabled", t)
+                Lg.e(TAG_FINGERPRINT, "launcher-glass: inline record fields unresolved, path A disabled", t)
                 mInlineRecordMethod = null
             }
         }
@@ -717,7 +717,7 @@ object LauncherHook {
         try {
             val old = Class.forName("com.oplus.posteffect.CornerType", false, classLoader)
             mCornerTypeConic = old.getField("CONIC").get(null)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field CONIC (old-name)")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field CONIC (old-name)")
         } catch (_: ClassNotFoundException) {
             try {
                 val ct17 = Class.forName(CLASS_CORNER_TYPE_17, false, classLoader)
@@ -727,34 +727,34 @@ object LauncherHook {
                 }
                 if (conic != null) {
                     mCornerTypeConic = conic
-                    Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ values()[2] ($CLASS_CORNER_TYPE_17)")
+                    Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ values()[2] ($CLASS_CORNER_TYPE_17)")
                 } else {
                     try {
                         mCornerTypeConic = ct17.getField("f28674c").get(null)
-                        Log.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field f28674c ($CLASS_CORNER_TYPE_17)")
+                        Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC @ field f28674c ($CLASS_CORNER_TYPE_17)")
                     } catch (t: Throwable) {
-                        Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC unresolved on 17.3.12", t)
+                        Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerType.CONIC unresolved on 17.3.12", t)
                     }
                 }
             } catch (t2: Throwable) {
-                Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType unresolved (old miss,17.x miss)", t2)
+                Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerType unresolved (old miss,17.x miss)", t2)
             }
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: CornerType old-name CONIC field failed", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerType old-name CONIC field failed", t)
         }
         // CornerParams 类：旧 FQCN → zn.c（仅确认类在，无 getter 可反射）
         try {
             Class.forName("com.oplus.posteffect.CornerParams", false, classLoader)
-            Log.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ old-name")
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ old-name")
         } catch (_: ClassNotFoundException) {
             try {
                 Class.forName(CLASS_CORNER_PARAMS_17, false, classLoader)
-                Log.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ $CLASS_CORNER_PARAMS_17 (17.3.12)")
+                Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ $CLASS_CORNER_PARAMS_17 (17.3.12)")
             } catch (t: Throwable) {
-                Log.w(TAG_FINGERPRINT, "launcher-glass: CornerParams unresolved (old miss,17.x miss)", t)
+                Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerParams unresolved (old miss,17.x miss)", t)
             }
         } catch (t: Throwable) {
-            Log.w(TAG_FINGERPRINT, "launcher-glass: CornerParams old-name load error", t)
+            Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerParams old-name load error", t)
         }
     }
 
@@ -764,7 +764,7 @@ object LauncherHook {
         val ver = HostVersion.hostVersionCode("com.android.launcher")
         val v = ver >= VERSION_LAUNCHER_17_3_12
         launcherVer17Plus = v
-        Log.i(TAG_FINGERPRINT, "launcher-glass: host versionCode=$ver,17.3.12+=$v")
+        Lg.i(TAG_FINGERPRINT, "launcher-glass: host versionCode=$ver,17.3.12+=$v")
         return v
     }
 
@@ -798,12 +798,12 @@ object LauncherHook {
         } catch (_: NoSuchMethodException) {
             null
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook drawBlurShader old-name lookup error", t)
+            Lg.e(TAG, "LauncherHook drawBlurShader old-name lookup error", t)
             null
         }
         if (oldMethod != null) {
             if (mGetBlurShaderPaint == null && mBlurShaderPaintField == null) {
-                Log.w(TAG, "LauncherHook BaseDrawable paint unresolved, drawBlurShader replace disabled")
+                Lg.w(TAG, "LauncherHook BaseDrawable paint unresolved, drawBlurShader replace disabled")
                 return
             }
             try {
@@ -813,20 +813,20 @@ object LauncherHook {
                         val drawable = try {
                             chain.getThisObject()
                         } catch (t: Throwable) {
-                            Log.e(TAG, "launcher drawBlurShader: getThisObject failed", t); null
+                            Lg.e(TAG, "launcher drawBlurShader: getThisObject failed", t); null
                         }
                         if (drawable != null) {
                             try {
                                 replaceShaderIfPossible(drawable)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "launcher render: drawBlurShader intercept error", t)
+                                Lg.e(TAG, "launcher render: drawBlurShader intercept error", t)
                             }
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "LauncherHook mounted: ${oldMethod.declaringClass.name}#$METHOD_DRAW_BLUR_SHADER(Canvas)")
+                Lg.i(TAG, "LauncherHook mounted: ${oldMethod.declaringClass.name}#$METHOD_DRAW_BLUR_SHADER(Canvas)")
             } catch (t: Throwable) {
-                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
+                Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
             }
             return
         }
@@ -843,14 +843,14 @@ object LauncherHook {
         val method = mInlineRecordMethod
         if (method == null) {
             if (isLauncher17Plus()) {
-                Log.e(TAG_FINGERPRINT, "launcher-glass: P1 主链未启用（inline a(d) 未解析），回退系统模糊")
+                Lg.e(TAG_FINGERPRINT, "launcher-glass: P1 主链未启用（inline a(d) 未解析），回退系统模糊")
             }
             return
         }
         if (mBlurShaderPaintField == null || mRenderNodeField == null ||
             mDrawablePathField == null || mPaintAlphaField == null
         ) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: path A fields incomplete, inline hook disabled")
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: path A fields incomplete, inline hook disabled")
             return
         }
         try {
@@ -860,25 +860,25 @@ object LauncherHook {
                     val drawable = try {
                         chain.getArgs()?.getOrNull(0)
                     } catch (t: Throwable) {
-                        Log.e(TAG_FINGERPRINT, "launcher-glass: inline getArgs failed", t); null
+                        Lg.e(TAG_FINGERPRINT, "launcher-glass: inline getArgs failed", t); null
                     }
                     var handled = false
                     if (drawable != null) {
                         handled = try {
                             recordGlassInline(drawable)
                         } catch (t: Throwable) {
-                            Log.e(TAG_FINGERPRINT, "launcher-glass: inline record error, fallback proceed", t)
+                            Lg.e(TAG_FINGERPRINT, "launcher-glass: inline record error, fallback proceed", t)
                             false
                         }
                     }
                     if (!handled) chain.proceed()
                 }
-            Log.i(
+            Lg.i(
                 TAG_FINGERPRINT,
                 "launcher-glass: mounted path A ${method.declaringClass.name}#${method.name}(d) (inline record + skip proceed)",
             )
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: path A mount FAILED, system blur fallback", t)
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: path A mount FAILED, system blur fallback", t)
         }
     }
 
@@ -900,12 +900,12 @@ object LauncherHook {
         val rn = try {
             mRenderNodeField?.get(drawable) as? RenderNode
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: read renderNode failed", t); null
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: read renderNode failed", t); null
         } ?: return false
         val path = try {
             mDrawablePathField?.get(drawable) as? Path
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: read drawablePath failed", t); null
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: read drawablePath failed", t); null
         } ?: return false
         // 等价旧 drawBlurShader 的 setAlpha(paintAlpha)
         try {
@@ -916,7 +916,7 @@ object LauncherHook {
         val canvas = try {
             rn.beginRecording()
         } catch (t: Throwable) {
-            Log.e(TAG_FINGERPRINT, "launcher-glass: beginRecording failed, fallback proceed", t); null
+            Lg.e(TAG_FINGERPRINT, "launcher-glass: beginRecording failed, fallback proceed", t); null
         } ?: return false
         try {
             canvas.drawPath(path, paint)
@@ -925,7 +925,7 @@ object LauncherHook {
             try {
                 rn.endRecording()
             } catch (t: Throwable) {
-                Log.e(TAG_FINGERPRINT, "launcher-glass: endRecording failed", t)
+                Lg.e(TAG_FINGERPRINT, "launcher-glass: endRecording failed", t)
                 recorded = false
             }
         }
@@ -953,7 +953,7 @@ object LauncherHook {
      */
     private fun mountPreviewBackground(api: XposedInterface, classLoader: ClassLoader) {
         if (mBgDrawableField == null || mBgViewField == null || mRadiusField == null || mLayerBlurInnerField == null) {
-            Log.w(TAG, "LauncherHook folder icon fields unresolved, folder icon map disabled")
+            Lg.w(TAG, "LauncherHook folder icon fields unresolved, folder icon map disabled")
             return
         }
         // 候选签名链：16.x (Canvas,View) 优先 → 17.3.12 (Canvas) → 17.3.12 (Canvas,ConvertBgParams,ItemInfo)
@@ -974,24 +974,24 @@ object LauncherHook {
                             try {
                                 registerPreviewRegion(chain)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "launcher preview: drawBackground intercept error", t)
+                                Lg.e(TAG, "launcher preview: drawBackground intercept error", t)
                             }
                             chain.proceed()
                         }
                     val sig = method.parameterTypes.joinToString(", ") { it.simpleName }
-                    Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND($sig) (folder icon map)")
+                    Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND($sig) (folder icon map)")
                     mounted = true
                     // 16.x 双参命中即停；17.x 多签名只挂最靠前的一个（避免重复注册映射）
                     break
                 } catch (t: Throwable) {
-                    Log.w(TAG, "LauncherHook mount drawBackground(${method.parameterTypes.joinToString { it.simpleName }}) failed, try next", t)
+                    Lg.w(TAG, "LauncherHook mount drawBackground(${method.parameterTypes.joinToString { it.simpleName }}) failed, try next", t)
                 }
             }
             if (!mounted) {
-                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND (all candidate signatures)")
+                Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND (all candidate signatures)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND", t)
         }
     }
 
@@ -1008,7 +1008,7 @@ object LauncherHook {
      */
     private fun mountFolderRoundImageView(api: XposedInterface, classLoader: ClassLoader) {
         if (mLayerBlurInnerField == null) {
-            Log.w(TAG, "LauncherHook LayerBlurDrawable.mBlurDrawable unresolved, folder icon normal-state map disabled")
+            Lg.w(TAG, "LauncherHook LayerBlurDrawable.mBlurDrawable unresolved, folder icon normal-state map disabled")
             return
         }
         try {
@@ -1020,13 +1020,13 @@ object LauncherHook {
                     try {
                         registerFolderRoundImageViewRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher preview: FolderRoundImageView.onDraw intercept error", t)
+                        Lg.e(TAG, "launcher preview: FolderRoundImageView.onDraw intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW(Canvas) (folder icon map, normal state)")
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW(Canvas) (folder icon map, normal state)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW", t)
         }
     }
 
@@ -1060,13 +1060,13 @@ object LauncherHook {
                 .intercept { chain ->
                     if (dockGlassEnabled()) true else chain.proceed()
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN -> true (dock glass)")
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN -> true (dock glass)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_SCREEN_UTILS#$METHOD_IS_SUPPORT_DOCKER_EXPAND_SCREEN", t)
         }
 
         if (mCreateBlurDrawable == null || mShortcutsAndWidgetsField == null) {
-            Log.w(TAG, "LauncherHook dock glass: OplusHotseat unresolved, skip remaining dock hooks")
+            Lg.w(TAG, "LauncherHook dock glass: OplusHotseat unresolved, skip remaining dock hooks")
             return
         }
 
@@ -1081,13 +1081,13 @@ object LauncherHook {
                     try {
                         if (dockGlassEnabled()) forceDockBlurBackground(chain.getThisObject())
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher dock: force blur background failed", t)
+                        Lg.e(TAG, "launcher dock: force blur background failed", t)
                     }
                     result
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND (dock blur background)")
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND (dock blur background)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_SET_DOCKER_BACKGROUND", t)
         }
 
         // ③ 常态映射：Dock 每次绘制登记 screenRegionMap（同 spec/10 文件夹的 FolderRoundImageView.onDraw）
@@ -1100,13 +1100,13 @@ object LauncherHook {
                     try {
                         if (dockGlassEnabled()) registerDockRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher dock: onDraw map failed", t)
+                        Lg.e(TAG, "launcher dock: onDraw map failed", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW(Canvas) (dock map)")
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW(Canvas) (dock map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW", t)
         }
     }
 
@@ -1134,7 +1134,7 @@ object LauncherHook {
         val inner = try {
             mLayerBlurInnerField?.get(drawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
+            Lg.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
         registerBlurRegion(inner, sw, resolveDockCornerPx(sw))
     }
@@ -1149,7 +1149,7 @@ object LauncherHook {
             if (id > 0) res.getDimensionPixelSize(id).toFloat()
             else DOCK_CORNER_DP_FALLBACK * res.displayMetrics.density
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher dock: resolve corner radius failed, fallback ${DOCK_CORNER_DP_FALLBACK}dp", t)
+            Lg.e(TAG, "launcher dock: resolve corner radius failed, fallback ${DOCK_CORNER_DP_FALLBACK}dp", t)
             DOCK_CORNER_DP_FALLBACK * 3f
         }
     }
@@ -1164,7 +1164,7 @@ object LauncherHook {
                     Prefs.read(it).getBoolean(Prefs.KEY_DOCK_GLASS_ENABLE, Prefs.DEFAULT_DOCK_GLASS_ENABLE)
                 } ?: false
             } catch (t: Throwable) {
-                Log.w(TAG, "prefs read dock_glass_enable failed, default false", t)
+                Lg.w(TAG, "prefs read dock_glass_enable failed, default false", t)
                 false
             }
         }
@@ -1212,11 +1212,11 @@ object LauncherHook {
                                 // pending 去重防 onBlurReady 多 drawable 同帧连调重复入队）
                                 triggerBackgroundCapture()
                             } catch (t: Throwable) {
-                                Log.e(TAG, "launcher blur-refresh: onBlurReady intercept error", t)
+                                Lg.e(TAG, "launcher blur-refresh: onBlurReady intercept error", t)
                             }
                             chain.proceed()
                         }
-                    Log.i(
+                    Lg.i(
                         TAG,
                         "LauncherHook mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$name(List, HardwareBuffer, int, float) (folder bg blur refresh signal)",
                     )
@@ -1225,14 +1225,14 @@ object LauncherHook {
                 } catch (_: NoSuchMethodException) {
                     continue
                 } catch (t: Throwable) {
-                    Log.w(TAG, "LauncherHook mount $CLASS_BLUR_DRAWABLE_MANAGER#$name failed, try next", t)
+                    Lg.w(TAG, "LauncherHook mount $CLASS_BLUR_DRAWABLE_MANAGER#$name failed, try next", t)
                 }
             }
             if (!mounted) {
-                Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#onBlurReady/f (all candidate names)")
+                Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#onBlurReady/f (all candidate names)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
         }
     }
 
@@ -1267,13 +1267,13 @@ object LauncherHook {
                             enqueueSnapshotCapture()
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher parallax: setWallpaperOffsets intercept error", t)
+                        Lg.e(TAG, "launcher parallax: setWallpaperOffsets intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "LauncherHook mounted: $CLASS_WALLPAPER_MANAGER#$METHOD_SET_WALLPAPER_OFFSETS(IBinder, float, float) (wallpaper parallax)")
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_WALLPAPER_MANAGER#$METHOD_SET_WALLPAPER_OFFSETS(IBinder, float, float) (wallpaper parallax)")
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SET_WALLPAPER_OFFSETS", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SET_WALLPAPER_OFFSETS", t)
         }
     }
 
@@ -1310,16 +1310,16 @@ object LauncherHook {
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "wallpaper zoom: sendWallpaperCommand intercept error", t)
+                        Lg.e(TAG, "wallpaper zoom: sendWallpaperCommand intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(
+            Lg.i(
                 TAG,
                 "LauncherHook mounted: $CLASS_WALLPAPER_MANAGER#$METHOD_SEND_WALLPAPER_COMMAND(IBinder, String, int, int, int, Bundle) (wallpaper zoom mirror)",
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SEND_WALLPAPER_COMMAND", t)
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SEND_WALLPAPER_COMMAND", t)
         }
     }
 
@@ -1372,7 +1372,7 @@ object LauncherHook {
                 mainHandler().post(zoomTick)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "wallpaper zoom: parse command failed", t)
+            Lg.e(TAG, "wallpaper zoom: parse command failed", t)
         }
     }
 
@@ -1390,12 +1390,12 @@ object LauncherHook {
         val oplusBg = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: getThisObject failed", t); return
+            Lg.e(TAG, "launcher preview: getThisObject failed", t); return
         } ?: return
         val bgDrawable = try {
             mBgDrawableField?.get(oplusBg) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: read mBgDrawable failed", t); null
+            Lg.e(TAG, "launcher preview: read mBgDrawable failed", t); null
         } ?: return
         // 仅 LayerBlurDrawable（含 posteffect BlurDrawable 内层）才注册；非 blur 路径（LayerNormalDrawable/
         // GradientDrawable 纯色背景）不触发 drawBlurShader hook，注册无意义
@@ -1403,7 +1403,7 @@ object LauncherHook {
         val inner = try {
             mLayerBlurInnerField?.get(bgDrawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: read LayerBlurDrawable.mBlurDrawable failed", t); null
+            Lg.e(TAG, "launcher preview: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
         val radius = try {
             mRadiusField?.getFloat(oplusBg) ?: 0f
@@ -1415,7 +1415,7 @@ object LauncherHook {
         val host = try {
             mBgViewField?.get(oplusBg) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: read mBgView failed", t); null
+            Lg.e(TAG, "launcher preview: read mBgView failed", t); null
         } ?: return
         registerBlurRegion(inner, host, radius)
     }
@@ -1425,18 +1425,18 @@ object LauncherHook {
         val view = try {
             chain.getThisObject() as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: FolderRoundImageView getThisObject failed", t); null
+            Lg.e(TAG, "launcher preview: FolderRoundImageView getThisObject failed", t); null
         } ?: return
         val drawable = try {
             (view as? android.widget.ImageView)?.drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: FolderRoundImageView getDrawable failed", t); null
+            Lg.e(TAG, "launcher preview: FolderRoundImageView getDrawable failed", t); null
         } as? Drawable ?: return
         if (mLayerCls?.isInstance(drawable) != true) return
         val inner = try {
             mLayerBlurInnerField?.get(drawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: read LayerBlurDrawable.mBlurDrawable failed", t); null
+            Lg.e(TAG, "launcher preview: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
         val radius = try {
             mGetFrivRadius?.invoke(view) as? Float ?: 0f
@@ -1453,7 +1453,7 @@ object LauncherHook {
         try {
             hostView.getLocationOnScreen(loc)
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher preview: getLocationOnScreen failed", t); return
+            Lg.e(TAG, "launcher preview: getLocationOnScreen failed", t); return
         }
         val bw = hostView.width
         val bh = hostView.height
@@ -1472,7 +1472,7 @@ object LauncherHook {
         if (previous == null) {
             screenRegionMap[key] = entry
             if (screenRegionMap.size > 512) screenRegionMap.clear()
-            Log.i(
+            Lg.i(
                 TAG,
                 "coord: folder-icon id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "size=${bw}x${bh} cornerRadius=$resolvedCorner"
@@ -1493,14 +1493,14 @@ object LauncherHook {
             return try {
                 m.invoke(drawable) as? Paint
             } catch (t: Throwable) {
-                Log.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
+                Lg.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
             }
         }
         mBlurShaderPaintField?.let { f ->
             return try {
                 f.get(drawable) as? Paint
             } catch (t: Throwable) {
-                Log.e(TAG, "launcher render: read blurShaderPaint field failed", t); null
+                Lg.e(TAG, "launcher render: read blurShaderPaint field failed", t); null
             }
         }
         return null
@@ -1524,7 +1524,7 @@ object LauncherHook {
                     p.colorFilter = null
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "power-save: restore launcher shader failed", t)
+                Lg.w(TAG, "power-save: restore launcher shader failed", t)
             }
             logRenderMode(id, "BLUR", "power-save: glass disabled")
             return false
@@ -1539,7 +1539,7 @@ object LauncherHook {
                     p.colorFilter = null
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "glass switch off: restore launcher shader failed", t)
+                Lg.w(TAG, "glass switch off: restore launcher shader failed", t)
             }
             logRenderMode(id, "BLUR", "glass switch off")
             return false
@@ -1547,7 +1547,7 @@ object LauncherHook {
         val paint = try {
             getBlurShaderPaintOf(drawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
+            Lg.e(TAG, "launcher render: getBlurShaderPaint failed", t); null
         }
         if (paint == null) {
             logRenderMode(id, "BLUR", "no blurShaderPaint")
@@ -1556,7 +1556,7 @@ object LauncherHook {
         val bounds = try {
             mGetBounds?.invoke(drawable) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher render: getBounds failed", t); null
+            Lg.e(TAG, "launcher render: getBounds failed", t); null
         }
         if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
             logRenderMode(id, "BLUR", "empty bounds")
@@ -1574,7 +1574,7 @@ object LauncherHook {
         val liquid = try {
             buildLiquidShader(drawable, bounds)
         } catch (t: Throwable) {
-            Log.w(TAG, "launcher render: buildLiquidShader exception (id=$id)", t)
+            Lg.w(TAG, "launcher render: buildLiquidShader exception (id=$id)", t)
             null
         } ?: run {
             logRenderMode(id, "BLUR", "no map or source")
@@ -1674,7 +1674,7 @@ object LauncherHook {
             if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
             return true
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher render: refresh uniform failed, keep existing liquid glass shader", t)
+            Lg.e(TAG, "launcher render: refresh uniform failed, keep existing liquid glass shader", t)
             return true
         }
     }
@@ -1743,7 +1743,7 @@ object LauncherHook {
         if (!captureInFlightIds.contains(SNAPSHOT_ID) && pendingCaptureIds.add(SNAPSHOT_ID)) {
             elementCaptureQueue.add(SNAPSHOT_ID)
             kickElementCaptureWorker()
-            Log.d(TAG, "bg-element: render-trigger async launcher snapshot capture (non-blocking)")
+            Lg.d(TAG, "bg-element: render-trigger async launcher snapshot capture (non-blocking)")
         }
         return null
     }
@@ -1829,7 +1829,7 @@ object LauncherHook {
                 Thread { runElementCaptureWorker() }.start()
             } catch (t: Throwable) {
                 elementCaptureWorkerRunning--
-                Log.e(TAG, "bg-element: spawn worker failed", t)
+                Lg.e(TAG, "bg-element: spawn worker failed", t)
             }
         }
     }
@@ -1857,7 +1857,7 @@ object LauncherHook {
                     screenSnapshot = bg
                     elementCaptureRetries[id] = 0
                     elementCaptureQuitAt.remove(id)
-                    Log.i(TAG, "bg-element: launcher background ready ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()}")
+                    Lg.i(TAG, "bg-element: launcher background ready ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()}")
                     postInvalidateRegistered()
                 } else {
                     // 失败重试（3 次/320ms），用尽冷却
@@ -1872,12 +1872,12 @@ object LauncherHook {
                     } else {
                         elementCaptureRetries[id] = 0
                         elementCaptureQuitAt[id] = SystemClock.uptimeMillis() + ELEMENT_CAPTURE_COOLDOWN_MS
-                        Log.w(TAG, "bg-element: launcher background capture failed 3 x, cooldown ${ELEMENT_CAPTURE_COOLDOWN_MS}ms")
+                        Lg.w(TAG, "bg-element: launcher background capture failed 3 x, cooldown ${ELEMENT_CAPTURE_COOLDOWN_MS}ms")
                     }
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: worker error", t)
+            Lg.e(TAG, "bg-element: worker error", t)
         } finally {
             synchronized(this) {
                 if (elementCaptureWorkerRunning > 0) elementCaptureWorkerRunning--
@@ -1921,7 +1921,7 @@ object LauncherHook {
             val sfc = reflectViewRootSurfaceControl(rootView)
             if (sfc != null && sfc.isValid) {
                 launcherSfcCache = sfc
-                Log.i(TAG, "bg-source: launcher sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
+                Lg.i(TAG, "bg-source: launcher sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
                 return sfc
             }
         }
@@ -1938,7 +1938,7 @@ object LauncherHook {
                 vri.javaClass.getMethod("getSurfaceControl").invoke(vri) as? SurfaceControl
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-source: getViewRootImpl().getSurfaceControl() reflect failed", t)
+            Lg.e(TAG, "bg-source: getViewRootImpl().getSurfaceControl() reflect failed", t)
             null
         }
     }
@@ -1972,20 +1972,20 @@ object LauncherHook {
             region.bottom.toInt().coerceIn(0, maxH),
         )
         if (crop.width() <= 0 || crop.height() <= 0) {
-            Log.w(TAG, "bg-element: empty crop after clamp $region -> $crop")
+            Lg.w(TAG, "bg-element: empty crop after clamp $region -> $crop")
             return null
         }
         return try {
             val wmBinder = Class.forName("android.os.ServiceManager")
                 .getMethod("getService", String::class.java).invoke(null, "window")
             if (wmBinder == null) {
-                Log.w(TAG, "bg-element: ServiceManager.getService(window) null")
+                Lg.w(TAG, "bg-element: ServiceManager.getService(window) null")
                 null
             } else {
                 val wm = Class.forName("android.view.IWindowManager\$Stub")
                     .getMethod("asInterface", IBinder::class.java).invoke(null, wmBinder)
                 if (wm == null) {
-                    Log.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
+                    Lg.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
                     null
                 } else {
                     val captureCls = Class.forName("android.window.ScreenCapture")
@@ -2016,22 +2016,22 @@ object LauncherHook {
                                     builderCls.getMethod("setUid", Int::class.javaPrimitiveType)
                                         .invoke(builder, uid.toInt())
                                 }
-                                Log.i(TAG, "bg-element: setUid($uid) wallpaper-only capture applied")
+                                Lg.i(TAG, "bg-element: setUid($uid) wallpaper-only capture applied")
                             } catch (t: Throwable) {
-                                Log.w(TAG, "bg-element: setUid unavailable (${t.message}), keep full-display capture")
+                                Lg.w(TAG, "bg-element: setUid unavailable (${t.message}), keep full-display capture")
                             }
                         } else {
-                            Log.w(TAG, "bg-element: wallpaper uid unresolved, keep full-display capture")
+                            Lg.w(TAG, "bg-element: wallpaper uid unresolved, keep full-display capture")
                         }
                     }
                     val args = builderCls.getMethod("build").invoke(builder)
                     if (args == null) {
-                        Log.w(TAG, "bg-element: CaptureArgs.build() null")
+                        Lg.w(TAG, "bg-element: CaptureArgs.build() null")
                         null
                     } else {
                         val listener = captureCls.getMethod("createSyncCaptureListener").invoke(null)
                         if (listener == null) {
-                            Log.w(TAG, "bg-element: createSyncCaptureListener() null")
+                            Lg.w(TAG, "bg-element: createSyncCaptureListener() null")
                             null
                         } else {
                             val listenerCls = Class.forName("android.window.ScreenCapture\$ScreenCaptureListener")
@@ -2042,30 +2042,30 @@ object LauncherHook {
                             m.invoke(wm, 0, args, listener)
                             val shb = listener.javaClass.getMethod("getBuffer").invoke(listener)
                             if (shb == null) {
-                                Log.w(TAG, "bg-element: captureDisplay getBuffer null")
+                                Lg.w(TAG, "bg-element: captureDisplay getBuffer null")
                                 null
                             } else {
                                 val hb = shb.javaClass.getMethod("getHardwareBuffer").invoke(shb) as? HardwareBuffer
                                 if (hb == null) {
-                                    Log.w(TAG, "bg-element: ScreenshotHardwareBuffer.getHardwareBuffer() null")
+                                    Lg.w(TAG, "bg-element: ScreenshotHardwareBuffer.getHardwareBuffer() null")
                                     null
                                 } else if (hb.isClosed) {
-                                    Log.w(TAG, "bg-element: captureDisplay returned closed buffer")
+                                    Lg.w(TAG, "bg-element: captureDisplay returned closed buffer")
                                     null
                                 } else {
                                     try {
                                         val wrapped = Bitmap.wrapHardwareBuffer(hb, null)
                                         if (wrapped == null) {
-                                            Log.w(TAG, "bg-element: wrapHardwareBuffer null hw=${hb.width}x${hb.height}")
+                                            Lg.w(TAG, "bg-element: wrapHardwareBuffer null hw=${hb.width}x${hb.height}")
                                             null
                                         } else {
                                             try {
                                                 val copy = wrapped.copy(Bitmap.Config.ARGB_8888, false)
                                                 if (copy == null) {
-                                                    Log.w(TAG, "bg-element: copy null hw=${hb.width}x${hb.height}")
+                                                    Lg.w(TAG, "bg-element: copy null hw=${hb.width}x${hb.height}")
                                                     null
                                                 } else {
-                                                    Log.i(TAG, "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl launcher)")
+                                                    Lg.i(TAG, "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl launcher)")
                                                     ElementBackground(copy, region, wallpaperZoomScale)
                                                 }
                                             } finally {
@@ -2088,7 +2088,7 @@ object LauncherHook {
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: IWindowManager.captureDisplay failed", t)
+            Lg.e(TAG, "bg-element: IWindowManager.captureDisplay failed", t)
             null
         }
     }
@@ -2100,7 +2100,7 @@ object LauncherHook {
             Prefs.read(a).getFloat(Prefs.KEY_BG_CAPTURE_SCALE, Prefs.DEFAULT_BG_CAPTURE_SCALE)
                 .coerceIn(0.25f, 1.0f)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_scale failed, default 0.5", t)
+            Lg.w(TAG, "prefs read bg_capture_scale failed, default 0.5", t)
             Prefs.DEFAULT_BG_CAPTURE_SCALE
         }
     }
@@ -2112,7 +2112,7 @@ object LauncherHook {
         return try {
             Prefs.read(a).getBoolean(Prefs.KEY_BG_CAPTURE_UID_FILTER, Prefs.DEFAULT_BG_CAPTURE_UID_FILTER)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_uid_filter failed, default true", t)
+            Lg.w(TAG, "prefs read bg_capture_uid_filter failed, default true", t)
             Prefs.DEFAULT_BG_CAPTURE_UID_FILTER
         }
     }
@@ -2137,10 +2137,10 @@ object LauncherHook {
                 null
             } ?: "com.android.systemui"
             val uid = app.packageManager.getPackageUid(pkg, 0).toLong()
-            Log.i(TAG, "bg-element: wallpaper uid resolved pkg=$pkg uid=$uid")
+            Lg.i(TAG, "bg-element: wallpaper uid resolved pkg=$pkg uid=$uid")
             uid
         } catch (t: Throwable) {
-            Log.w(TAG, "bg-element: resolve wallpaper uid failed", t)
+            Lg.w(TAG, "bg-element: resolve wallpaper uid failed", t)
             null
         }
     }
@@ -2163,7 +2163,7 @@ object LauncherHook {
             wallpaperSource = decoded
             wallpaperDecodeTargetId = decoded.wallpaperId
             syncWallpaperOffsetsFromSystem()
-            Log.i(
+            Lg.i(
                 TAG,
                 "bg-wallpaper: decoded id=${decoded.wallpaperId} bmp=${decoded.bitmap.width}x${decoded.bitmap.height} " +
                     "logical=${decoded.logicalWidth}x${decoded.logicalHeight}"
@@ -2189,7 +2189,7 @@ object LauncherHook {
                 null
             }
             if (info != null) {
-                Log.w(TAG, "bg-wallpaper: live wallpaper, fallback to captureDisplay")
+                Lg.w(TAG, "bg-wallpaper: live wallpaper, fallback to captureDisplay")
                 return null
             }
             val id = try {
@@ -2198,13 +2198,13 @@ object LauncherHook {
                 -1
             }
             if (id <= 0) {
-                Log.w(TAG, "bg-wallpaper: getWallpaperId(FLAG_SYSTEM)=$id, fallback to captureDisplay")
+                Lg.w(TAG, "bg-wallpaper: getWallpaperId(FLAG_SYSTEM)=$id, fallback to captureDisplay")
                 return null
             }
             val pfd = try {
                 wm.getWallpaperFile(WallpaperManager.FLAG_SYSTEM)
             } catch (t: Throwable) {
-                Log.w(TAG, "bg-wallpaper: getWallpaperFile failed", t)
+                Lg.w(TAG, "bg-wallpaper: getWallpaperFile failed", t)
                 null
             } ?: return null
             try {
@@ -2213,7 +2213,7 @@ object LauncherHook {
                 val wpW = bounds.outWidth
                 val wpH = bounds.outHeight
                 if (wpW <= 0 || wpH <= 0) {
-                    Log.w(TAG, "bg-wallpaper: decode bounds invalid ${wpW}x$wpH")
+                    Lg.w(TAG, "bg-wallpaper: decode bounds invalid ${wpW}x$wpH")
                     return null
                 }
                 var sample = 1
@@ -2225,7 +2225,7 @@ object LauncherHook {
                 }
                 val bmp = pfd.dup().use { d -> BitmapFactory.decodeFileDescriptor(d.fileDescriptor, null, opts) }
                 if (bmp == null || bmp.width <= 0 || bmp.height <= 0) {
-                    Log.w(TAG, "bg-wallpaper: decode file failed")
+                    Lg.w(TAG, "bg-wallpaper: decode file failed")
                     return null
                 }
                 WallpaperSource(bmp, wpW, wpH, id)
@@ -2236,7 +2236,7 @@ object LauncherHook {
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-wallpaper: decode failed", t)
+            Lg.e(TAG, "bg-wallpaper: decode failed", t)
             null
         }
     }
@@ -2278,7 +2278,7 @@ object LauncherHook {
             val bw = (cropW * sx).toInt().coerceIn(1, src.bitmap.width - bx)
             val bh = (cropH * sy).toInt().coerceIn(1, src.bitmap.height - by)
             if (bx < 0 || by < 0 || bx + bw > src.bitmap.width || by + bh > src.bitmap.height) {
-                Log.w(TAG, "bg-wallpaper: crop out of bounds bx=$bx by=$by bw=$bw bh=$bh bmp=${src.bitmap.width}x${src.bitmap.height}")
+                Lg.w(TAG, "bg-wallpaper: crop out of bounds bx=$bx by=$by bw=$bw bh=$bh bmp=${src.bitmap.width}x${src.bitmap.height}")
                 return null
             }
             val cropBmp = Bitmap.createBitmap(src.bitmap, bx, by, bw, bh)
@@ -2297,7 +2297,7 @@ object LauncherHook {
             // 壁纸文件源：文件内容与壁纸服务的缩放无关 → 基准恒为 1（折算系数 = 当前缩放）
             ElementBackground(out, RectF(0f, 0f, scrW.toFloat(), scrH.toFloat()), 1f)
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-wallpaper: build visible crop failed", t)
+            Lg.e(TAG, "bg-wallpaper: build visible crop failed", t)
             null
         }
     }
@@ -2325,7 +2325,7 @@ object LauncherHook {
             wallpaperOffsetX = xs[0]
             wallpaperOffsetY = ys[0]
         } catch (t: Throwable) {
-            Log.w(TAG, "bg-wallpaper: getWallpaperOffsets read failed", t)
+            Lg.w(TAG, "bg-wallpaper: getWallpaperOffsets read failed", t)
         }
     }
 
@@ -2336,7 +2336,7 @@ object LauncherHook {
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: return null
             WallpaperManager.getInstance(app)
         } catch (t: Throwable) {
-            Log.w(TAG, "bg-wallpaper: WallpaperManager.getInstance failed", t)
+            Lg.w(TAG, "bg-wallpaper: WallpaperManager.getInstance failed", t)
             null
         }
     }
@@ -2348,7 +2348,7 @@ object LauncherHook {
         return try {
             Prefs.read(a).getBoolean(Prefs.KEY_BG_WALLPAPER_FILE_SOURCE, Prefs.DEFAULT_BG_WALLPAPER_FILE_SOURCE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_wallpaper_file_source failed, default true", t)
+            Lg.w(TAG, "prefs read bg_wallpaper_file_source failed, default true", t)
             Prefs.DEFAULT_BG_WALLPAPER_FILE_SOURCE
         }
     }
@@ -2360,7 +2360,7 @@ object LauncherHook {
             Prefs.read(a).getInt(Prefs.KEY_BG_WALLPAPER_MAX_DIM, Prefs.DEFAULT_BG_WALLPAPER_MAX_DIM)
                 .coerceIn(512, 8192)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_wallpaper_max_dim failed, default 2048", t)
+            Lg.w(TAG, "prefs read bg_wallpaper_max_dim failed, default 2048", t)
             Prefs.DEFAULT_BG_WALLPAPER_MAX_DIM
         }
     }
@@ -2376,7 +2376,7 @@ object LauncherHook {
         val prefs = try {
             api?.let { Prefs.read(it) }
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher buildParams: prefs read failed", t); null
+            Lg.e(TAG, "launcher buildParams: prefs read failed", t); null
         }
         if (prefs == null) return def
         return try {
@@ -2409,7 +2409,7 @@ object LauncherHook {
                 parallaxY = prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher buildParams: prefs float read failed, use defaults", t)
+            Lg.e(TAG, "launcher buildParams: prefs float read failed, use defaults", t)
             def
         }
     }
@@ -2426,7 +2426,7 @@ object LauncherHook {
             }
             trackHostViewMotion()
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher taskG+: trackHostViewMotion error", t)
+            Lg.e(TAG, "launcher taskG+: trackHostViewMotion error", t)
         }
         var hasLive = false
         synchronized(this) {
@@ -2458,7 +2458,7 @@ object LauncherHook {
         val c = choreographer ?: try {
             Choreographer.getInstance().also { choreographer = it }
         } catch (t: Throwable) {
-            Log.e(TAG, "launcher taskG+: Choreographer.getInstance failed (not main thread?)", t)
+            Lg.e(TAG, "launcher taskG+: Choreographer.getInstance failed (not main thread?)", t)
             return
         }
         frameCallbackPosted = true
@@ -2466,7 +2466,7 @@ object LauncherHook {
             c.postFrameCallback(motionFrameCallback)
         } catch (t: Throwable) {
             frameCallbackPosted = false
-            Log.e(TAG, "launcher taskG+: postFrameCallback failed", t)
+            Lg.e(TAG, "launcher taskG+: postFrameCallback failed", t)
         }
     }
 
@@ -2498,11 +2498,11 @@ object LauncherHook {
                     try {
                         v.invalidate()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "launcher taskG+: invalidate host failed", t)
+                        Lg.e(TAG, "launcher taskG+: invalidate host failed", t)
                     }
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "launcher taskG+: track single host failed", t)
+                Lg.e(TAG, "launcher taskG+: track single host failed", t)
             }
         }
     }
@@ -2519,7 +2519,7 @@ object LauncherHook {
             try {
                 v.invalidate()
             } catch (t: Throwable) {
-                Log.e(TAG, "launcher taskG+: invalidate host view failed", t)
+                Lg.e(TAG, "launcher taskG+: invalidate host view failed", t)
             }
         }
     }
@@ -2529,7 +2529,7 @@ object LauncherHook {
         try {
             mainHandler().post { invalidateRegisteredHostViews() }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: postInvalidateRegistered failed", t)
+            Lg.e(TAG, "bg-element: postInvalidateRegistered failed", t)
         }
     }
 
@@ -2557,7 +2557,7 @@ object LauncherHook {
     private fun registerPowerSaveBroadcastReceiver() {
         val ctx = launcherAppContext
         if (ctx == null) {
-            Log.w(TAG, "power-save: broadcast receiver skipped, context null")
+            Lg.w(TAG, "power-save: broadcast receiver skipped, context null")
             return
         }
         try {
@@ -2568,9 +2568,9 @@ object LauncherHook {
                         powerSaveMeasuredAt = 0L
                         val on = isPowerSaveGlassOff()
                         postInvalidateRegistered()
-                        Log.i(TAG, "power-save: changed on=$on, hosts invalidated")
+                        Lg.i(TAG, "power-save: changed on=$on, hosts invalidated")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "power-save: broadcast onReceive error", t)
+                        Lg.e(TAG, "power-save: broadcast onReceive error", t)
                     }
                 }
             }
@@ -2579,9 +2579,9 @@ object LauncherHook {
             } else {
                 ctx.applicationContext.registerReceiver(receiver, filter)
             }
-            Log.i(TAG, "power-save: broadcast receiver registered (on=${isPowerSaveGlassOff()})")
+            Lg.i(TAG, "power-save: broadcast receiver registered (on=${isPowerSaveGlassOff()})")
         } catch (t: Throwable) {
-            Log.e(TAG, "power-save: register broadcast receiver failed", t)
+            Lg.e(TAG, "power-save: register broadcast receiver failed", t)
         }
     }
 
@@ -2616,6 +2616,6 @@ object LauncherHook {
         if (lastRenderModeMap[id] == mode) return
         if (lastRenderModeMap.size > 256) lastRenderModeMap.clear()
         lastRenderModeMap[id] = mode
-        Log.i(TAG, "launcher render: $id $mode" + (reason?.let { " ($it)" } ?: ""))
+        Lg.i(TAG, "launcher render: $id $mode" + (reason?.let { " ($it)" } ?: ""))
     }
 }

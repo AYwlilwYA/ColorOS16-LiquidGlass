@@ -1,6 +1,6 @@
 package com.coloros16.liquidglass.update
 
-import android.util.Log
+import com.coloros16.liquidglass.log.Lg
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -53,13 +53,13 @@ object UpdateChecker {
             }
             val code = conn.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "update check http $code")
+                Lg.w(TAG, "update check http $code")
                 return null
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             parse(body)
         } catch (t: Throwable) {
-            Log.w(TAG, "update check failed", t)
+            Lg.w(TAG, "update check failed", t)
             null
         } finally {
             try {
@@ -94,7 +94,7 @@ object UpdateChecker {
             )
         }
     } catch (t: Throwable) {
-        Log.w(TAG, "update check parse failed", t)
+        Lg.w(TAG, "update check parse failed", t)
         null
     }
 

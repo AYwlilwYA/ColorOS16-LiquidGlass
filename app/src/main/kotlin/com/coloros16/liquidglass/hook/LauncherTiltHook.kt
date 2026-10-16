@@ -3,8 +3,8 @@ package com.coloros16.liquidglass.hook
 import android.graphics.Rect
 import android.graphics.RectF
 import android.os.SystemClock
-import android.util.Log
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -206,7 +206,7 @@ object LauncherTiltHook {
         mountIconLayerUpdater(api, classLoader)
         mountBreakCarry(api, classLoader)
         mountLightWindowPath(api, classLoader)
-        Log.i(
+        Lg.i(
             TAG,
             "LauncherTiltHook install done (matrix4x4=${mSetMatrix4x4 != null}, " +
                 "listener=${mAddAnimatorListener != null}, " +
@@ -258,9 +258,9 @@ object LauncherTiltHook {
                     }
                 }
             mounted++
-            Log.i(TAG_NATIVE, "mounted native tilt gate: ZuyqaWindowTilt#isEnabled()")
+            Lg.i(TAG_NATIVE, "mounted native tilt gate: ZuyqaWindowTilt#isEnabled()")
         } catch (t: Throwable) {
-            Log.e(TAG_NATIVE, "mount native tilt gate FAILED: ZuyqaWindowTilt#isEnabled()", t)
+            Lg.e(TAG_NATIVE, "mount native tilt gate FAILED: ZuyqaWindowTilt#isEnabled()", t)
         }
         // 挂点② 原生参数读取入口：模块开关开 = strength/perspective 用模块值；关 = 原样透传。
         try {
@@ -290,18 +290,18 @@ object LauncherTiltHook {
                     if (raw < 0) nativeValue else raw
                 }
             mounted++
-            Log.i(TAG_NATIVE, "mounted native tilt params: ZuyqaAnimationTuning#getInt(Context,String,int)")
+            Lg.i(TAG_NATIVE, "mounted native tilt params: ZuyqaAnimationTuning#getInt(Context,String,int)")
         } catch (t: Throwable) {
-            Log.e(TAG_NATIVE, "mount native tilt params FAILED: ZuyqaAnimationTuning#getInt(Context,String,int)", t)
+            Lg.e(TAG_NATIVE, "mount native tilt params FAILED: ZuyqaAnimationTuning#getInt(Context,String,int)", t)
         }
-        Log.i(TAG_NATIVE, "LauncherTiltHook native(17.3.12) install done, mounted=$mounted/2")
+        Lg.i(TAG_NATIVE, "LauncherTiltHook native(17.3.12) install done, mounted=$mounted/2")
     }
 
     /** 原生 tilt 被模块开关打开时打一条 INFO（进程内一次），用于真机确认新路径真的生效。 */
     private fun logNativeActivated() {
         if (nativeActivatedLogged) return
         nativeActivatedLogged = true
-        Log.i(TAG_NATIVE, "native zuyqa tilt forced on by module switch (strength/perspective injected)")
+        Lg.i(TAG_NATIVE, "native zuyqa tilt forced on by module switch (strength/perspective injected)")
     }
 
     // ------------------------------------------------------------ 反射解析
@@ -310,78 +310,78 @@ object LauncherTiltHook {
         try {
             val props = Class.forName(CLASS_SURFACE_PROPERTIES, false, classLoader)
             mSetMatrix4x4 = props.getMethod(METHOD_SET_MATRIX_4X4, FloatArray::class.java)
-            Log.i(TAG, "resolved $CLASS_SURFACE_PROPERTIES#$METHOD_SET_MATRIX_4X4(float[])")
+            Lg.i(TAG, "resolved $CLASS_SURFACE_PROPERTIES#$METHOD_SET_MATRIX_4X4(float[])")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve setMatrix4x4 failed, tilt apply disabled", t)
+            Lg.e(TAG, "resolve setMatrix4x4 failed, tilt apply disabled", t)
         }
         try {
             val params = Class.forName(CLASS_TRANSFORM_PARAMS, false, classLoader)
             mGetProgress = params.getMethod(METHOD_GET_PROGRESS)
             mGetIsTaskView = params.getMethod(METHOD_GET_IS_TASK_VIEW)
-            Log.i(TAG, "resolved TransformParams getProgress/getIsTaskView")
+            Lg.i(TAG, "resolved TransformParams getProgress/getIsTaskView")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve TransformParams accessors failed, tilt update disabled", t)
+            Lg.e(TAG, "resolve TransformParams accessors failed, tilt update disabled", t)
         }
         try {
             val helper = Class.forName(CLASS_RECT_TRANSFORM_HELPER, false, classLoader)
             fMClipRect = helper.getDeclaredField(FIELD_M_CLIP_RECT).apply { isAccessible = true }
             fMSourceWindowRect = helper.getDeclaredField(FIELD_M_SOURCE_WINDOW_RECT).apply { isAccessible = true }
-            Log.i(TAG, "resolved RectTransformHelper mClipRect/mSourceWindowRect")
+            Lg.i(TAG, "resolved RectTransformHelper mClipRect/mSourceWindowRect")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve RectTransformHelper rect fields failed, applySurfaceParams tilt disabled", t)
+            Lg.e(TAG, "resolve RectTransformHelper rect fields failed, applySurfaceParams tilt disabled", t)
         }
         try {
             val updater = Class.forName(CLASS_ICON_LAYER_UPDATER, false, classLoader)
             fMIconLayerCrop = updater.getDeclaredField(FIELD_M_ICON_LAYER_CROP).apply { isAccessible = true }
-            Log.i(TAG, "resolved IconLayerUpdater.mIconLayerCrop")
+            Lg.i(TAG, "resolved IconLayerUpdater.mIconLayerCrop")
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve IconLayerUpdater field failed, icon tilt disabled", t)
+            Lg.e(TAG, "resolve IconLayerUpdater field failed, icon tilt disabled", t)
         }
         try {
             val tx = Class.forName("com.android.quickstep.util.SurfaceTransaction", false, classLoader)
             mForSurface = tx.getMethod(METHOD_FOR_SURFACE, android.view.SurfaceControl::class.java)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve SurfaceTransaction.forSurface failed, tilt apply disabled", t)
+            Lg.e(TAG, "resolve SurfaceTransaction.forSurface failed, tilt apply disabled", t)
         }
         try {
             val thumb = Class.forName(CLASS_THUMB_UTILS, false, classLoader)
             mGetSAppThumb = thumb.getMethod(METHOD_GET_S_APP_THUMB)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve ThumbSurfaceControlUtils failed, thumb tilt disabled", t)
+            Lg.e(TAG, "resolve ThumbSurfaceControlUtils failed, thumb tilt disabled", t)
         }
         try {
             val target = Class.forName(CLASS_TARGET_COMPAT, false, classLoader)
             fLeash = target.getField(FIELD_LEASH)
             fScreenSpaceBounds = target.getField(FIELD_SCREEN_SPACE_BOUNDS)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve RemoteAnimationTargetCompat fields failed", t)
+            Lg.e(TAG, "resolve RemoteAnimationTargetCompat fields failed", t)
         }
         // 清理路径（缺口 2）：SurfaceProperties.mSurface + 原版 SurfaceTransaction 新建事务 + getTransaction().apply()
         try {
             val props = Class.forName(CLASS_SURFACE_PROPERTIES, false, classLoader)
             fMSurface = props.getDeclaredField(FIELD_M_SURFACE).apply { isAccessible = true }
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve SurfaceProperties.mSurface failed, tilt cleanup disabled", t)
+            Lg.e(TAG, "resolve SurfaceProperties.mSurface failed, tilt cleanup disabled", t)
         }
         try {
             val st = Class.forName(CLASS_SURFACE_TRANSACTION, false, classLoader)
             mSurfaceTransactionCtor = st.getConstructor()
             mGetTransaction = st.getMethod(METHOD_GET_TRANSACTION)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve SurfaceTransaction ctor/getTransaction failed, tilt cleanup disabled", t)
+            Lg.e(TAG, "resolve SurfaceTransaction ctor/getTransaction failed, tilt cleanup disabled", t)
         }
         try {
             val spring = Class.forName(CLASS_SPRING_ANIM, false, classLoader)
             nullableAnimatorListenerCls = Class.forName(CLASS_NULLABLE_ANIMATOR_LISTENER, false, classLoader)
             mAddAnimatorListener = spring.getMethod(METHOD_ADD_ANIMATOR_LISTENER, nullableAnimatorListenerCls)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve addAnimatorListener failed, tilt cleanup disabled", t)
+            Lg.e(TAG, "resolve addAnimatorListener failed, tilt cleanup disabled", t)
         }
         try {
             fRefElement = Class.forName("kotlin.jvm.internal.Ref\$ObjectRef", false, classLoader)
                 .getField(FIELD_REF_ELEMENT)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolve Ref.ObjectRef.element failed, watch skipped", t)
+            Lg.e(TAG, "resolve Ref.ObjectRef.element failed, watch skipped", t)
         }
     }
 
@@ -449,7 +449,7 @@ object LauncherTiltHook {
             try {
                 val clazz = Class.forName(site.className, false, classLoader)
                 val ctor = clazz.declaredConstructors.firstOrNull() ?: run {
-                    Log.w(TAG, "no constructor on ${site.className}, tilt configure skipped")
+                    Lg.w(TAG, "no constructor on ${site.className}, tilt configure skipped")
                     null
                 } ?: continue
                 ctor.isAccessible = true
@@ -496,13 +496,13 @@ object LauncherTiltHook {
                                 logD { "configure ${site.className} bound=${tilt != null}" }
                             }
                         } catch (t: Throwable) {
-                            Log.e(TAG, "configure site ${site.className} intercept error", t)
+                            Lg.e(TAG, "configure site ${site.className} intercept error", t)
                         }
                         result
                     }
-                Log.i(TAG, "mounted configure: ${site.className}<init>")
+                Lg.i(TAG, "mounted configure: ${site.className}<init>")
             } catch (t: Throwable) {
-                Log.e(TAG, "mount configure FAILED: ${site.className}", t)
+                Lg.e(TAG, "mount configure FAILED: ${site.className}", t)
             }
         }
     }
@@ -510,7 +510,7 @@ object LauncherTiltHook {
     private fun tryField(clazz: Class<*>, name: String): Field? = try {
         clazz.getDeclaredField(name).apply { isAccessible = true }
     } catch (t: Throwable) {
-        Log.e(TAG, "resolve field $name on ${clazz.name} failed", t)
+        Lg.e(TAG, "resolve field $name on ${clazz.name} failed", t)
         null
     }
 
@@ -520,7 +520,7 @@ object LauncherTiltHook {
         val helperCls = try {
             Class.forName(CLASS_RECT_TRANSFORM_HELPER, false, classLoader)
         } catch (t: Throwable) {
-            Log.e(TAG, "mount apply lambdas FAILED: class not found", t)
+            Lg.e(TAG, "mount apply lambdas FAILED: class not found", t)
             return
         }
         for (m in helperCls.declaredMethods) {
@@ -552,13 +552,13 @@ object LauncherTiltHook {
                                 )
                             }
                         } catch (t: Throwable) {
-                            Log.e(TAG, "apply lambda ${m.name} intercept error", t)
+                            Lg.e(TAG, "apply lambda ${m.name} intercept error", t)
                         }
                         result
                     }
-                Log.i(TAG, "mounted apply lambda: RectTransformHelper#${m.name}")
+                Lg.i(TAG, "mounted apply lambda: RectTransformHelper#${m.name}")
             } catch (t: Throwable) {
-                Log.e(TAG, "mount apply lambda FAILED: ${m.name}", t)
+                Lg.e(TAG, "mount apply lambda FAILED: ${m.name}", t)
             }
         }
     }
@@ -567,7 +567,7 @@ object LauncherTiltHook {
 
     private fun mountIconLayerUpdater(api: XposedInterface, classLoader: ClassLoader) {
         if (fMIconLayerCrop == null) {
-            Log.w(TAG, "mIconLayerCrop unresolved, icon layer tilt skipped")
+            Lg.w(TAG, "mIconLayerCrop unresolved, icon layer tilt skipped")
             return
         }
         try {
@@ -575,7 +575,7 @@ object LauncherTiltHook {
             val method = clazz.declaredMethods.firstOrNull {
                 it.name == METHOD_UPDATE_ICON_LAYER && it.parameterCount == 7
             } ?: run {
-                Log.w(TAG, "updateIconLayer not found, icon layer tilt skipped")
+                Lg.w(TAG, "updateIconLayer not found, icon layer tilt skipped")
                 null
             } ?: return
             method.isAccessible = true
@@ -593,13 +593,13 @@ object LauncherTiltHook {
                         updateForParams(params, surfacePropertiesOf(transaction, surface), rect)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "updateIconLayer intercept error", t)
+                        Lg.e(TAG, "updateIconLayer intercept error", t)
                     }
                     result
                 }
-            Log.i(TAG, "mounted: $CLASS_ICON_LAYER_UPDATER#$METHOD_UPDATE_ICON_LAYER")
+            Lg.i(TAG, "mounted: $CLASS_ICON_LAYER_UPDATER#$METHOD_UPDATE_ICON_LAYER")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount updateIconLayer FAILED", t)
+            Lg.e(TAG, "mount updateIconLayer FAILED", t)
         }
     }
 
@@ -635,19 +635,19 @@ object LauncherTiltHook {
                             try {
                                 applyGenericAtY(chain.getArgs())
                             } catch (t: Throwable) {
-                                Log.e(TAG, "light window intercept error", t)
+                                Lg.e(TAG, "light window intercept error", t)
                             }
                             result
                         }
                     mounted++
-                    Log.i(TAG, "mounted light window path: ${clazz.simpleName}#${m.name}")
+                    Lg.i(TAG, "mounted light window path: ${clazz.simpleName}#${m.name}")
                 } catch (t: Throwable) {
-                    Log.e(TAG, "mount light window method FAILED: ${m.name}", t)
+                    Lg.e(TAG, "mount light window method FAILED: ${m.name}", t)
                 }
             }
-            if (mounted == 0) Log.w(TAG, "$CLASS_APP_LAUNCH_ANIM_LIGHT: no matching onUpdate\$lambda method")
+            if (mounted == 0) Lg.w(TAG, "$CLASS_APP_LAUNCH_ANIM_LIGHT: no matching onUpdate\$lambda method")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount light window path FAILED (class not found)", t)
+            Lg.e(TAG, "mount light window path FAILED (class not found)", t)
         }
     }
 
@@ -719,7 +719,7 @@ object LauncherTiltHook {
                         else -> null
                     }
                 } catch (t: Throwable) {
-                    Log.e(TAG, "tilt listener ${method.name} error", t)
+                    Lg.e(TAG, "tilt listener ${method.name} error", t)
                     when (method.name) {
                         "hashCode" -> System.identityHashCode(proxy)
                         "equals" -> false
@@ -734,7 +734,7 @@ object LauncherTiltHook {
             add.invoke(anim, listener)
             logD { "watch registered for tilt" }
         } catch (t: Throwable) {
-            Log.e(TAG, "watch failed, tilt cleanup disabled for this anim", t)
+            Lg.e(TAG, "watch failed, tilt cleanup disabled for this anim", t)
         }
     }
 
@@ -765,13 +765,13 @@ object LauncherTiltHook {
                             logD { "break carry bound to TransformParams" }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "TransformParams ctor intercept error", t)
+                        Lg.e(TAG, "TransformParams ctor intercept error", t)
                     }
                     result
                 }
-            Log.i(TAG, "mounted: $CLASS_TRANSFORM_PARAMS<init>() [break carry]")
+            Lg.i(TAG, "mounted: $CLASS_TRANSFORM_PARAMS<init>() [break carry]")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount TransformParams ctor FAILED", t)
+            Lg.e(TAG, "mount TransformParams ctor FAILED", t)
         }
         // 5b. createBreakAppOpenAnim：进方法前放挂起槽，出方法后清理
         try {
@@ -780,7 +780,7 @@ object LauncherTiltHook {
             val method = clazz.declaredMethods.firstOrNull {
                 it.name == METHOD_CREATE_BREAK_APP_OPEN_ANIM && it.parameterCount == 1
             } ?: run {
-                Log.w(TAG, "$METHOD_CREATE_BREAK_APP_OPEN_ANIM not found, break carry skipped")
+                Lg.w(TAG, "$METHOD_CREATE_BREAK_APP_OPEN_ANIM not found, break carry skipped")
                 null
             } ?: return
             method.isAccessible = true
@@ -792,7 +792,7 @@ object LauncherTiltHook {
                         pendingBreakTilt = createBreakTilt(record, recCls)
                         pendingBreakThreadId = System.identityHashCode(Thread.currentThread())
                     } catch (t: Throwable) {
-                        Log.e(TAG, "createBreakAppOpenAnim pre intercept error", t)
+                        Lg.e(TAG, "createBreakAppOpenAnim pre intercept error", t)
                     }
                     val result = chain.proceed()
                     // 若方法内没构造 TransformParams（异常/分支），槽位不残留
@@ -802,13 +802,13 @@ object LauncherTiltHook {
                             pendingBreakThreadId = -1
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "createBreakAppOpenAnim post intercept error", t)
+                        Lg.e(TAG, "createBreakAppOpenAnim post intercept error", t)
                     }
                     result
                 }
-            Log.i(TAG, "mounted: $CLASS_SWIPE_UP_HANDLER#$METHOD_CREATE_BREAK_APP_OPEN_ANIM(AnimationRecord)")
+            Lg.i(TAG, "mounted: $CLASS_SWIPE_UP_HANDLER#$METHOD_CREATE_BREAK_APP_OPEN_ANIM(AnimationRecord)")
         } catch (t: Throwable) {
-            Log.e(TAG, "mount createBreakAppOpenAnim FAILED", t)
+            Lg.e(TAG, "mount createBreakAppOpenAnim FAILED", t)
         }
     }
 
@@ -828,7 +828,7 @@ object LauncherTiltHook {
             }
         }
     } catch (t: Throwable) {
-        Log.e(TAG, "createBreakTilt failed", t)
+        Lg.e(TAG, "createBreakTilt failed", t)
         null
     }
 
@@ -883,7 +883,7 @@ object LauncherTiltHook {
         return try {
             mForSurface?.invoke(transaction, surface)
         } catch (t: Throwable) {
-            Log.e(TAG, "forSurface failed", t)
+            Lg.e(TAG, "forSurface failed", t)
             null
         }
     }
@@ -922,7 +922,7 @@ object LauncherTiltHook {
             val surface = fMSurface?.get(props)
             if (surface != null) tilt.trackSurface(surface)
         } catch (t: Throwable) {
-            Log.e(TAG, "applyTilt failed", t)
+            Lg.e(TAG, "applyTilt failed", t)
         }
     }
 
@@ -942,13 +942,13 @@ object LauncherTiltHook {
                     val props = forSurface.invoke(tx, surface) ?: continue
                     setM4.invoke(props, identity4x4)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "reset surface props failed", t)
+                    Lg.e(TAG, "reset surface props failed", t)
                 }
             }
             val rawTx = getTx.invoke(tx) as? android.view.SurfaceControl.Transaction
             rawTx?.apply()
         } catch (t: Throwable) {
-            Log.e(TAG, "resetSurfaces failed", t)
+            Lg.e(TAG, "resetSurfaces failed", t)
         }
     }
 
@@ -973,7 +973,7 @@ object LauncherTiltHook {
                     perspective.coerceIn(0, Prefs.ANIM_TILT_PERSPECTIVE_MAX) / 100f,
                 )
             } catch (t: Throwable) {
-                Log.e(TAG, "read tilt config failed, treat as disabled", t)
+                Lg.e(TAG, "read tilt config failed, treat as disabled", t)
                 TiltConfig(false, 1f, 1f)
             }
             cfgReadAtMs = now
@@ -982,7 +982,7 @@ object LauncherTiltHook {
     }
 
     private inline fun logD(msg: () -> String) {
-        if (logEnabled) Log.d(TAG, msg())
+        if (logEnabled) Lg.d(TAG, msg())
     }
 
     // ------------------------------------------------------------ [doc/spec/84] 方位轴矩阵合成
@@ -1154,7 +1154,7 @@ object LauncherTiltHook {
             try {
                 mainHandler().postDelayed({ tick() }, CLEANUP_DELAY_MS)
             } catch (t: Throwable) {
-                Log.e(TAG, "postDelayed cleanup failed", t)
+                Lg.e(TAG, "postDelayed cleanup failed", t)
             }
         }
 
@@ -1169,7 +1169,7 @@ object LauncherTiltHook {
                         try {
                             mainHandler().postDelayed({ tick() }, CLEANUP_FRAME_SETTLE_RETRY_MS)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "retry cleanup post failed", t)
+                            Lg.e(TAG, "retry cleanup post failed", t)
                         }
                         return
                     }
@@ -1181,7 +1181,7 @@ object LauncherTiltHook {
                 carryPending = false
                 cleanupOwnedSurfaces()
             } catch (t: Throwable) {
-                Log.e(TAG, "tilt cleanup tick failed", t)
+                Lg.e(TAG, "tilt cleanup tick failed", t)
             }
         }
 

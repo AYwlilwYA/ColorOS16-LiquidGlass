@@ -30,6 +30,7 @@ import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -982,7 +983,7 @@ object BlurDrawHook {
                 }
                 mainHandler().postDelayed(textForceRefreshRunnable, interval.toLong())
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast forceRefresh periodic tick error", t)
+                Lg.e(TAG, "text-contrast forceRefresh periodic tick error", t)
                 textForceRefreshScheduled = false
             }
         }
@@ -1015,7 +1016,7 @@ object BlurDrawHook {
         try {
             mainHandler().postDelayed(textForceRefreshRunnable, interval.toLong())
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast forceRefresh loop start failed", t)
+            Lg.e(TAG, "text-contrast forceRefresh loop start failed", t)
             textForceRefreshScheduled = false
         }
     }
@@ -1255,13 +1256,13 @@ object BlurDrawHook {
                         }
                         srcBmp.recycle()
                     }, 300L)
-                    Log.i(TAG, "lg-preheat: real-GrContext warm view attached (spec/118)")
+                    Lg.i(TAG, "lg-preheat: real-GrContext warm view attached (spec/118)")
                 } catch (t: Throwable) {
-                    Log.w(TAG, "lg-preheat: real-GrContext warm failed (spec/118)", t)
+                    Lg.w(TAG, "lg-preheat: real-GrContext warm failed (spec/118)", t)
                 }
             }, 8000L)
         } catch (t: Throwable) {
-            Log.w(TAG, "lg-preheat: schedule real warm failed", t)
+            Lg.w(TAG, "lg-preheat: schedule real warm failed", t)
         }
     }
 
@@ -1335,7 +1336,7 @@ object BlurDrawHook {
     private fun registerKeyguardStateBroadcastReceiver() {
         val ctx = systemUiContext()
         if (ctx == null) {
-            Log.w(TAG, "lg-batt: keyguard broadcast receiver skipped, context null")
+            Lg.w(TAG, "lg-batt: keyguard broadcast receiver skipped, context null")
             return
         }
         try {
@@ -1350,9 +1351,9 @@ object BlurDrawHook {
                         val action = intent?.action ?: return
                         // 缓存置过期 → 下次 isKeyguardLockedNow 强制实测（不直接写死状态值）
                         cachedKeyguardLockedAt = 0L
-                        if (moduleLogEnabled) Log.d(TAG, "lg-batt: keyguard cache invalidated by broadcast $action")
+                        if (moduleLogEnabled) Lg.d(TAG, "lg-batt: keyguard cache invalidated by broadcast $action")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "lg-batt: keyguard broadcast onReceive error", t)
+                        Lg.e(TAG, "lg-batt: keyguard broadcast onReceive error", t)
                     }
                 }
             }
@@ -1363,9 +1364,9 @@ object BlurDrawHook {
             } else {
                 ctx.applicationContext.registerReceiver(receiver, filter)
             }
-            Log.i(TAG, "lg-batt: keyguard broadcast receiver registered")
+            Lg.i(TAG, "lg-batt: keyguard broadcast receiver registered")
         } catch (t: Throwable) {
-            Log.e(TAG, "lg-batt: register keyguard broadcast receiver failed", t)
+            Lg.e(TAG, "lg-batt: register keyguard broadcast receiver failed", t)
         }
     }
 
@@ -1435,9 +1436,9 @@ object BlurDrawHook {
             lastSnapshotFingerprint = 0
             postInvalidateHosts()
             triggerBackgroundCapture()
-            Log.i(TAG, "state: glass caches invalidated ($reason)")
+            Lg.i(TAG, "state: glass caches invalidated ($reason)")
         } catch (t: Throwable) {
-            Log.e(TAG, "state: glass caches invalidate failed ($reason)", t)
+            Lg.e(TAG, "state: glass caches invalidate failed ($reason)", t)
         }
     }
 
@@ -1452,7 +1453,7 @@ object BlurDrawHook {
     private fun registerPowerSaveBroadcastReceiver() {
         val ctx = systemUiContext()
         if (ctx == null) {
-            Log.w(TAG, "power-save: broadcast receiver skipped, context null")
+            Lg.w(TAG, "power-save: broadcast receiver skipped, context null")
             return
         }
         try {
@@ -1464,7 +1465,7 @@ object BlurDrawHook {
                         val on = isPowerSaveGlassOff()
                         invalidateGlassState("power-save-changed on=$on")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "power-save: broadcast onReceive error", t)
+                        Lg.e(TAG, "power-save: broadcast onReceive error", t)
                     }
                 }
             }
@@ -1473,9 +1474,9 @@ object BlurDrawHook {
             } else {
                 ctx.applicationContext.registerReceiver(receiver, filter)
             }
-            Log.i(TAG, "power-save: broadcast receiver registered (on=${isPowerSaveGlassOff()})")
+            Lg.i(TAG, "power-save: broadcast receiver registered (on=${isPowerSaveGlassOff()})")
         } catch (t: Throwable) {
-            Log.e(TAG, "power-save: register broadcast receiver failed", t)
+            Lg.e(TAG, "power-save: register broadcast receiver failed", t)
         }
     }
 
@@ -1626,7 +1627,7 @@ object BlurDrawHook {
         maskGlassDim = try {
             Prefs.read(a).getFloat(Prefs.KEY_MASK_GLASS_DIM, Prefs.DEFAULT_MASK_GLASS_DIM).coerceIn(0f, 1f)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read mask_glass_dim failed, keep $maskGlassDim", t)
+            Lg.w(TAG, "prefs read mask_glass_dim failed, keep $maskGlassDim", t)
             maskGlassDim
         }
         return maskGlassDim
@@ -2007,7 +2008,7 @@ object BlurDrawHook {
                 lastRenderModeMap.clear()
                 lastBlurLogTimeMap.clear()
             }
-            Log.i(TAG, "render: $id $mode" + (reason?.let { " ($it)" } ?: "") + extra)
+            Lg.i(TAG, "render: $id $mode" + (reason?.let { " ($it)" } ?: "") + extra)
             return
         }
         // 稳态：GLASS 静默（切换才打，不刷屏）；BLUR 每 ~2s 重打一次，暴露持久磨砂 drawable
@@ -2015,7 +2016,7 @@ object BlurDrawHook {
         val now = SystemClock.uptimeMillis()
         if (now - (lastBlurLogTimeMap[id] ?: 0L) < BLUR_REPEAT_LOG_MS) return
         lastBlurLogTimeMap[id] = now
-        Log.i(TAG, "render: $id $mode" + (reason?.let { " ($it)" } ?: "") + extra)
+        Lg.i(TAG, "render: $id $mode" + (reason?.let { " ($it)" } ?: "") + extra)
     }
 
     /** BLUR 定位信息：优先 screenRegionMap 已映射的宿主 view 类名，miss 则 drawable 类名 + bounds。 */
@@ -2098,7 +2099,7 @@ object BlurDrawHook {
         val last = diagLastTimes[key]
         val sinceLast = if (last != null) now - last else -1L
         diagLastTimes[key] = now
-        Log.d(tag, "$point up=${now}ms sinceAnchor=${sinceAnchor}ms sinceLast=${sinceLast}ms$extra")
+        Lg.d(tag, "$point up=${now}ms sinceAnchor=${sinceAnchor}ms sinceLast=${sinceLast}ms$extra")
     }
 
     /**
@@ -2127,13 +2128,13 @@ object BlurDrawHook {
                     if (logThrottleLastTimes.size > 256) logThrottleLastTimes.clear()
                     val text = msg()
                     when (level) {
-                        Log.WARN -> Log.w(TAG, text)
-                        Log.DEBUG -> Log.d(TAG, text)
-                        else -> Log.i(TAG, text)
+                        Log.WARN -> Lg.w(TAG, text)
+                        Log.DEBUG -> Lg.d(TAG, text)
+                        else -> Lg.i(TAG, text)
                     }
                 }
             } else {
-                Log.e(TAG, msg())
+                Lg.e(TAG, msg())
             }
         }
     }
@@ -2156,7 +2157,7 @@ object BlurDrawHook {
     ) {
         if (!moduleLogEnabled) return
         if (level == Log.ERROR) {
-            msg()?.let { Log.e(TAG, it) }
+            msg()?.let { Lg.e(TAG, it) }
             return
         }
         val now = SystemClock.uptimeMillis()
@@ -2166,9 +2167,9 @@ object BlurDrawHook {
         if (logThrottleLastTimes.size > 256) logThrottleLastTimes.clear()
         val text = msg() ?: return
         when (level) {
-            Log.WARN -> Log.w(TAG, text)
-            Log.DEBUG -> Log.d(TAG, text)
-            else -> Log.i(TAG, text)
+            Log.WARN -> Lg.w(TAG, text)
+            Log.DEBUG -> Lg.d(TAG, text)
+            else -> Lg.i(TAG, text)
         }
     }
 
@@ -2248,7 +2249,7 @@ object BlurDrawHook {
             Prefs.DEFAULT_SEEDLING_CAPSULE_GLASS
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Log.w(TAG, "Hook B skipped: SDK=${Build.VERSION.SDK_INT} < Q")
+            Lg.w(TAG, "Hook B skipped: SDK=${Build.VERSION.SDK_INT} < Q")
             return
         }
         resolveMethods(classLoader)
@@ -2274,10 +2275,10 @@ object BlurDrawHook {
         mountLegacyDrawBlur(api, classLoader)
         mountMotionSources(api, classLoader)
         // [spec/114] 四处多版本兼容自检小表（#39/#14 在 mount 内、R5/R6/R14 在 resolveMethods 内已各打命中行）
-        Log.i(TAG, "lg-hook compat #39 onBlurReady=$compatHitOnBlurReady")
-        Log.i(TAG, "lg-hook compat #14 qsPageScroll=$compatHitQsPageScroll")
-        Log.i(TAG, "lg-hook compat R5/R6 corner=$compatHitCorner")
-        Log.i(TAG, "lg-hook compat R14 materialColor=$compatHitMaterialColor")
+        Lg.i(TAG, "lg-hook compat #39 onBlurReady=$compatHitOnBlurReady")
+        Lg.i(TAG, "lg-hook compat #14 qsPageScroll=$compatHitQsPageScroll")
+        Lg.i(TAG, "lg-hook compat R5/R6 corner=$compatHitCorner")
+        Lg.i(TAG, "lg-hook compat R14 materialColor=$compatHitMaterialColor")
         // [spec/114] 16.00.14 能力自检：缺失项逐条打 lg-hook INFO 降级行（现役全命中只打一行汇总）
         legacyCompatCheck(classLoader)
         // [2026-08-15 偶发不抓屏根治] hook NotificationShadeWindowView.onAttachedToWindow/onDetachedFromWindow：
@@ -2338,11 +2339,11 @@ object BlurDrawHook {
                 // "setTextColor 时刻快照缺失 → 永不反色"）。仅检查已登记 TextView（O(1) 快速跳过），非每帧采样。
                 mountTextViewOnDraw(api, classLoader)
             } else {
-                Log.i(TAG, "text-contrast disabled but mask/force-white enabled: only TextView#setTextColor mounted (force white/gray text)")
+                Lg.i(TAG, "text-contrast disabled but mask/force-white enabled: only TextView#setTextColor mounted (force white/gray text)")
             }
             mountTextViewSetTextColor(api, classLoader)
         } else {
-            Log.i(TAG, "text-contrast/mask/force-white disabled by prefs, QsColorUtil/TextView hooks skipped")
+            Lg.i(TAG, "text-contrast/mask/force-white disabled by prefs, QsColorUtil/TextView hooks skipped")
         }
         // [spec/48 遮罩走系统自带机制] 不再手动叠黑（spec/46 ScrimView.onDraw after 方案已移除）：
         // behind_scrim 黑 tint 由 AutoBlurDrawable.draw 拦截（主路径）+ drawBlurShader 兜底内绘制，
@@ -2395,12 +2396,12 @@ object BlurDrawHook {
 
     /** [spec/114] 能力缺失降级日志（16.00.14 上即「16.00.14 无 X，降级」） */
     private fun logLegacyDegrade(what: String) {
-        Log.i(TAG, "lg-hook: ${if (legacyPosteffectArch) "16.00.14 无" else "本版本无"} $what，降级")
+        Lg.i(TAG, "lg-hook: ${if (legacyPosteffectArch) "16.00.14 无" else "本版本无"} $what，降级")
     }
 
     /** [spec/114] 旧架构等价链命中日志（能力仍在，只是换了旧名/旧来源） */
     private fun logLegacyAlt(what: String, alt: String) {
-        if (legacyPosteffectArch) Log.i(TAG, "lg-hook: 16.00.14 无 $what，改走 $alt")
+        if (legacyPosteffectArch) Lg.i(TAG, "lg-hook: 16.00.14 无 $what，改走 $alt")
     }
 
     /**
@@ -2435,7 +2436,7 @@ object BlurDrawHook {
         }
         // ---- hook 点（#2/#4/#5/#7/#9/#41/#43/#44 = 16.00.14 缺；#14 双 FQCN）----
         if (!hasPubMethod(CLASS_LIGHT_STYLE_STROKE_DRAWABLE, METHOD_DRAW, Canvas::class.java)) {
-            Log.i(TAG, "lg-hook: ${ver}无 LightStyleStrokeDrawable#draw（QS 详情背景改回基类 AutoBlurDrawable，#1 覆盖）")
+            Lg.i(TAG, "lg-hook: ${ver}无 LightStyleStrokeDrawable#draw（QS 详情背景改回基类 AutoBlurDrawable，#1 覆盖）")
         }
         if (!hasPubMethod(CLASS_CAPSULE_BACKGROUND_HELPER, METHOD_DRAW_CAPSULE_BG, View::class.java, Canvas::class.java)) {
             miss("#4 锁屏胶囊 CapsuleBackgroundHelper#drawCapsuleBg")
@@ -2444,7 +2445,7 @@ object BlurDrawHook {
             miss("#5 锁屏胶囊 CapsuleEarView#onDraw")
         }
         if (!hasPubMethod(CLASS_MIX_COLOR_TILE_DRAWABLE, METHOD_DRAW, Canvas::class.java)) {
-            Log.i(TAG, "lg-hook: ${ver}无 MixColorTileDrawable#draw（1x1 tile 改走 MixColorTileViewBackground + 基类 AutoBlurDrawable，#1 覆盖）")
+            Lg.i(TAG, "lg-hook: ${ver}无 MixColorTileDrawable#draw（1x1 tile 改走 MixColorTileViewBackground + 基类 AutoBlurDrawable，#1 覆盖）")
         }
         if (!hasPubMethod(CLASS_META_BALL_DRAWABLE, "setMetaColor", Int::class.javaPrimitiveType!!)) {
             miss("#9 MetaBall 粘连（MetaBallBlurDrawable#setMetaColor）")
@@ -2478,7 +2479,7 @@ object BlurDrawHook {
         if (resolveClassChain(classLoader, "com.oplus.systemui.notification.row.NotificationMenuRowMetaBallController2") == null) {
             miss("R20 侧滑按钮圆角正解（NotificationMenuRowMetaBallController2）")
         }
-        Log.i(TAG, "lg-hook compat 16.00.14 能力自检：缺 $missing 项，旧架构=$legacyPosteffectArch")
+        Lg.i(TAG, "lg-hook compat 16.00.14 能力自检：缺 $missing 项，旧架构=$legacyPosteffectArch")
     }
 
     private fun resolveMethods(classLoader: ClassLoader) {
@@ -2487,7 +2488,7 @@ object BlurDrawHook {
         // drawBlurShader 全部解析不到 → 主渲染链整体失效。旧名候选只在新名 miss 时才试，
         // 现役（16.99.12/17.99.02）新名第一命中，解析结果与原先逐字一致。
         legacyPosteffectArch = isLegacyPosteffect(classLoader)
-        if (legacyPosteffectArch) Log.i(TAG, "lg-hook: 16.00.14 旧架构 posteffect 检出，shader/圆角走旧名等价链")
+        if (legacyPosteffectArch) Lg.i(TAG, "lg-hook: 16.00.14 旧架构 posteffect 检出，shader/圆角走旧名等价链")
         try {
             val base = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
             val shaderCls = resolveClassChain(classLoader, CLASS_DRAWABLE_SHADER, CLASS_DRAWABLE_SHADER_LEGACY)
@@ -2516,7 +2517,7 @@ object BlurDrawHook {
             if (mGetDrawableShaderPaint?.name == METHOD_GET_LEGACY_SHADER_PAINT ||
                 mGetDrawableShader?.name == METHOD_GET_LEGACY_SHADER
             ) {
-                Log.i(TAG, "lg-hook: 16.00.14 命中旧名 getBlurShaderPaint/getBlurShader（getDrawableShader* 等价物）")
+                Lg.i(TAG, "lg-hook: 16.00.14 命中旧名 getBlurShaderPaint/getBlurShader（getDrawableShader* 等价物）")
             }
             mLegacyPathProviderField = try {
                 base.getDeclaredField(FIELD_LEGACY_PATH_PROVIDER).apply { isAccessible = true }
@@ -2526,10 +2527,10 @@ object BlurDrawHook {
             if (mGetDrawableShaderPaint == null || mGetDrawableShader == null || mGetEnableShader == null ||
                 mGetBounds == null || mGetPaint == null || mDrawBlurShader == null || mGetShaderOrNull == null
             ) {
-                Log.e(TAG, "Hook B resolve methods incomplete, Hook B degraded")
+                Lg.e(TAG, "Hook B resolve methods incomplete, Hook B degraded")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve methods failed, Hook B disabled", t)
+            Lg.e(TAG, "Hook B resolve methods failed, Hook B disabled", t)
         }
         // [doc/spec/100 方案2] metaball 黏连参数反射：**独立 try-catch** —— 失败只关闭方案2
         //（该类元素回到原几何 + 原 shader 路径，逐像素零变化），不影响其他 hook。
@@ -2553,9 +2554,9 @@ object BlurDrawHook {
             mMbGetBlendShape = ballCls.getMethod(METHOD_MB_GET_BLEND_SHAPE)
             val mbCls = Class.forName(CLASS_META_BALL_DRAWABLE, false, classLoader)
             mMbBlendRangeField = mbCls.getField(FIELD_MB_BLEND_RANGE)
-            Log.i(TAG, "Hook A metaball reflection resolved (spec/100 方案2)")
+            Lg.i(TAG, "Hook A metaball reflection resolved (spec/100 方案2)")
         } catch (t: Throwable) {
-            Log.w(TAG, "Hook A resolve metaball methods failed, spec/100 方案2 disabled", t)
+            Lg.w(TAG, "Hook A resolve metaball methods failed, spec/100 方案2 disabled", t)
             mGetMetaBallParams = null
             mMbGetBallParams = null
         }
@@ -2571,7 +2572,7 @@ object BlurDrawHook {
             val pbd = Class.forName(CLASS_PLATFORM_BLUR_DRAWABLE, false, classLoader)
             mPlatformGetBlurDrawable = pbd.getMethod(METHOD_GET_BLUR_DRAWABLE)
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve AutoBlurDrawable methods failed, screen-region map disabled", t)
+            Lg.e(TAG, "Hook B resolve AutoBlurDrawable methods failed, screen-region map disabled", t)
         }
         // C1：通知卡片专属映射反射（独立 try-catch：失败只影响通知卡片映射）
         try {
@@ -2579,7 +2580,7 @@ object BlurDrawHook {
             mNbvGetBgView = ext.getMethod(METHOD_GET_BG_VIEW)
             mNbvGetViewBlurProxy = ext.getMethod(METHOD_GET_VIEW_BLUR_PROXY)
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve NotificationBackgroundView methods failed, notification card map disabled", t)
+            Lg.e(TAG, "Hook B resolve NotificationBackgroundView methods failed, notification card map disabled", t)
         }
         // 磨砂根因·修 1：currentMaterialColor 反射链（spec/114 §5.2）：① ViewBlurManager 字段（16.x）
         // → miss 则 ② ViewBlurManager.materialColorManager holder → ③ MaterialColorManager 字段
@@ -2591,7 +2592,7 @@ object BlurDrawHook {
             val colorField = try {
                 vbmCls.getField(FIELD_CURRENT_MATERIAL_COLOR).apply { isAccessible = true }.also {
                     compatHitMaterialColor = "ViewBlurManager field (16.x)"
-                    Log.i(TAG, "lg-hook: currentMaterialColor @ ViewBlurManager field (16.x)")
+                    Lg.i(TAG, "lg-hook: currentMaterialColor @ ViewBlurManager field (16.x)")
                 }
             } catch (t: Throwable) {
                 val holder = vbmCls.getDeclaredField(FIELD_MATERIAL_COLOR_MANAGER).apply { isAccessible = true }
@@ -2599,15 +2600,15 @@ object BlurDrawHook {
                 mcmCls.getField(FIELD_CURRENT_MATERIAL_COLOR).apply { isAccessible = true }.also {
                     mMaterialColorManagerHolder = holder
                     compatHitMaterialColor = "MaterialColorManager via holder (17.99.02)"
-                    Log.i(TAG, "lg-hook: currentMaterialColor @ MaterialColorManager via holder (17.99.02)")
+                    Lg.i(TAG, "lg-hook: currentMaterialColor @ MaterialColorManager via holder (17.99.02)")
                 }
             }
             mViewBlurManagerMaterialColor = colorField
-            Log.i(TAG, "Hook B ViewBlurManager.currentMaterialColor field resolved (frosted-glass suppress)")
+            Lg.i(TAG, "Hook B ViewBlurManager.currentMaterialColor field resolved (frosted-glass suppress)")
         } catch (t: Throwable) {
             mMaterialColorManagerHolder = null
             compatHitMaterialColor = "MISS (suppressed)"
-            Log.e(TAG, "Hook B resolve ViewBlurManager.currentMaterialColor failed, material-color layer suppress disabled", t)
+            Lg.e(TAG, "Hook B resolve ViewBlurManager.currentMaterialColor failed, material-color layer suppress disabled", t)
         }
         // 磨砂根因·修 3（agent 细读实证 2026-08-12，F:\jadx_extimp_out\NotificationBackgroundViewExtImp.java）：
         // ExtImp.draw 里两个未被抑制的叠加层——clickAlpha（public int，line 62，点击暗层
@@ -2618,18 +2619,18 @@ object BlurDrawHook {
             val extImpCls = Class.forName(CLASS_NBV_EXT_IMP, false, classLoader)
             mExtImpClickAlpha = extImpCls.getField(FIELD_CLICK_ALPHA).apply { isAccessible = true }
             mExtImpStackedMuskColor = extImpCls.getField(FIELD_STACKED_MUSK_COLOR).apply { isAccessible = true }
-            Log.i(TAG, "Hook B ExtImp clickAlpha/stackedNotificationMuskColor field resolved (click/stack overlay suppress)")
+            Lg.i(TAG, "Hook B ExtImp clickAlpha/stackedNotificationMuskColor field resolved (click/stack overlay suppress)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve ExtImp click/stack overlay fields failed, suppress disabled", t)
+            Lg.e(TAG, "Hook B resolve ExtImp click/stack overlay fields failed, suppress disabled", t)
         }
         // 磨砂根因·修 2：PlatformBlurDrawable.blurMaskColor 字段（public int，PlatformBlurDrawable.java
         // line 36 实证）。独立 try-catch：失败只禁用 blurMaskColor 层抑制（回退现状），不影响其他 hook。
         try {
             val pbdCls = Class.forName(CLASS_PLATFORM_BLUR_DRAWABLE, false, classLoader)
             mPlatformBlurMaskColor = pbdCls.getField(FIELD_BLUR_MASK_COLOR).apply { isAccessible = true }
-            Log.i(TAG, "Hook B PlatformBlurDrawable.blurMaskColor field resolved (mask-layer suppress)")
+            Lg.i(TAG, "Hook B PlatformBlurDrawable.blurMaskColor field resolved (mask-layer suppress)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve PlatformBlurDrawable.blurMaskColor failed, mask-color layer suppress disabled", t)
+            Lg.e(TAG, "Hook B resolve PlatformBlurDrawable.blurMaskColor failed, mask-color layer suppress disabled", t)
         }
         // 任务 D + 任务 B（spec/11）：圆角半径反射（独立 try-catch：失败只回退启发式圆角，不影响映射）。
         // 字段名以 16.1 反编译源码核对：ViewBlurProxy.getBlurConfig() → BlurConfig.getCornerRadius()/
@@ -2641,7 +2642,7 @@ object BlurDrawHook {
             val vbpCls = Class.forName(CLASS_VIEW_BLUR_PROXY, false, classLoader)
             mViewProxyGetBlurConfig = vbpCls.getMethod(METHOD_GET_BLUR_CONFIG)
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve ViewBlurProxy.getBlurConfig failed, corner chain off", t)
+            Lg.e(TAG, "Hook B resolve ViewBlurProxy.getBlurConfig failed, corner chain off", t)
         }
         try {
             val bc = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
@@ -2662,20 +2663,20 @@ object BlurDrawHook {
             if (mBlurConfigGetCornerRadius != null && mBlurConfigGetPathProvider != null &&
                 mBlurConfigGetGradientStrokeCornerParam != null && mBlurConfigGetRadiusWeight != null
             ) {
-                Log.i(TAG, "Hook B BlurConfig cornerRadius reflection resolved (getCornerRadius/四角/pathProvider/gradientStrokeCornerParam/radiusWeight)")
+                Lg.i(TAG, "Hook B BlurConfig cornerRadius reflection resolved (getCornerRadius/四角/pathProvider/gradientStrokeCornerParam/radiusWeight)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve BlurConfig cornerRadius failed, no valid cornerRadius (use square)", t)
+            Lg.e(TAG, "Hook B resolve BlurConfig cornerRadius failed, no valid cornerRadius (use square)", t)
         }
         // [spec/11] 级 3：RoundRectOutlineProvider.cornerRadius 字段（QS tile pathProvider 真实圆角，
         // 已是 OplusQsSmoothRoundUtil 映射后 shader 值）。独立 try-catch：失败只跳过该级，不影响已解析方法。
         try {
             mRoundRectOutlineProviderClass = Class.forName(CLASS_ROUND_RECT_OUTLINE_PROVIDER, false, classLoader)
             mRoundRectOutlineProviderCornerRadiusField = mRoundRectOutlineProviderClass?.getField(FIELD_CORNER_RADIUS)
-            Log.i(TAG, "Hook B RoundRectOutlineProvider.cornerRadius field resolved (pathProvider 级)")
+            Lg.i(TAG, "Hook B RoundRectOutlineProvider.cornerRadius field resolved (pathProvider 级)")
         } catch (t: Throwable) {
             logLegacyAlt("RoundRectOutlineProvider", "BaseRoundRectPathProvider.getMaxRadius（级 3d）")
-            Log.e(TAG, "Hook B resolve RoundRectOutlineProvider.cornerRadius failed, pathProvider 圆角级跳过", t)
+            Lg.e(TAG, "Hook B resolve RoundRectOutlineProvider.cornerRadius failed, pathProvider 圆角级跳过", t)
         }
         // [spec/11] 级 4：CornerParams.getRadius()（侧滑按钮/MetaBall gradientStrokeCornerParam 真实圆角）。
         // [spec/114] 候选链：根包（16.x）→ params 子包（17.99.02 迁包）→ GradientStrokeCornerParams
@@ -2685,10 +2686,10 @@ object BlurDrawHook {
                 ?: throw ClassNotFoundException("$CLASS_CORNER_PARAMS | $CLASS_CORNER_PARAMS_PARAMS | $CLASS_CORNER_PARAMS_LEGACY all miss")
             mCornerParamsGetRadius = cpCls.getMethod(METHOD_GET_RADIUS)
             compatHitCorner = cpCls.name
-            Log.i(TAG, "lg-hook: CornerParams.getRadius @ ${cpCls.name}")
-            Log.i(TAG, "Hook B CornerParams.getRadius() resolved (gradientStrokeCornerParam 级)")
+            Lg.i(TAG, "lg-hook: CornerParams.getRadius @ ${cpCls.name}")
+            Lg.i(TAG, "Hook B CornerParams.getRadius() resolved (gradientStrokeCornerParam 级)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve CornerParams.getRadius() failed, gradientStrokeCornerParam 圆角级跳过", t)
+            Lg.e(TAG, "Hook B resolve CornerParams.getRadius() failed, gradientStrokeCornerParam 圆角级跳过", t)
         }
         // [spec/18 圆角过渡区深挖修正] 级 4b：CornerParams.getType()/getWeight() + CornerType.CONIC 判等
         //（CONIC 本体判定；c16.1_PJZ110 CornerParams.java/CornerType.java 反编译实证）。
@@ -2703,10 +2704,10 @@ object BlurDrawHook {
                 ?: throw ClassNotFoundException("$CLASS_CORNER_TYPE | $CLASS_CORNER_TYPE_PARAMS | $CLASS_CORNER_TYPE_LEGACY all miss")
             mCornerTypeConic = cornerTypeCls.getField("CONIC").get(null)
             compatHitCorner = cpCls.name
-            Log.i(TAG, "lg-hook: CornerParams getType/getWeight + CornerType.CONIC @ ${cpCls.name} / ${cornerTypeCls.name}")
-            Log.i(TAG, "Hook B CornerParams.getType()/getWeight() + CornerType.CONIC resolved (CONIC 本体判定)")
+            Lg.i(TAG, "lg-hook: CornerParams getType/getWeight + CornerType.CONIC @ ${cpCls.name} / ${cornerTypeCls.name}")
+            Lg.i(TAG, "Hook B CornerParams.getType()/getWeight() + CornerType.CONIC resolved (CONIC 本体判定)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve CornerType.CONIC failed, conic 判定降级圆弧", t)
+            Lg.e(TAG, "Hook B resolve CornerType.CONIC failed, conic 判定降级圆弧", t)
         }
         // [spec/18 Bug 1 二级菜单] 级 3b：BaseRoundRectPathProvider.getMaxRadius()（SmoothRoundRectPathProvider
         // 系 pathProvider 真实圆角；QsFlashLightBackgroundUtils.provideLevelBarBlurProxy 用它——反编译实证
@@ -2717,9 +2718,9 @@ object BlurDrawHook {
             val prCls = Class.forName(CLASS_BASE_ROUND_RECT_PATH_PROVIDER, false, classLoader)
             mBaseRoundRectPathProviderClass = prCls
             mBaseRoundRectPathProviderGetMaxRadius = prCls.getMethod(METHOD_GET_MAX_RADIUS)
-            Log.i(TAG, "Hook B BaseRoundRectPathProvider.getMaxRadius() resolved (smooth-round pathProvider 级)")
+            Lg.i(TAG, "Hook B BaseRoundRectPathProvider.getMaxRadius() resolved (smooth-round pathProvider 级)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve BaseRoundRectPathProvider.getMaxRadius() failed, smooth-round pathProvider 圆角级跳过", t)
+            Lg.e(TAG, "Hook B resolve BaseRoundRectPathProvider.getMaxRadius() failed, smooth-round pathProvider 圆角级跳过", t)
         }
         // 侧滑按钮真实圆角：SystemUI R.dimen.notification_corner_radius（16dp，dimens.xml:3027 实证；
         // NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius() line 35-36 读它做按钮圆角）。
@@ -2727,9 +2728,9 @@ object BlurDrawHook {
         try {
             val rDimen = Class.forName("com.android.systemui.R\$dimen", false, classLoader)
             mNotificationCornerRadiusDimenId = rDimen.getField("notification_corner_radius").getInt(null)
-            Log.i(TAG, "Hook B notification_corner_radius dimen id resolved: $mNotificationCornerRadiusDimenId")
+            Lg.i(TAG, "Hook B notification_corner_radius dimen id resolved: $mNotificationCornerRadiusDimenId")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve notification_corner_radius dimen id failed, swipe cornerRadius uses fallback", t)
+            Lg.e(TAG, "Hook B resolve notification_corner_radius dimen id failed, swipe cornerRadius uses fallback", t)
         }
         // [Bug 3] 侧滑按钮圆角级 2 兜底：NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius()
         //（私有实例方法，反编译实证内部 `context.getResources().getDimensionPixelSize(R.dimen.notification_corner_radius)`
@@ -2741,41 +2742,41 @@ object BlurDrawHook {
             )
             mBlurMenuCornerRadiusCtor = metaCls.getConstructor(android.content.Context::class.java)
             mBlurMenuCornerRadiusMethod = metaCls.getDeclaredMethod("getBlurMenuCornerRadius").apply { isAccessible = true }
-            Log.i(TAG, "Hook B NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius() resolved (swipe cornerRadius fallback)")
+            Lg.i(TAG, "Hook B NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius() resolved (swipe cornerRadius fallback)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve getBlurMenuCornerRadius failed, swipe cornerRadius uses getIdentifier fallback", t)
+            Lg.e(TAG, "Hook B resolve getBlurMenuCornerRadius failed, swipe cornerRadius uses getIdentifier fallback", t)
         }
         // [Bug 5] 通知卡片横向滑动修正：OplusCustomRow.mBackgroundNormal（私有 declared，玻璃宿主）。
         // 独立 try-catch：失败只跳过横向滑动重采样（回退现状冻结），不影响其他 hook。
         try {
             val rowCls = Class.forName(CLASS_OPLUS_CUSTOM_ROW, false, classLoader)
             mCustomRowBgNormal = rowCls.getDeclaredField(FIELD_BG_NORMAL).apply { isAccessible = true }
-            Log.i(TAG, "Hook B OplusCustomRow.mBackgroundNormal field resolved (custom-row swipe re-sample)")
+            Lg.i(TAG, "Hook B OplusCustomRow.mBackgroundNormal field resolved (custom-row swipe re-sample)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve OplusCustomRow fields failed, custom-row swipe re-sample disabled", t)
+            Lg.e(TAG, "Hook B resolve OplusCustomRow fields failed, custom-row swipe re-sample disabled", t)
         }
         // [spec/44b] 流体云展开卡片背景透明：NotificationBackgroundView.mBackground 字段（public Drawable，
         // onDraw 直绘该字段，View.background 置空无效）。独立 try-catch：失败只跳过背景透明（玻璃仍画）。
         try {
             val nbvCls = Class.forName(CLASS_NOTIFICATION_BACKGROUND_VIEW, false, classLoader)
             mNbvBackgroundField = nbvCls.getDeclaredField(FIELD_NBV_BACKGROUND).apply { isAccessible = true }
-            Log.i(TAG, "Hook B NotificationBackgroundView.mBackground field resolved (custom-row bg transparent)")
+            Lg.i(TAG, "Hook B NotificationBackgroundView.mBackground field resolved (custom-row bg transparent)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve NotificationBackgroundView.mBackground failed, custom-row bg transparent disabled", t)
+            Lg.e(TAG, "Hook B resolve NotificationBackgroundView.mBackground failed, custom-row bg transparent disabled", t)
         }
         // 任务 2：侧滑按钮（MaskBlurDrawable）映射反射（独立 try-catch：失败只影响侧滑按钮映射）
         try {
             val mask = Class.forName(CLASS_MASK_BLUR_DRAWABLE, false, classLoader)
             mMaskGetViewBlurProxy = mask.getMethod(METHOD_GET_VIEW_BLUR_PROXY)
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve MaskBlurDrawable methods failed, swipe-menu map disabled", t)
+            Lg.e(TAG, "Hook B resolve MaskBlurDrawable methods failed, swipe-menu map disabled", t)
         }
         // 任务 3：普通 tile（MixColorTileDrawable）内层 AutoBlurDrawable 取出反射（DrawableWrapper.getDrawable 公有继承）
         try {
             val mix = Class.forName(CLASS_MIX_COLOR_TILE_DRAWABLE, false, classLoader)
             mTileWrapperGetDrawable = mix.getMethod(METHOD_GET_DRAWABLE)
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve MixColorTileDrawable methods failed, tile map fallback disabled", t)
+            Lg.e(TAG, "Hook B resolve MixColorTileDrawable methods failed, tile map fallback disabled", t)
         }
         // [任务 T] maskColor 字段反射（反编译 :394 `this.maskColor = ...`，private int）。读取状态色
         // 合成 alpha 判 z；字段反射失败（null）→ 不做 z 判断，恒走"只画玻璃"拦截兜底
@@ -2783,7 +2784,7 @@ object BlurDrawHook {
             val mix = Class.forName(CLASS_MIX_COLOR_TILE_DRAWABLE, false, classLoader)
             mTileMaskColor = mix.getDeclaredField("maskColor").apply { isAccessible = true }
         } catch (t: Throwable) {
-            Log.w(TAG, "Hook B resolve MixColorTileDrawable.maskColor field failed, tile mask skip uses z-less path", t)
+            Lg.w(TAG, "Hook B resolve MixColorTileDrawable.maskColor field failed, tile mask skip uses z-less path", t)
         }
         // 任务 spec/14 补映射：胶囊/胶囊耳/媒体横幅宿主私有字段反射（各自独立 try-catch：
         // 失败只禁用对应控件映射，不影响其他 hook；字段名以 16.1 反编译核对）
@@ -2791,23 +2792,23 @@ object BlurDrawHook {
             val capsuleCls = Class.forName(CLASS_CAPSULE_BACKGROUND_HELPER, false, classLoader)
             mCapsuleHelperViewBlurProxy = capsuleCls.getDeclaredField(FIELD_VIEW_BLUR_PROXY).apply { isAccessible = true }
             mCapsuleHelperReplacedDrawable = capsuleCls.getDeclaredField(FIELD_REPLACED_DRAWABLE).apply { isAccessible = true }
-            Log.i(TAG, "Hook B CapsuleBackgroundHelper.viewBlurProxy/replacedDrawable fields resolved (capsule map)")
+            Lg.i(TAG, "Hook B CapsuleBackgroundHelper.viewBlurProxy/replacedDrawable fields resolved (capsule map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve CapsuleBackgroundHelper fields failed, capsule map disabled", t)
+            Lg.e(TAG, "Hook B resolve CapsuleBackgroundHelper fields failed, capsule map disabled", t)
         }
         try {
             val earCls = Class.forName(CLASS_CAPSULE_EAR_VIEW, false, classLoader)
             mCapsuleEarViewBlurProxy = earCls.getDeclaredField(FIELD_VIEW_BLUR_PROXY).apply { isAccessible = true }
-            Log.i(TAG, "Hook B CapsuleEarView.viewBlurProxy field resolved (capsule ear map)")
+            Lg.i(TAG, "Hook B CapsuleEarView.viewBlurProxy field resolved (capsule ear map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve CapsuleEarView.viewBlurProxy failed, capsule ear map disabled", t)
+            Lg.e(TAG, "Hook B resolve CapsuleEarView.viewBlurProxy failed, capsule ear map disabled", t)
         }
         try {
             val mediaCls = Class.forName(CLASS_MEDIA_CAROUSEL_VIEW, false, classLoader)
             mMediaCarouselViewBlurProxy = mediaCls.getDeclaredField(FIELD_VIEW_BLUR_PROXY).apply { isAccessible = true }
-            Log.i(TAG, "Hook B OplusMediaCarouselView.viewBlurProxy field resolved (media banner map)")
+            Lg.i(TAG, "Hook B OplusMediaCarouselView.viewBlurProxy field resolved (media banner map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve OplusMediaCarouselView.viewBlurProxy failed, media banner map disabled", t)
+            Lg.e(TAG, "Hook B resolve OplusMediaCarouselView.viewBlurProxy failed, media banner map disabled", t)
         }
         // [spec/19 Heads-Up 玻璃化] ViewBlurProxy.setBlurType(BlurType) + BlurTypeMotion/PlatformStatic 实例
         // + NotificationBackgroundView 类。独立 try-catch：失败只禁用 heads-up 玻璃化（回退现状 Motion），不影响其他 hook。
@@ -2820,9 +2821,9 @@ object BlurDrawHook {
             mBlurTypeMotionInstance = Class.forName(CLASS_BLUR_TYPE_MOTION, false, classLoader).getField("INSTANCE").get(null)
             mBlurTypePlatformStaticInstance = Class.forName(CLASS_BLUR_TYPE_PLATFORM_STATIC, false, classLoader).getField("INSTANCE").get(null)
             mNotifBackgroundViewClass = Class.forName(CLASS_NOTIFICATION_BACKGROUND_VIEW, false, classLoader)
-            Log.i(TAG, "Hook B ViewBlurProxy.setBlurType(BlurType) resolved (heads-up Motion -> PlatformStatic)")
+            Lg.i(TAG, "Hook B ViewBlurProxy.setBlurType(BlurType) resolved (heads-up Motion -> PlatformStatic)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve ViewBlurProxy.setBlurType failed, heads-up glass disabled", t)
+            Lg.e(TAG, "Hook B resolve ViewBlurProxy.setBlurType failed, heads-up glass disabled", t)
         }
         // [spec/48 遮罩走系统自带机制] ScrimView.mScrimName 字段反射（public String，16.1 反编译实证）。
         // 独立 try-catch：失败只让 behind_scrim 判定走保守路径（宁画不丢），不影响其他 hook。
@@ -2835,19 +2836,19 @@ object BlurDrawHook {
             mViewAlphaField = try {
                 scrimCls.getField(FIELD_SCRIM_VIEW_ALPHA).apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook B resolve ScrimView.mViewAlpha failed, mask falls back to hook alpha", t)
+                Lg.e(TAG, "Hook B resolve ScrimView.mViewAlpha failed, mask falls back to hook alpha", t)
                 null
             }
             mExtGetScrimView = try {
                 Class.forName(CLASS_SCRIM_VIEW_EX, false, classLoader)
                     .getMethod(METHOD_GET_SCRIM_VIEW).apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook B resolve ScrimViewEx.getScrimView failed, ext hook uses conservative path", t)
+                Lg.e(TAG, "Hook B resolve ScrimViewEx.getScrimView failed, ext hook uses conservative path", t)
                 null
             }
-            Log.i(TAG, "Hook B ScrimView.mScrimName/mViewAlpha field resolved (spec/48 behind-scrim black tint)")
+            Lg.i(TAG, "Hook B ScrimView.mScrimName/mViewAlpha field resolved (spec/48 behind-scrim black tint)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B resolve ScrimView.mScrimName failed, behind-scrim mask uses conservative path", t)
+            Lg.e(TAG, "Hook B resolve ScrimView.mScrimName failed, behind-scrim mask uses conservative path", t)
         }
     }
 
@@ -2870,7 +2871,7 @@ object BlurDrawHook {
      */
     private fun mountAutoBlurDrawable(api: XposedInterface, classLoader: ClassLoader) {
         if (mAutoGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B AutoBlurDrawable methods unresolved, screen-region map disabled")
+            Lg.w(TAG, "Hook B AutoBlurDrawable methods unresolved, screen-region map disabled")
             return
         }
         try {
@@ -2882,7 +2883,7 @@ object BlurDrawHook {
                     try {
                         recordScreenRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "AutoBlurDrawable.draw: intercept error", t)
+                        Lg.e(TAG, "AutoBlurDrawable.draw: intercept error", t)
                     }
                     // [spec/48 方案 A] 背景 scrim：不 proceed → 拦截整条背景模糊绘制链
                     // （AutoBlurDrawable.draw → PlatformBlurDrawable → posteffect BlurDrawable
@@ -2900,14 +2901,14 @@ object BlurDrawHook {
                             try {
                                 if (isBehindScrim(chain)) drawScrimBlackTint(chain)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "bg: draw scrim black tint error", t)
+                                Lg.e(TAG, "bg: draw scrim black tint error", t)
                             }
                             logThrottled("bg-scrim-keep", Log.INFO) { "bg: keep system cc blur (strength=${ccBlurStrength()}%), proceed system blur + black tint" }
                         } else {
                             try {
                                 if (isBehindScrim(chain)) drawScrimBlackTint(chain)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "bg: draw scrim black tint error", t)
+                                Lg.e(TAG, "bg: draw scrim black tint error", t)
                             }
                             logThrottled("bg-scrim-skip", Log.INFO) { "bg: force transparent, skip AutoBlurDrawable.draw (background scrim, reveal wallpaper)" }
                         }
@@ -2915,9 +2916,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (screen-region map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (screen-region map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW", t)
         }
     }
 
@@ -2938,7 +2939,7 @@ object BlurDrawHook {
      */
     private fun mountLightStyleStrokeDrawable(api: XposedInterface, classLoader: ClassLoader) {
         if (mAutoGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B AutoBlurDrawable methods unresolved, stroke-tile map disabled")
+            Lg.w(TAG, "Hook B AutoBlurDrawable methods unresolved, stroke-tile map disabled")
             return
         }
         try {
@@ -2950,13 +2951,13 @@ object BlurDrawHook {
                     try {
                         recordScreenRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "LightStyleStrokeDrawable.draw: intercept error", t)
+                        Lg.e(TAG, "LightStyleStrokeDrawable.draw: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW(Canvas) (stroke-tile screen-region map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW(Canvas) (stroke-tile screen-region map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW (stroke tiles keep system blur)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW (stroke tiles keep system blur)", t)
         }
     }
 
@@ -2968,7 +2969,7 @@ object BlurDrawHook {
      */
     private fun mountMaskBlurDrawable(api: XposedInterface, classLoader: ClassLoader) {
         if (mMaskGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B MaskBlurDrawable methods unresolved, swipe-menu map disabled")
+            Lg.w(TAG, "Hook B MaskBlurDrawable methods unresolved, swipe-menu map disabled")
             return
         }
         try {
@@ -2980,13 +2981,13 @@ object BlurDrawHook {
                     try {
                         recordSwipeMenuRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "MaskBlurDrawable.draw: intercept error", t)
+                        Lg.e(TAG, "MaskBlurDrawable.draw: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (swipe-menu screen-region map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (swipe-menu screen-region map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW (swipe buttons keep system blur)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW (swipe buttons keep system blur)", t)
         }
     }
 
@@ -3010,7 +3011,7 @@ object BlurDrawHook {
      */
     private fun mountCapsuleBackground(api: XposedInterface, classLoader: ClassLoader) {
         if (mCapsuleHelperViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B CapsuleBackgroundHelper fields unresolved, capsule map disabled")
+            Lg.w(TAG, "Hook B CapsuleBackgroundHelper fields unresolved, capsule map disabled")
             return
         }
         try {
@@ -3022,13 +3023,13 @@ object BlurDrawHook {
                     try {
                         recordCapsuleBgRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "CapsuleBackgroundHelper.drawCapsuleBg: intercept error", t)
+                        Lg.e(TAG, "CapsuleBackgroundHelper.drawCapsuleBg: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG(View, Canvas) (capsule map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG(View, Canvas) (capsule map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG (capsule keeps system blur)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG (capsule keeps system blur)", t)
         }
     }
 
@@ -3037,23 +3038,23 @@ object BlurDrawHook {
         val helper = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "capsule: getThisObject failed", t); return
+            Lg.e(TAG, "capsule: getThisObject failed", t); return
         } ?: return
         val view = try {
             chain.getArg(0) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "capsule: getArg(0) failed", t); null
+            Lg.e(TAG, "capsule: getArg(0) failed", t); null
         } ?: return
         val proxy = try {
             mCapsuleHelperViewBlurProxy?.get(helper)
         } catch (t: Throwable) {
-            Log.e(TAG, "capsule: read viewBlurProxy failed", t); null
+            Lg.e(TAG, "capsule: read viewBlurProxy failed", t); null
         }
         // smooth-radius 模式：replacedDrawable（shard 的 PlatformBlurDrawable）被绘制 → 单独注册
         val replaced = try {
             mCapsuleHelperReplacedDrawable?.get(helper) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "capsule: read replacedDrawable failed", t); null
+            Lg.e(TAG, "capsule: read replacedDrawable failed", t); null
         }
         if (replaced != null) {
             registerPlatformBlurRegion(view, replaced, proxy, "capsule-shard")
@@ -3069,7 +3070,7 @@ object BlurDrawHook {
      */
     private fun mountCapsuleEar(api: XposedInterface, classLoader: ClassLoader) {
         if (mCapsuleEarViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B CapsuleEarView field unresolved, capsule ear map disabled")
+            Lg.w(TAG, "Hook B CapsuleEarView field unresolved, capsule ear map disabled")
             return
         }
         try {
@@ -3081,13 +3082,13 @@ object BlurDrawHook {
                     try {
                         recordCapsuleEarRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "CapsuleEarView.onDraw: intercept error", t)
+                        Lg.e(TAG, "CapsuleEarView.onDraw: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW(Canvas) (capsule ear map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW(Canvas) (capsule ear map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW (capsule ear keeps system blur)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW (capsule ear keeps system blur)", t)
         }
     }
 
@@ -3096,12 +3097,12 @@ object BlurDrawHook {
         val view = try {
             chain.getThisObject() as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "capsuleEar: getThisObject failed", t); return
+            Lg.e(TAG, "capsuleEar: getThisObject failed", t); return
         } ?: return
         val proxy = try {
             mCapsuleEarViewBlurProxy?.get(view)
         } catch (t: Throwable) {
-            Log.e(TAG, "capsuleEar: read viewBlurProxy failed", t); return
+            Lg.e(TAG, "capsuleEar: read viewBlurProxy failed", t); return
         } ?: return
         registerPlatformBlurRegion(view, null, proxy, "capsuleEar")
     }
@@ -3115,7 +3116,7 @@ object BlurDrawHook {
      */
     private fun mountMediaCarousel(api: XposedInterface, classLoader: ClassLoader) {
         if (mMediaCarouselViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Log.w(TAG, "Hook B OplusMediaCarouselView field unresolved, media banner map disabled")
+            Lg.w(TAG, "Hook B OplusMediaCarouselView field unresolved, media banner map disabled")
             return
         }
         try {
@@ -3127,13 +3128,13 @@ object BlurDrawHook {
                     try {
                         recordMediaCarouselRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "OplusMediaCarouselView.onDraw: intercept error", t)
+                        Lg.e(TAG, "OplusMediaCarouselView.onDraw: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW(Canvas) (media banner map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW(Canvas) (media banner map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW (media banner keeps system blur)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW (media banner keeps system blur)", t)
         }
     }
 
@@ -3142,12 +3143,12 @@ object BlurDrawHook {
         val view = try {
             chain.getThisObject() as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "media: getThisObject failed", t); return
+            Lg.e(TAG, "media: getThisObject failed", t); return
         } ?: return
         val proxy = try {
             mMediaCarouselViewBlurProxy?.get(view)
         } catch (t: Throwable) {
-            Log.e(TAG, "media: read viewBlurProxy failed", t); return
+            Lg.e(TAG, "media: read viewBlurProxy failed", t); return
         } ?: return
         registerPlatformBlurRegion(view, null, proxy, "mediaCarousel")
     }
@@ -3324,7 +3325,7 @@ object BlurDrawHook {
         val result = try {
             evaluateUnifiedCornerScope(hostView, drawable, logTag)
         } catch (t: Throwable) {
-            Log.e(TAG, "unified-corner: scope evaluate failed view=${hostView.javaClass.name} logTag=$logTag", t)
+            Lg.e(TAG, "unified-corner: scope evaluate failed view=${hostView.javaClass.name} logTag=$logTag", t)
             null  // [doc/spec/108 m7] 判定异常 → 返回 false 但**不写缓存**（下次重判）
         }
         if (result == null) return false
@@ -3869,7 +3870,7 @@ object BlurDrawHook {
             mBlurConfigSetRightBottomCornerRadius = setRb
             mBlurConfigCornerRadiusField = radiusField
         } catch (t: Throwable) {
-            Log.e(TAG, "unified-corner: resolve BlurConfig setters failed, feature disabled", t)
+            Lg.e(TAG, "unified-corner: resolve BlurConfig setters failed, feature disabled", t)
             mBlurConfigSetCornerRadius = null
             mBlurConfigSetLeftTopCornerRadius = null
             mBlurConfigSetRightTopCornerRadius = null
@@ -3882,9 +3883,9 @@ object BlurDrawHook {
             val cpCls = resolveClassChain(classLoader, CLASS_CORNER_PARAMS, CLASS_CORNER_PARAMS_PARAMS, CLASS_CORNER_PARAMS_LEGACY)
                 ?: throw ClassNotFoundException("$CLASS_CORNER_PARAMS | $CLASS_CORNER_PARAMS_PARAMS | $CLASS_CORNER_PARAMS_LEGACY all miss")
             mCornerParamsSetRadius = cpCls.getMethod(METHOD_SET_RADIUS, Float::class.javaPrimitiveType)
-            Log.i(TAG, "lg-hook: CornerParams.setRadius @ ${cpCls.name}")
+            Lg.i(TAG, "lg-hook: CornerParams.setRadius @ ${cpCls.name}")
         } catch (t: Throwable) {
-            Log.e(TAG, "unified-corner: resolve CornerParams.setRadius failed, CONIC corner not unified", t)
+            Lg.e(TAG, "unified-corner: resolve CornerParams.setRadius failed, CONIC corner not unified", t)
             mCornerParamsSetRadius = null
         }
         try {
@@ -3901,7 +3902,7 @@ object BlurDrawHook {
             mRoundRectOutlineProviderRadiiField = radiiField
             mRoundRectOutlineProviderGetCornerWeight = getWeight
         } catch (t: Throwable) {
-            Log.e(TAG, "unified-corner: resolve RoundRectOutlineProvider update failed, QS tile provider not unified", t)
+            Lg.e(TAG, "unified-corner: resolve RoundRectOutlineProvider update failed, QS tile provider not unified", t)
             // 全不写：写口为空 ⇒ captureProviderShadowIfAbsent 直接返回 false ⇒ provider 一个字节都不写。
             // 注意 mRoundRectOutlineProviderCornerRadiusField 由读链（resolveCornerRadius 一段）共用，
             // 这里不清它，避免把读链一起打死。
@@ -3919,7 +3920,7 @@ object BlurDrawHook {
                 "unified-corner: write-through reflection resolved (spec/106 方案 A)"
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "unified-corner: resolve ViewBlurProxy applyBlurConfig/invalidatePath failed, OFF restore degraded", t)
+            Lg.e(TAG, "unified-corner: resolve ViewBlurProxy applyBlurConfig/invalidatePath failed, OFF restore degraded", t)
             mViewProxyApplyBlurConfig = null
             mViewProxyInvalidatePath = null
         }
@@ -3945,19 +3946,19 @@ object BlurDrawHook {
             try {
                 mViewProxyGetBlurDrawable?.invoke(cornerProxy, null) ?: return
             } catch (t: Throwable) {
-                Log.e(TAG, "$logTag: getBlurDrawable failed", t); return
+                Lg.e(TAG, "$logTag: getBlurDrawable failed", t); return
             }
         }
         if (!mPlatformGetBlurDrawable!!.declaringClass.isInstance(resolved)) return
         val target = try {
             mPlatformGetBlurDrawable?.invoke(resolved)
         } catch (t: Throwable) {
-            Log.e(TAG, "$logTag: PlatformBlurDrawable.getBlurDrawable() failed", t); return
+            Lg.e(TAG, "$logTag: PlatformBlurDrawable.getBlurDrawable() failed", t); return
         } ?: return
         val targetBounds = try {
             mGetBounds?.invoke(target) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "$logTag: posteffect getBounds failed", t); null
+            Lg.e(TAG, "$logTag: posteffect getBounds failed", t); null
         }
         val bounds = targetBounds ?: Rect(0, 0, hostView.width, hostView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
@@ -3969,7 +3970,7 @@ object BlurDrawHook {
         try {
             hostView.getLocationOnScreen(loc)
         } catch (t: Throwable) {
-            Log.e(TAG, "$logTag: getLocationOnScreen failed", t); return
+            Lg.e(TAG, "$logTag: getLocationOnScreen failed", t); return
         }
         val region = RectF(
             (loc[0] + bounds.left).toFloat(),
@@ -3995,7 +3996,7 @@ object BlurDrawHook {
         // 每帧重抓整屏 → 运动中/AOD 静止零抓屏，消除 CPU 热点排序 #1）
         if (previous == null) {
             screenRegionMap[key] = entry
-            Log.i(
+            Lg.i(
                 TAG,
                 "coord: $logTag id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "bounds=$bounds region=$region cornerRadius=${corner.radius} source=${corner.source}"
@@ -4021,7 +4022,7 @@ object BlurDrawHook {
         if (mTileWrapperGetDrawable == null || mAutoGetViewBlurProxy == null ||
             mViewProxyGetView == null || mViewProxyGetBlurDrawable == null
         ) {
-            Log.w(TAG, "Hook B MixColorTileDrawable methods unresolved, tile map fallback disabled")
+            Lg.w(TAG, "Hook B MixColorTileDrawable methods unresolved, tile map fallback disabled")
             return
         }
         try {
@@ -4033,20 +4034,20 @@ object BlurDrawHook {
                     try {
                         recordMixColorTileRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "MixColorTileDrawable.draw: intercept error", t)
+                        Lg.e(TAG, "MixColorTileDrawable.draw: intercept error", t)
                     }
                     // [任务 T] 移除玻璃之上的 maskColor 磨砂覆盖层（仅 z=true 时干预；失败回退原始含磨砂）
                     var handled = false
                     try {
                         handled = skipTileMaskColorLayer(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "MixColorTileDrawable.draw: skipTileMaskColorLayer error", t)
+                        Lg.e(TAG, "MixColorTileDrawable.draw: skipTileMaskColorLayer error", t)
                     }
                     if (!handled) chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW(Canvas) (tile map fallback + mask layer skip)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW(Canvas) (tile map fallback + mask layer skip)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW", t)
         }
     }
 
@@ -4055,14 +4056,14 @@ object BlurDrawHook {
         val auto = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "map: getThisObject failed", t); return
+            Lg.e(TAG, "map: getThisObject failed", t); return
         } ?: return
         // [doc/spec/99 clip∩bounds] AutoBlurDrawable.draw(Canvas) 的 arg0 = 宿主 View 自己的 draw canvas，
         // 与 autoBounds 同坐标空间（宿主 View 本地），proceed 前采集 = 与 BaseDrawable.draw 同块 canvas。
         val hostClip = try {
             (chain.getArg(0) as? Canvas)?.clipBounds
         } catch (t: Throwable) {
-            Log.e(TAG, "map: getArg(0) clipBounds failed", t); null
+            Lg.e(TAG, "map: getArg(0) clipBounds failed", t); null
         }
         registerAutoBlurScreenRegion(auto, hostClip)
     }
@@ -4076,12 +4077,12 @@ object BlurDrawHook {
         val proxy = try {
             mAutoGetViewBlurProxy?.invoke(auto)
         } catch (t: Throwable) {
-            Log.e(TAG, "map: getViewBlurProxy failed", t); return false
+            Lg.e(TAG, "map: getViewBlurProxy failed", t); return false
         } ?: return false
         val hostView = try {
             mViewProxyGetView?.invoke(proxy) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "map: getView failed", t); return false
+            Lg.e(TAG, "map: getView failed", t); return false
         } ?: return false
         val defaultDrawable = try {
             mAutoDefaultDrawable?.get(auto) as? Drawable
@@ -4091,7 +4092,7 @@ object BlurDrawHook {
         val autoBounds = try {
             mAutoGetBounds?.invoke(auto) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "map: getBounds(AutoBlurDrawable) failed", t); null
+            Lg.e(TAG, "map: getBounds(AutoBlurDrawable) failed", t); null
         }
         return registerScreenRegionCore(proxy, hostView, defaultDrawable, autoBounds, "map", hostClip)
     }
@@ -4115,17 +4116,17 @@ object BlurDrawHook {
         val mask = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "swipe: getThisObject failed", t); return
+            Lg.e(TAG, "swipe: getThisObject failed", t); return
         } ?: return
         val proxy = try {
             mMaskGetViewBlurProxy?.invoke(mask)
         } catch (t: Throwable) {
-            Log.e(TAG, "swipe: getViewBlurProxy failed", t); return
+            Lg.e(TAG, "swipe: getViewBlurProxy failed", t); return
         } ?: return
         val hostView = try {
             mViewProxyGetView?.invoke(proxy) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "swipe: getView failed", t); return
+            Lg.e(TAG, "swipe: getView failed", t); return
         } ?: return
         registerScreenRegionCore(proxy, hostView, null, null, "swipe")
     }
@@ -4150,12 +4151,12 @@ object BlurDrawHook {
         val mix = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: getThisObject failed", t); return
+            Lg.e(TAG, "tile: getThisObject failed", t); return
         } ?: return
         val inner = try {
             mTileWrapperGetDrawable?.invoke(mix)
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: getDrawable failed", t); return
+            Lg.e(TAG, "tile: getDrawable failed", t); return
         } ?: return
         registerAutoBlurScreenRegion(inner)
     }
@@ -4184,12 +4185,12 @@ object BlurDrawHook {
         val mix = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: getThisObject failed", t); null
+            Lg.e(TAG, "tile: getThisObject failed", t); null
         } ?: return false
         val canvas = try {
             chain.getArg(0) as? Canvas
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: getArg(0) failed", t); null
+            Lg.e(TAG, "tile: getArg(0) failed", t); null
         } ?: return false
         // 仅 z=true 才需干预：复刻 draw 内 z 判定（maskColor alpha 与 drawable alpha 合成后非透明）
         val maskColorField = mTileMaskColor
@@ -4206,7 +4207,7 @@ object BlurDrawHook {
                     (compAlpha and 0xFF) != 0
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "tile: read maskColor failed, treat as inactive (no skip)", t)
+                Lg.e(TAG, "tile: read maskColor failed, treat as inactive (no skip)", t)
                 false
             }
             if (!z) return false
@@ -4214,7 +4215,7 @@ object BlurDrawHook {
         val inner = try {
             mTileWrapperGetDrawable?.invoke(mix) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: getDrawable failed", t); null
+            Lg.e(TAG, "tile: getDrawable failed", t); null
         } ?: return false
         return try {
             // 等效 super.draw(canvas)（DrawableWrapper.draw = mDrawable.draw）：只画内层玻璃底座
@@ -4222,7 +4223,7 @@ object BlurDrawHook {
             logThrottled("tile-mask-skip", Log.DEBUG) { "tile: maskColor layer skipped, glass only (id=${System.identityHashCode(inner)})" }
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "tile: direct glass draw failed, fallback original (with mask layer)", t)
+            Lg.e(TAG, "tile: direct glass draw failed, fallback original (with mask layer)", t)
             false
         }
     }
@@ -4251,13 +4252,13 @@ object BlurDrawHook {
                             chain.proceed()
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "header-mask: intercept error", t)
+                        Lg.e(TAG, "header-mask: intercept error", t)
                         chain.proceed()
                     }
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)", t)
         }
     }
 
@@ -4266,18 +4267,18 @@ object BlurDrawHook {
         val d = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "header-mask: getThisObject failed", t); null
+            Lg.e(TAG, "header-mask: getThisObject failed", t); null
         } ?: return false
         val canvas = try {
             chain.getArg(0) as? Canvas
         } catch (t: Throwable) {
-            Log.e(TAG, "header-mask: getArg(0) failed", t); null
+            Lg.e(TAG, "header-mask: getArg(0) failed", t); null
         } ?: return false
         val field = mHeaderMaskInner ?: return false
         val inner = try {
             field.get(d) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "header-mask: read inner drawable failed", t); null
+            Lg.e(TAG, "header-mask: read inner drawable failed", t); null
         } ?: return false
         return try {
             val bounds = (d as? Drawable)?.bounds
@@ -4286,7 +4287,7 @@ object BlurDrawHook {
             logThrottled("header-mask-skip", Log.INFO) { "header-mask: maskColor layer skipped, inner=${inner.javaClass.simpleName} bounds=${inner.bounds}" }
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "header-mask: inner draw failed, fallback proceed (with mask layer)", t)
+            Lg.e(TAG, "header-mask: inner draw failed, fallback proceed (with mask layer)", t)
             false
         }
     }
@@ -4308,12 +4309,12 @@ object BlurDrawHook {
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
-                    Log.i(TAG, "meta-color: skip setMetaColor (gradient overlay suppress)")
+                    Lg.i(TAG, "meta-color: skip setMetaColor (gradient overlay suppress)")
                     null
                 }
-            Log.i(TAG, "Hook B mounted: MetaBallBlurDrawable#setMetaColor(int) (gradient overlay suppress)")
+            Lg.i(TAG, "Hook B mounted: MetaBallBlurDrawable#setMetaColor(int) (gradient overlay suppress)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: MetaBallBlurDrawable#setMetaColor (gradient layer keeps)", t)
+            Lg.e(TAG, "Hook B mount FAILED: MetaBallBlurDrawable#setMetaColor (gradient layer keeps)", t)
         }
     }
 
@@ -4343,7 +4344,7 @@ object BlurDrawHook {
         try {
             hostView.getLocationOnScreen(loc)
         } catch (t: Throwable) {
-            Log.e(TAG, "$logTag: getLocationOnScreen failed", t); return false
+            Lg.e(TAG, "$logTag: getLocationOnScreen failed", t); return false
         }
         // [2026-08-13 反射结果缓存] proxy 的 blurDrawable/target 解析结果稳定（同一 drawable 实例每次
         // draw 相同），缓存命中后跳过 getBlurDrawable + platformGetBlurDrawable 反射链，主线程只做
@@ -4357,7 +4358,7 @@ object BlurDrawHook {
             val blurDrawable = try {
                 mViewProxyGetBlurDrawable?.invoke(proxy, defaultDrawable)
             } catch (t: Throwable) {
-                Log.e(TAG, "$logTag: getBlurDrawable(Drawable) failed", t); return false
+                Lg.e(TAG, "$logTag: getBlurDrawable(Drawable) failed", t); return false
             } ?: return false
             // PlatformBlurDrawable（包装层）→ 取内部 posteffect BlurDrawable（drawBlurShader 的 this 同实例）
             val resolved = if (mPlatformGetBlurDrawable != null &&
@@ -4366,7 +4367,7 @@ object BlurDrawHook {
                 try {
                     mPlatformGetBlurDrawable?.invoke(blurDrawable) ?: blurDrawable
                 } catch (t: Throwable) {
-                    Log.e(TAG, "$logTag: PlatformBlurDrawable.getBlurDrawable() failed", t); return false
+                    Lg.e(TAG, "$logTag: PlatformBlurDrawable.getBlurDrawable() failed", t); return false
                 }
             } else {
                 blurDrawable
@@ -4391,7 +4392,7 @@ object BlurDrawHook {
         val targetBounds = try {
             mGetBounds?.invoke(target) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "$logTag: getBounds(posteffect) failed", t); null
+            Lg.e(TAG, "$logTag: getBounds(posteffect) failed", t); null
         }
         val bounds = targetBounds ?: autoBounds ?: Rect(0, 0, hostView.width, hostView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
@@ -4456,7 +4457,7 @@ object BlurDrawHook {
             screenRegionMap[key] = entry
             // [coord 降级] 详细坐标只在首次注册打（追踪器驱动重录时每帧回调不刷屏）；
             // 后续位置变化只打 Log.d 级 map: updated（默认 logcat 不可见）
-            Log.i(
+            Lg.i(
                 TAG,
                 "coord: $logTag id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "autoBounds=$autoBounds targetBounds=$targetBounds bounds=$bounds region=$region " +
@@ -4550,12 +4551,12 @@ object BlurDrawHook {
         val shader = try {
             mGetDrawableShader?.invoke(target)
         } catch (t: Throwable) {
-            Log.e(TAG, "metaball: getDrawableShader failed", t); null
+            Lg.e(TAG, "metaball: getDrawableShader failed", t); null
         } ?: return null
         val params = try {
             gParams.invoke(shader)
         } catch (t: Throwable) {
-            Log.e(TAG, "metaball: getMetaBallParams failed", t); null
+            Lg.e(TAG, "metaball: getMetaBallParams failed", t); null
         } ?: return null
         val valid = try {
             gValid.invoke(params) as? Boolean
@@ -4691,17 +4692,17 @@ object BlurDrawHook {
         val auto = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "bg: getThisObject failed", t); return false
+            Lg.e(TAG, "bg: getThisObject failed", t); return false
         } ?: return false
         val proxy = try {
             mAutoGetViewBlurProxy?.invoke(auto)
         } catch (t: Throwable) {
-            Log.e(TAG, "bg: getViewBlurProxy failed", t); return false
+            Lg.e(TAG, "bg: getViewBlurProxy failed", t); return false
         } ?: return false
         val hostView = try {
             mViewProxyGetView?.invoke(proxy) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "bg: getView failed", t); return false
+            Lg.e(TAG, "bg: getView failed", t); return false
         } ?: return false
         return hostView.javaClass.name.contains("ScrimView")
     }
@@ -4744,7 +4745,7 @@ object BlurDrawHook {
         if (mNbvGetBgView == null || mNbvGetViewBlurProxy == null ||
             mViewProxyGetBlurDrawable == null || mGetBounds == null
         ) {
-            Log.w(TAG, "Hook B NotificationBackgroundView methods unresolved, notification card map disabled")
+            Lg.w(TAG, "Hook B NotificationBackgroundView methods unresolved, notification card map disabled")
             return
         }
         try {
@@ -4756,16 +4757,16 @@ object BlurDrawHook {
                     try {
                         recordNotificationCardRegion(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
+                        Lg.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
                     }
                     // [磨砂根因·修 1] proceed 前临时把 ViewBlurManager.currentMaterialColor 置透明 →
                     // 稳态分支 materialColorDrawable.setTint(透明) 不覆盖玻璃；suppress 内部
                     // try-finally 保证 proceed 后恢复原值（防状态污染）。反射失败 → proceed 原样（含磨砂）。
                     suppressNotificationMaterialColor(chain)
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG", t)
         }
     }
 
@@ -4790,7 +4791,7 @@ object BlurDrawHook {
         val extImp = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "fuzzy: getThisObject failed", t)
+            Lg.e(TAG, "fuzzy: getThisObject failed", t)
             chain.proceed(); return
         }
         if (extImp == null) {
@@ -4799,47 +4800,47 @@ object BlurDrawHook {
         val vbm = try {
             mNbvViewBlurManager?.get(extImp)
         } catch (t: Throwable) {
-            Log.e(TAG, "fuzzy: read viewBlurManager failed", t); null
+            Lg.e(TAG, "fuzzy: read viewBlurManager failed", t); null
         }
         // [spec/114] currentMaterialColor 目标对象：16.x = vbm 本体；17.99.02 = vbm.materialColorManager
         val colorHost = if (mMaterialColorManagerHolder != null) {
             try { mMaterialColorManagerHolder?.get(vbm) } catch (t: Throwable) {
-                Log.e(TAG, "fuzzy: read materialColorManager holder failed", t); null
+                Lg.e(TAG, "fuzzy: read materialColorManager holder failed", t); null
             }
         } else vbm
         // [修3] clickAlpha（点击暗层 clickEffectDrawable alpha，点击动画后归 0）+ stackedNotificationMuskColor
         // （折叠/堆叠动画 oplusColorBg 色层，progress→0 后消失）——置 0 拦截，finally 恢复。独立于 vbm。
-        val origClick = try { mExtImpClickAlpha?.getInt(extImp) } catch (t: Throwable) { Log.e(TAG, "fuzzy: read clickAlpha failed", t); null }
-        val origStack = try { mExtImpStackedMuskColor?.getInt(extImp) } catch (t: Throwable) { Log.e(TAG, "fuzzy: read stackedNotificationMuskColor failed", t); null }
+        val origClick = try { mExtImpClickAlpha?.getInt(extImp) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: read clickAlpha failed", t); null }
+        val origStack = try { mExtImpStackedMuskColor?.getInt(extImp) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: read stackedNotificationMuskColor failed", t); null }
         if (origClick != null && origClick != 0) {
-            try { mExtImpClickAlpha?.setInt(extImp, 0) } catch (t: Throwable) { Log.e(TAG, "fuzzy: clear clickAlpha failed", t) }
+            try { mExtImpClickAlpha?.setInt(extImp, 0) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: clear clickAlpha failed", t) }
         }
         if (origStack != null && origStack != 0) {
-            try { mExtImpStackedMuskColor?.setInt(extImp, 0) } catch (t: Throwable) { Log.e(TAG, "fuzzy: clear stackedNotificationMuskColor failed", t) }
+            try { mExtImpStackedMuskColor?.setInt(extImp, 0) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: clear stackedNotificationMuskColor failed", t) }
         }
         val original = try {
             mViewBlurManagerMaterialColor?.getInt(colorHost)
         } catch (t: Throwable) {
-            Log.e(TAG, "fuzzy: read currentMaterialColor failed", t); null
+            Lg.e(TAG, "fuzzy: read currentMaterialColor failed", t); null
         }
         if (original != null && original != 0) {
             try {
                 mViewBlurManagerMaterialColor?.setInt(colorHost, 0)
             } catch (t: Throwable) {
-                Log.e(TAG, "fuzzy: clear currentMaterialColor failed", t)
+                Lg.e(TAG, "fuzzy: clear currentMaterialColor failed", t)
             }
         }
         try {
             chain.proceed()
         } finally {
             if (original != null) {
-                try { mViewBlurManagerMaterialColor?.setInt(colorHost, original) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore currentMaterialColor failed", t) }
+                try { mViewBlurManagerMaterialColor?.setInt(colorHost, original) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore currentMaterialColor failed", t) }
             }
             if (origClick != null) {
-                try { mExtImpClickAlpha?.setInt(extImp, origClick) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore clickAlpha failed", t) }
+                try { mExtImpClickAlpha?.setInt(extImp, origClick) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore clickAlpha failed", t) }
             }
             if (origStack != null) {
-                try { mExtImpStackedMuskColor?.setInt(extImp, origStack) } catch (t: Throwable) { Log.e(TAG, "fuzzy: restore stackedNotificationMuskColor failed", t) }
+                try { mExtImpStackedMuskColor?.setInt(extImp, origStack) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore stackedNotificationMuskColor failed", t) }
             }
         }
     }
@@ -4865,7 +4866,7 @@ object BlurDrawHook {
      */
     private fun mountPlatformBlurMaskColor(api: XposedInterface, classLoader: ClassLoader) {
         if (mPlatformBlurMaskColor == null) {
-            Log.w(TAG, "Hook B PlatformBlurDrawable.blurMaskColor unresolved, mask-layer suppress disabled")
+            Lg.w(TAG, "Hook B PlatformBlurDrawable.blurMaskColor unresolved, mask-layer suppress disabled")
             return
         }
         try {
@@ -4876,9 +4877,9 @@ object BlurDrawHook {
                 .intercept { chain ->
                     suppressPlatformBlurMaskColor(chain)
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)", t)
         }
     }
 
@@ -4887,7 +4888,7 @@ object BlurDrawHook {
         val pbd = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "fuzzy: getThisObject failed", t)
+            Lg.e(TAG, "fuzzy: getThisObject failed", t)
             chain.proceed(); return
         }
         if (pbd == null) {
@@ -4896,13 +4897,13 @@ object BlurDrawHook {
         val original = try {
             mPlatformBlurMaskColor?.getInt(pbd)
         } catch (t: Throwable) {
-            Log.e(TAG, "fuzzy: read blurMaskColor failed", t); null
+            Lg.e(TAG, "fuzzy: read blurMaskColor failed", t); null
         }
         if (original != null && original != 0) {
             try {
                 mPlatformBlurMaskColor?.setInt(pbd, 0)
             } catch (t: Throwable) {
-                Log.e(TAG, "fuzzy: clear blurMaskColor failed", t)
+                Lg.e(TAG, "fuzzy: clear blurMaskColor failed", t)
             }
         }
         try {
@@ -4912,7 +4913,7 @@ object BlurDrawHook {
                 try {
                     mPlatformBlurMaskColor?.setInt(pbd, original)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "fuzzy: restore blurMaskColor failed", t)
+                    Lg.e(TAG, "fuzzy: restore blurMaskColor failed", t)
                 }
             }
         }
@@ -4923,12 +4924,12 @@ object BlurDrawHook {
         val extImp = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getThisObject failed", t); return
+            Lg.e(TAG, "nbv: getThisObject failed", t); return
         } ?: return
         val bgView = try {
             mNbvGetBgView?.invoke(extImp) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getBgView failed", t); return
+            Lg.e(TAG, "nbv: getBgView failed", t); return
         } ?: return
         // [doc/spec/99 clip∩bounds] 宿主 canvas clip：本 hook 的 arg0 就是 bgView 自己的 draw canvas，
         // 与 `region = loc + bounds` 反推出的 bounds **同坐标空间（bgView 本地）**，且在 proceed() 之前
@@ -4937,28 +4938,28 @@ object BlurDrawHook {
         val hostClip = try {
             (chain.getArg(0) as? Canvas)?.clipBounds
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getArg(0) clipBounds failed", t); null
+            Lg.e(TAG, "nbv: getArg(0) clipBounds failed", t); null
         }
         val loc = IntArray(2)
         try {
             bgView.getLocationOnScreen(loc)
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getLocationOnScreen failed", t); return
+            Lg.e(TAG, "nbv: getLocationOnScreen failed", t); return
         }
         val proxy = try {
             mNbvGetViewBlurProxy?.invoke(extImp)
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getViewBlurProxy failed", t); return
+            Lg.e(TAG, "nbv: getViewBlurProxy failed", t); return
         } ?: return
         val drawableArg = try {
             chain.getArg(1) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getArg(1) failed", t); null
+            Lg.e(TAG, "nbv: getArg(1) failed", t); null
         } ?: return
         val blurDrawable = try {
             mViewProxyGetBlurDrawable?.invoke(proxy, drawableArg) as? Drawable
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: getBlurDrawable(Drawable) failed", t); return
+            Lg.e(TAG, "nbv: getBlurDrawable(Drawable) failed", t); return
         } ?: return
         // 仅 PlatformBlurDrawable 内部 posteffect BlurDrawable（走我们管线）才注册；
         // BackgroundBlurDrawable（framework 自带）不触发 drawBlurShader hook，注册无意义
@@ -4974,12 +4975,12 @@ object BlurDrawHook {
         val target = try {
             mPlatformGetBlurDrawable?.invoke(blurDrawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: PlatformBlurDrawable.getBlurDrawable() failed", t); return
+            Lg.e(TAG, "nbv: PlatformBlurDrawable.getBlurDrawable() failed", t); return
         } ?: return
         val bounds = try {
             mGetBounds?.invoke(target) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "nbv: posteffect getBounds failed", t); null
+            Lg.e(TAG, "nbv: posteffect getBounds failed", t); null
         } ?: Rect(0, 0, bgView.width, bgView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
             logThrottled("nbv-skip-empty-bounds", Log.DEBUG) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
@@ -5028,7 +5029,7 @@ object BlurDrawHook {
         // 每帧重抓整屏 → 通知卡滚动 CPU 热点排序 #1 消除）
         if (previous == null) {
             screenRegionMap[key] = entry
-            Log.i(
+            Lg.i(
                 TAG,
                 "coord: notif-map id=$key view=NotificationBackgroundView bgView=${bgView.javaClass.simpleName} " +
                     "loc=[${loc[0]},${loc[1]}] bounds=$bounds region=$region " +
@@ -5114,7 +5115,7 @@ object BlurDrawHook {
         val clazz = try {
             Class.forName(CLASS_SHADE_ROOT_VIEW, false, classLoader)
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-source: shade root class not found $CLASS_SHADE_ROOT_VIEW", t)
+            Lg.e(TAG, "bg-source: shade root class not found $CLASS_SHADE_ROOT_VIEW", t)
             return
         }
         try {
@@ -5132,16 +5133,16 @@ object BlurDrawHook {
                             // 窗口（重建后）重挂载 → 缓存刷新：shade 根解析不依赖宿主登记时机
                             shadeRootViewCache = view
                             shadeSfcCache = null  // 旧 sfc 在窗口重建后可能失效/错误，强制重解析
-                            Log.i(TAG, "bg-source: shade root attached/reattached, cache refreshed ${view.javaClass.simpleName}")
+                            Lg.i(TAG, "bg-source: shade root attached/reattached, cache refreshed ${view.javaClass.simpleName}")
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "bg-source: shade root onAttachedToWindow intercept error", t)
+                        Lg.e(TAG, "bg-source: shade root onAttachedToWindow intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook mounted: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_ATTACHED_TO_WINDOW() (shade root cache refresh)")
+            Lg.i(TAG, "Hook mounted: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_ATTACHED_TO_WINDOW() (shade root cache refresh)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook mount FAILED: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_ATTACHED_TO_WINDOW", t)
+            Lg.e(TAG, "Hook mount FAILED: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_ATTACHED_TO_WINDOW", t)
         }
         try {
             val detach = clazz.getDeclaredMethod(METHOD_ON_DETACHED_FROM_WINDOW)
@@ -5159,16 +5160,16 @@ object BlurDrawHook {
                         if (view != null && shadeRootViewCache === view) {
                             shadeRootViewCache = null
                             shadeSfcCache = null
-                            Log.i(TAG, "bg-source: shade root detached, cache cleared")
+                            Lg.i(TAG, "bg-source: shade root detached, cache cleared")
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "bg-source: shade root onDetachedFromWindow intercept error", t)
+                        Lg.e(TAG, "bg-source: shade root onDetachedFromWindow intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook mounted: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_DETACHED_FROM_WINDOW() (shade root cache clear)")
+            Lg.i(TAG, "Hook mounted: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_DETACHED_FROM_WINDOW() (shade root cache clear)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook mount FAILED: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_DETACHED_FROM_WINDOW", t)
+            Lg.e(TAG, "Hook mount FAILED: $CLASS_SHADE_ROOT_VIEW#$METHOD_ON_DETACHED_FROM_WINDOW", t)
         }
     }
 
@@ -5179,17 +5180,17 @@ object BlurDrawHook {
         val clazz = try {
             Class.forName(CLASS_PAGED_TILE_LAYOUT_LISTENER, false, classLoader).also {
                 compatHitQsPageScroll = "qs (16.x)"
-                Log.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs (16.x)")
+                Lg.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs (16.x)")
             }
         } catch (t: Throwable) {
             try {
                 Class.forName(CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED, false, classLoader).also {
                     compatHitQsPageScroll = "qs.deprecated (17.99.02)"
-                    Log.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs.deprecated (17.99.02)")
+                    Lg.i(TAG, "lg-hook: PagedTileLayout\$2 @ qs.deprecated (17.99.02)")
                 }
             } catch (t2: Throwable) {
                 compatHitQsPageScroll = "MISS (disabled)"
-                Log.e(TAG, "Hook G mount FAILED: $CLASS_PAGED_TILE_LAYOUT_LISTENER / $CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED (all candidates)", t2)
+                Lg.e(TAG, "Hook G mount FAILED: $CLASS_PAGED_TILE_LAYOUT_LISTENER / $CLASS_PAGED_TILE_LAYOUT_LISTENER_DEPRECATED (all candidates)", t2)
                 return
             }
         }
@@ -5207,14 +5208,14 @@ object BlurDrawHook {
                         markMotion()
                         invalidateRegisteredHostViews()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "taskG: onPageScrolled invalidate error", t)
+                        Lg.e(TAG, "taskG: onPageScrolled invalidate error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook G mounted: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED(int,float,int) (QS page flip -> invalidate hosts)")
+            Lg.i(TAG, "Hook G mounted: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED(int,float,int) (QS page flip -> invalidate hosts)")
         } catch (t: Throwable) {
             compatHitQsPageScroll = "MISS (method)"
-            Log.e(TAG, "Hook G mount FAILED: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED", t)
+            Lg.e(TAG, "Hook G mount FAILED: ${clazz.name}#$METHOD_ON_PAGE_SCROLLED", t)
         }
     }
 
@@ -5274,7 +5275,7 @@ object BlurDrawHook {
                             // 偏移采样框 = 下次下拉卡片错位。
                             if (containerTransforms.isNotEmpty()) {
                                 containerTransforms.clear()
-                                if (moduleLogEnabled) Log.d(TAG, "transform: container transforms reset (panel collapsed)")
+                                if (moduleLogEnabled) Lg.d(TAG, "transform: container transforms reset (panel collapsed)")
                             }
                             // [spec/52 文字强制刷新] 收起 = 系统对文字重调 setTextColor(原色) 的时序（折叠变回
                             // 根因：折叠后坐标移出 screenRegionMap → isOverGlassRegion=false + getQsColorState
@@ -5286,11 +5287,11 @@ object BlurDrawHook {
                         // [spec/60 周期强制刷新] 面板展开/收起都是活跃玻璃宿主信号 → 确保周期循环在跑
                         ensureTextForceRefreshLoop()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "taskG: setExpansionHeight invalidate error", t)
+                        Lg.e(TAG, "taskG: setExpansionHeight invalidate error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook G mounted: $CLASS_QUICK_SETTINGS_CONTROLLER#$METHOD_SET_EXPANSION_HEIGHT(float) (panel expand -> invalidate hosts)")
+            Lg.i(TAG, "Hook G mounted: $CLASS_QUICK_SETTINGS_CONTROLLER#$METHOD_SET_EXPANSION_HEIGHT(float) (panel expand -> invalidate hosts)")
 
             // [2026-08-13 延迟调查·触发时机提前] 系统 QS 触摸追踪三重门控（isTracking/touchSlop/
             // shouldQuickSettingsIntercept，QuickSettingsControllerImpl.java:1024-1032）→ 触摸确认下拉后
@@ -5317,16 +5318,16 @@ object BlurDrawHook {
                                 triggerBackgroundCaptureOnMainThread()
                             }
                         } catch (t: Throwable) {
-                            Log.e(TAG, "taskG: onExpansionStarted first-frame error", t)
+                            Lg.e(TAG, "taskG: onExpansionStarted first-frame error", t)
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "Hook G mounted: $CLASS_QUICK_SETTINGS_CONTROLLER#onExpansionStarted() (panel expand start -> first-frame capture)")
+                Lg.i(TAG, "Hook G mounted: $CLASS_QUICK_SETTINGS_CONTROLLER#onExpansionStarted() (panel expand start -> first-frame capture)")
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook G mount FAILED: $CLASS_QUICK_SETTINGS_CONTROLLER#onExpansionStarted", t)
+                Lg.e(TAG, "Hook G mount FAILED: $CLASS_QUICK_SETTINGS_CONTROLLER#onExpansionStarted", t)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook G mount FAILED: $CLASS_QUICK_SETTINGS_CONTROLLER#$METHOD_SET_EXPANSION_HEIGHT", t)
+            Lg.e(TAG, "Hook G mount FAILED: $CLASS_QUICK_SETTINGS_CONTROLLER#$METHOD_SET_EXPANSION_HEIGHT", t)
         }
     }
 
@@ -5347,7 +5348,7 @@ object BlurDrawHook {
      */
     private fun mountCustomRowTranslation(api: XposedInterface, classLoader: ClassLoader) {
         if (mCustomRowBgNormal == null) {
-            Log.w(TAG, "Hook B OplusCustomRow.mBackgroundNormal unresolved, custom-row swipe re-sample disabled")
+            Lg.w(TAG, "Hook B OplusCustomRow.mBackgroundNormal unresolved, custom-row swipe re-sample disabled")
             return
         }
         try {
@@ -5359,13 +5360,13 @@ object BlurDrawHook {
                     try {
                         recordCustomRowTranslation(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "customRow: setTranslation intercept error", t)
+                        Lg.e(TAG, "customRow: setTranslation intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION(float) (custom-row swipe -> re-record region)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION(float) (custom-row swipe -> re-record region)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION", t)
         }
     }
 
@@ -5374,12 +5375,12 @@ object BlurDrawHook {
         val row = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "customRow: getThisObject failed", t); return
+            Lg.e(TAG, "customRow: getThisObject failed", t); return
         } ?: return
         val bgView = try {
             mCustomRowBgNormal?.get(row) as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "customRow: read mBackgroundNormal failed", t); null
+            Lg.e(TAG, "customRow: read mBackgroundNormal failed", t); null
         }
         // bgView 反射失败 → 兜底 invalidate 全部已登记宿主（内容变化 → 重录；不精确但强兜底）
         if (bgView == null) {
@@ -5395,7 +5396,7 @@ object BlurDrawHook {
             markMotion()
             bgView.invalidate()
         } catch (t: Throwable) {
-            Log.e(TAG, "customRow: invalidate bgView failed", t)
+            Lg.e(TAG, "customRow: invalidate bgView failed", t)
         }
     }
 
@@ -5463,7 +5464,7 @@ object BlurDrawHook {
                 "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow", false, classLoader
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "notif-tilt: ExpandableNotificationRow class not found, tilt disabled", t)
+            Lg.e(TAG, "notif-tilt: ExpandableNotificationRow class not found, tilt disabled", t)
             return
         }
         try {
@@ -5472,12 +5473,12 @@ object BlurDrawHook {
             try {
                 mHeadsUpAnimatorControlField = clazz.getDeclaredField(FIELD_HU_CONTROL).apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.w(TAG, "notif-tilt: resolve control field failed, dismiss falls back to last shown row", t)
+                Lg.w(TAG, "notif-tilt: resolve control field failed, dismiss falls back to last shown row", t)
             }
             try {
                 mHeadsUpHoldYField = clazz.getDeclaredField(FIELD_HU_HOLD_Y).apply { isAccessible = true }
             } catch (t: Throwable) {
-                Log.w(TAG, "notif-tilt: resolve holdY field failed, 3D fly disabled", t)
+                Lg.w(TAG, "notif-tilt: resolve holdY field failed, 3D fly disabled", t)
             }
             // [缩放通道] requestRowScale 状态口（View 的 scaleX/scaleY 会被 pre-draw 强制打回，
             // 走 ColorOS 自己的请求口它反而会帮我们应用）
@@ -5498,7 +5499,7 @@ object BlurDrawHook {
                 )
                 mRequestRowScale = rowAnimCls.getMethod("requestRowScale", Any::class.java, scaleStateCls)
             } catch (t: Throwable) {
-                Log.w(TAG, "notif-tilt: resolve requestRowScale channel failed, fly scale disabled", t)
+                Lg.w(TAG, "notif-tilt: resolve requestRowScale channel failed, fly scale disabled", t)
             }
             // [网格缩放] View.setAnimationMatrix：draw 期矩阵，ViewState 打不回；单次反射，无每帧分配
             try {
@@ -5506,13 +5507,13 @@ object BlurDrawHook {
                     "setAnimationMatrix", android.graphics.Matrix::class.java
                 )
             } catch (t: Throwable) {
-                Log.w(TAG, "notif-tilt: resolve setAnimationMatrix failed, fly scale disabled", t)
+                Lg.w(TAG, "notif-tilt: resolve setAnimationMatrix failed, fly scale disabled", t)
             }
             try {
                 mHeadsUpContainerGetView = Class.forName(CLASS_HEADS_UP_CONTAINER_WINDOW, false, classLoader)
                     .getMethod(METHOD_HU_GET_VIEW)
             } catch (t: Throwable) {
-                Log.w(TAG, "notif-tilt: resolve HeadsUpContainerWindow.getView failed, dismiss falls back to last shown row", t)
+                Lg.w(TAG, "notif-tilt: resolve HeadsUpContainerWindow.getView failed, dismiss falls back to last shown row", t)
             }
             // ① 弹出：show(View)（fly=true → 叠加摄像头飞入位移，spec/113）
             try {
@@ -5545,13 +5546,13 @@ object BlurDrawHook {
                             if (row != null) lastHeadsUpTiltRow = WeakReference(row)
                             startNotifTilt(row, incoming = true, fly = true, src = "show")
                         } catch (t: Throwable) {
-                            Log.e(TAG, "notif-tilt: show intercept error", t)
+                            Lg.e(TAG, "notif-tilt: show intercept error", t)
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW(View) (notif tilt IN + fly)")
+                Lg.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW(View) (notif tilt IN + fly)")
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW", t)
+                Lg.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_SHOW", t)
             }
             // ② 收回：dismiss(boolean,String,Function1)（fly=true → 对称飞回挖孔点，spec/113）
             try {
@@ -5586,13 +5587,13 @@ object BlurDrawHook {
                                 }
                             }
                         } catch (t: Throwable) {
-                            Log.e(TAG, "notif-tilt: dismiss intercept error", t)
+                            Lg.e(TAG, "notif-tilt: dismiss intercept error", t)
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS(boolean,String,Function1) (notif tilt OUT + fly)")
+                Lg.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS(boolean,String,Function1) (notif tilt OUT + fly)")
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS", t)
+                Lg.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_DISMISS", t)
             }
             // ⑤ [doc/spec/113] 防双倍偏移：animateTo(float,Function0) 在 spring setStartValue
             //  之前读 control.getTranslationY()（含我们已叠加的 dy）→ spring 会从「纯值+旧偏移」起步，
@@ -5634,13 +5635,13 @@ object BlurDrawHook {
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO(float,Function0) (notif fly spring start pure)")
+                Lg.i(TAG, "Hook mounted: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO(float,Function0) (notif fly spring start pure)")
                 mNotifFlySpringGuardMounted = true
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO", t)
+                Lg.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR#$METHOD_HU_ANIMATE_TO", t)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR (notif tilt heads-up path)", t)
+            Lg.e(TAG, "Hook mount FAILED: $CLASS_OPLUS_HEADS_UP_ANIMATOR (notif tilt heads-up path)", t)
         }
         // ④ [doc/spec/113] 位移叠加：HeadsUpContainerWindow.setTranslationY(float)
         //  系统 spring 每帧经此写 Row 的 translationY（HeadsUpContainerWindow:232→236 view.setTranslationY）。
@@ -5694,9 +5695,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y(float) (notif 3D rotationX drive)")
+            Lg.i(TAG, "Hook mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y(float) (notif 3D rotationX drive)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y", t)
+            Lg.e(TAG, "Hook mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_SET_TRANSLATION_Y", t)
         }
         // ③ shade 插入：NotificationStackScrollLayout.generateAddAnimation(ExpandableView)
         try {
@@ -5712,13 +5713,13 @@ object BlurDrawHook {
                         // 在 NSSL shade 列表位置）——不是真横幅。fly 一律 false（3D/位移只挂真 row 的 show）。
                         startNotifTilt(chain.getArg(0) as? View, incoming = true, fly = false, src = "add")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "notif-tilt: generateAddAnimation intercept error", t)
+                        Lg.e(TAG, "notif-tilt: generateAddAnimation intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook mounted: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION(ExpandableView) (notif tilt IN)")
+            Lg.i(TAG, "Hook mounted: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION(ExpandableView) (notif tilt IN)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook mount FAILED: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION", t)
+            Lg.e(TAG, "Hook mount FAILED: $CLASS_NOTIFICATION_STACK_SCROLL_LAYOUT#$METHOD_GENERATE_ADD_ANIMATION", t)
         }
     }
 
@@ -5991,7 +5992,7 @@ object BlurDrawHook {
                         }
                         invalidateRegisteredHostViews()   // 玻璃宿主全表失效（spec/105 节流合并）
                     } catch (t: Throwable) {
-                        Log.e(TAG, "notif-tilt: pump tick failed", t)
+                        Lg.e(TAG, "notif-tilt: pump tick failed", t)
                     }
                     ticks++
                     // [审查 V-112 M-1 修复] 上限到了但表仍有活条目（如 0.6s 间隔连发通知）→ 重置计数续泵，
@@ -6011,7 +6012,7 @@ object BlurDrawHook {
             })
         } catch (t: Throwable) {
             notifTiltPumpRunning = false
-            Log.e(TAG, "notif-tilt: spawn frame pump failed", t)
+            Lg.e(TAG, "notif-tilt: spawn frame pump failed", t)
         }
     }
 
@@ -6119,11 +6120,11 @@ object BlurDrawHook {
             try {
                 containerTransformClasses.add(Class.forName(name, false, classLoader))
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook B resolve container class FAILED: $name (其余容器照常挂载)", t)
+                Lg.e(TAG, "Hook B resolve container class FAILED: $name (其余容器照常挂载)", t)
             }
         }
         if (containerTransformClasses.isEmpty()) {
-            Log.e(TAG, "Hook B all container classes unresolved, NC↔CC ghost fix disabled")
+            Lg.e(TAG, "Hook B all container classes unresolved, NC↔CC ghost fix disabled")
             return
         }
         val transformMethods = listOf(METHOD_SET_SCALE_X, METHOD_SET_SCALE_Y, METHOD_SET_TRANSLATION_X, METHOD_SET_TRANSLATION_Y)
@@ -6137,16 +6138,16 @@ object BlurDrawHook {
                             try {
                                 recordContainerTransform(chain, m)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "transform: $m intercept error", t)
+                                Lg.e(TAG, "transform: $m intercept error", t)
                             }
                             chain.proceed()
                         }
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Hook B mount FAILED: ${clazz.simpleName}#$m", t)
+                    Lg.e(TAG, "Hook B mount FAILED: ${clazz.simpleName}#$m", t)
                 }
             }
         }
-        Log.i(TAG, "Hook B mounted container transform hooks (NotificationPanelView/OplusQSRootView/NotificationStackScrollLayout setScaleX/Y/setTranslationX/Y)")
+        Lg.i(TAG, "Hook B mounted container transform hooks (NotificationPanelView/OplusQSRootView/NotificationStackScrollLayout setScaleX/Y/setTranslationX/Y)")
     }
 
     /** [方案 B] hookBefore：更新容器 View 的变换快照（scale + 屏幕坐标 pivot）。 */
@@ -6154,7 +6155,7 @@ object BlurDrawHook {
         val view = try {
             chain.getThisObject() as? View
         } catch (t: Throwable) {
-            Log.e(TAG, "transform: getThisObject failed", t); return
+            Lg.e(TAG, "transform: getThisObject failed", t); return
         } ?: return
         // [2026-08-13 二次修复] 容器类过滤（核心修复）：3 个容器类均未 override setScaleX/setScaleY/
         // setTranslationX/Y（继承 View，反编译实证）→ getMethod 解析到 View 继承方法 → hook 落在
@@ -6222,7 +6223,7 @@ object BlurDrawHook {
             // 容器条目；保留作为泄漏兜底（异常路径下容器 identityHashCode 残留时防无限增长）。
             if (containerTransforms.size > 16) containerTransforms.clear()
         } catch (t: Throwable) {
-            Log.e(TAG, "transform: recordContainerTransform failed", t)
+            Lg.e(TAG, "transform: recordContainerTransform failed", t)
         }
     }
 
@@ -6268,7 +6269,7 @@ object BlurDrawHook {
                 parent = parent.parent
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "transform: applyContainerTransform failed, keep layout region", t)
+            Lg.e(TAG, "transform: applyContainerTransform failed, keep layout region", t)
         }
         return region
     }
@@ -6294,7 +6295,7 @@ object BlurDrawHook {
         val platformStatic = mBlurTypePlatformStaticInstance
         val notifBg = mNotifBackgroundViewClass
         if (setBlurType == null || motion == null || platformStatic == null || notifBg == null) {
-            Log.w(TAG, "headsUp: setBlurType reflection unresolved, skip")
+            Lg.w(TAG, "headsUp: setBlurType reflection unresolved, skip")
             return
         }
         try {
@@ -6340,9 +6341,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE(BlurType) (heads-up Motion -> PlatformStatic)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE(BlurType) (heads-up Motion -> PlatformStatic)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE", t)
         }
     }
 
@@ -6375,9 +6376,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW(View) (heads-up glass exclude bypass)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW(View) (heads-up glass exclude bypass)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW", t)
         }
     }
 
@@ -6404,7 +6405,7 @@ object BlurDrawHook {
      */
     private fun mountSeedlingCardContainer(api: XposedInterface, classLoader: ClassLoader) {
         if (!seedlingCardGlassEnabled) {
-            Log.i(TAG, "Seedling card glass disabled by prefs, skip mount")
+            Lg.i(TAG, "Seedling card glass disabled by prefs, skip mount")
             return
         }
         if (seedlingDispatchDrawMounted) return
@@ -6414,7 +6415,7 @@ object BlurDrawHook {
             val containerCls = try {
                 Class.forName(CLASS_CAPSULE_PLUGIN_CONTAINER, false, classLoader)
             } catch (t: Throwable) {
-                Log.d(TAG, "Seedling container class not loaded yet (deferred), fallback to runtime name check: $CLASS_CAPSULE_PLUGIN_CONTAINER")
+                Lg.d(TAG, "Seedling container class not loaded yet (deferred), fallback to runtime name check: $CLASS_CAPSULE_PLUGIN_CONTAINER")
                 null
             }
             // CapsulePluginContainer 未 override dispatchDraw → hook 基类 ViewGroup.dispatchDraw(Canvas)，
@@ -6450,7 +6451,7 @@ object BlurDrawHook {
                                     try {
                                         renderSeedlingCardGlass(canvas, thisView)
                                     } catch (t: Throwable) {
-                                        Log.e(TAG, "seedling-card: dispatchDraw glass failed", t)
+                                        Lg.e(TAG, "seedling-card: dispatchDraw glass failed", t)
                                     }
                                 }
                                 val result = chain.proceed()
@@ -6459,14 +6460,14 @@ object BlurDrawHook {
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-card: dispatchDraw intercept error", t)
+                        Lg.e(TAG, "seedling-card: dispatchDraw intercept error", t)
                     }
                     chain.proceed()
                 }
             seedlingDispatchDrawMounted = true
-            Log.i(TAG, "Seedling card glass mounted: $CLASS_CAPSULE_PLUGIN_CONTAINER#$METHOD_DISPATCH_DRAW(Canvas)")
+            Lg.i(TAG, "Seedling card glass mounted: $CLASS_CAPSULE_PLUGIN_CONTAINER#$METHOD_DISPATCH_DRAW(Canvas)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Seedling card glass mount FAILED: $CLASS_CAPSULE_PLUGIN_CONTAINER#$METHOD_DISPATCH_DRAW", t)
+            Lg.e(TAG, "Seedling card glass mount FAILED: $CLASS_CAPSULE_PLUGIN_CONTAINER#$METHOD_DISPATCH_DRAW", t)
         }
     }
 
@@ -6492,15 +6493,15 @@ object BlurDrawHook {
         val containerView = container as? android.view.ViewGroup ?: return
         val containerHeight = containerView.height
         if (containerHeight <= 0) {
-            if (moduleLogEnabled) Log.i(TAG, "seedling-card: skip container height=$containerHeight ${container.javaClass.name}")
+            if (moduleLogEnabled) Lg.i(TAG, "seedling-card: skip container height=$containerHeight ${container.javaClass.name}")
             return
         }
         if (moduleLogEnabled) {
-            Log.i(TAG, "seedling-card: dispatch container=${container.javaClass.name} " +
+            Lg.i(TAG, "seedling-card: dispatch container=${container.javaClass.name} " +
                 "w=${containerView.width} h=$containerHeight childCount=${containerView.childCount}")
         }
         if (!seedlingCapsuleGlassEnabled) {
-            if (moduleLogEnabled) Log.i(TAG, "seedling-card: island glass off, skip")
+            if (moduleLogEnabled) Lg.i(TAG, "seedling-card: island glass off, skip")
             return
         }
         // [2026-09-16] 目标 = **CapsuleView（胶囊本体）**，不是 CapsuleContainer（外框）：
@@ -6628,7 +6629,7 @@ object BlurDrawHook {
             loc[0] = -1
             loc[1] = -1
         }
-        Log.i(TAG, "seedling-card: ${"  ".repeat(depth)}${v.javaClass.name} w=${v.width} h=${v.height} loc=(${loc[0]},${loc[1]})")
+        Lg.i(TAG, "seedling-card: ${"  ".repeat(depth)}${v.javaClass.name} w=${v.width} h=${v.height} loc=(${loc[0]},${loc[1]})")
         if (v is android.view.ViewGroup) {
             for (i in 0 until v.childCount) {
                 try {
@@ -6652,7 +6653,7 @@ object BlurDrawHook {
                 loc[1] = -1
             }
             val cc = if (cur is android.view.ViewGroup) cur.childCount else -1
-            Log.i(TAG, "seedling-card: parent[$depth] ${cur.javaClass.name} w=${cur.width} h=${cur.height} loc=(${loc[0]},${loc[1]}) childCount=$cc")
+            Lg.i(TAG, "seedling-card: parent[$depth] ${cur.javaClass.name} w=${cur.width} h=${cur.height} loc=(${loc[0]},${loc[1]}) childCount=$cc")
             cur = cur.parent
             depth++
         }
@@ -6695,7 +6696,7 @@ object BlurDrawHook {
             screenRegionMap[id] = entry
             if (screenRegionMap.size > 1024) screenRegionMap.clear()
             triggerBackgroundCapture()
-            Log.i(TAG, "seedling-card: region registered id=$id view=$hostName region=$screenRegion corner=$cornerRadius")
+            Lg.i(TAG, "seedling-card: region registered id=$id view=$hostName region=$screenRegion corner=$cornerRadius")
         } else if (previous.region != screenRegion || previous.autoBounds != bounds) {
             screenRegionMap[id] = entry
         }
@@ -6772,7 +6773,7 @@ object BlurDrawHook {
             }
             canvas.drawPath(path, seedlingGlassPaint)
         } catch (t: Throwable) {
-            Log.e(TAG, "seedling-card: draw glass on canvas failed id=$id", t)
+            Lg.e(TAG, "seedling-card: draw glass on canvas failed id=$id", t)
         } finally {
             // 清理 paint.shader（防止残留到下一帧其他绘制）；canvas.restore 还原 translate
             seedlingGlassPaint.shader = null
@@ -6814,7 +6815,7 @@ object BlurDrawHook {
      */
     private fun mountCardBackgroundGlass(api: XposedInterface, classLoader: ClassLoader) {
         if (!seedlingCardGlassEnabled) {
-            Log.i(TAG, "CardBackgroundView glass disabled by prefs, skip mount")
+            Lg.i(TAG, "CardBackgroundView glass disabled by prefs, skip mount")
             return
         }
         if (cardBgGlassMounted) return
@@ -6822,7 +6823,7 @@ object BlurDrawHook {
         var bgCls: Class<*>? = try {
             Class.forName(CLASS_CARD_BACKGROUND_VIEW, false, classLoader)
         } catch (t: Throwable) {
-            Log.d(TAG, "CardBackgroundView glass: class not loaded yet (deferred), fallback to runtime name check: $CLASS_CARD_BACKGROUND_VIEW")
+            Lg.d(TAG, "CardBackgroundView glass: class not loaded yet (deferred), fallback to runtime name check: $CLASS_CARD_BACKGROUND_VIEW")
             null
         }
         try {
@@ -6852,7 +6853,7 @@ object BlurDrawHook {
                                 if (moduleLogEnabled) {
                                     val count = ++cardBgDrawCount
                                     if (count % 120 == 1) {
-                                        Log.i(TAG, "seedling-cardview: onDraw count=$count w=${thisView.width} h=${thisView.height}")
+                                        Lg.i(TAG, "seedling-cardview: onDraw count=$count w=${thisView.width} h=${thisView.height}")
                                     }
                                 }
                                 // [2026-08-15 持续抓屏对齐 heads-up] 命中期间主动持续抓屏：流体云展开大卡是
@@ -6863,7 +6864,7 @@ object BlurDrawHook {
                                 if (cardBackgroundActiveHost?.get() !== thisView) {
                                     cardBackgroundActiveHost = WeakReference(thisView)
                                     if (moduleLogEnabled) {
-                                        Log.i(TAG, "seedling-cardview: active host set (new instance) w=${thisView.width} h=${thisView.height}")
+                                        Lg.i(TAG, "seedling-cardview: active host set (new instance) w=${thisView.width} h=${thisView.height}")
                                     }
                                 }
                                 if (!cardBackgroundContinuousRunning) {
@@ -6881,21 +6882,21 @@ object BlurDrawHook {
                                     try {
                                         renderCardBackgroundGlass(canvas, thisView)
                                     } catch (t: Throwable) {
-                                        Log.e(TAG, "seedling-cardview: onDraw glass failed", t)
+                                        Lg.e(TAG, "seedling-cardview: onDraw glass failed", t)
                                     }
                                 }
                                 return@intercept result
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-cardview: onDraw intercept error", t)
+                        Lg.e(TAG, "seedling-cardview: onDraw intercept error", t)
                     }
                     chain.proceed()
                 }
             cardBgGlassMounted = true
-            Log.i(TAG, "Seedling card glass mounted: $CLASS_CARD_BACKGROUND_VIEW#$METHOD_ON_DRAW(Canvas)")
+            Lg.i(TAG, "Seedling card glass mounted: $CLASS_CARD_BACKGROUND_VIEW#$METHOD_ON_DRAW(Canvas)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Seedling card glass mount FAILED: $CLASS_CARD_BACKGROUND_VIEW#$METHOD_ON_DRAW", t)
+            Lg.e(TAG, "Seedling card glass mount FAILED: $CLASS_CARD_BACKGROUND_VIEW#$METHOD_ON_DRAW", t)
         }
     }
 
@@ -6968,7 +6969,7 @@ object BlurDrawHook {
         if (isKeyguardLockedNow()) return
         cardBackgroundContinuousRunning = true
         if (moduleLogEnabled) {
-            Log.i(TAG, "seedling-cardview: continuous capture worker start (rate ${panelCaptureHz()}Hz)")
+            Lg.i(TAG, "seedling-cardview: continuous capture worker start (rate ${panelCaptureHz()}Hz)")
         }
         try {
             Thread {
@@ -6977,12 +6978,12 @@ object BlurDrawHook {
                         // 卡片收起/窗口销毁（detach/隐藏）→ 停止（零后台耗电）
                         if (!isCardBackgroundHostActive()) {
                             cardBackgroundActiveHost = null
-                            Log.i(TAG, "bg-element: seedling-cardview gone, continuous capture stopped")
+                            Lg.i(TAG, "bg-element: seedling-cardview gone, continuous capture stopped")
                             break
                         }
                         if (isKeyguardLockedNow()) {
                             cardBackgroundActiveHost = null
-                            Log.i(TAG, "bg-element: keyguard locked, seedling-cardview continuous capture stopped (passive only)")
+                            Lg.i(TAG, "bg-element: keyguard locked, seedling-cardview continuous capture stopped (passive only)")
                             break
                         }
                         markContentChanged()
@@ -7001,7 +7002,7 @@ object BlurDrawHook {
             }.start()
         } catch (t: Throwable) {
             cardBackgroundContinuousRunning = false
-            Log.e(TAG, "seedling-cardview: spawn continuous worker failed", t)
+            Lg.e(TAG, "seedling-cardview: spawn continuous worker failed", t)
         }
     }
 
@@ -7047,7 +7048,7 @@ object BlurDrawHook {
      */
     private fun mountSimpleBannerGlass(api: XposedInterface, classLoader: ClassLoader) {
         if (!seedlingCardGlassEnabled) {
-            Log.i(TAG, "SimpleBanner glass disabled by prefs, skip mount")
+            Lg.i(TAG, "SimpleBanner glass disabled by prefs, skip mount")
             return
         }
         if (simpleBannerGlassMounted) return
@@ -7070,7 +7071,7 @@ object BlurDrawHook {
                             if (moduleLogEnabled) {
                                 val count = ++simpleBannerDispatchCount
                                 if (count % 120 == 1) {
-                                    Log.i(TAG, "simple-banner: dispatch count=$count w=${thisView.width} h=${thisView.height}")
+                                    Lg.i(TAG, "simple-banner: dispatch count=$count w=${thisView.width} h=${thisView.height}")
                                 }
                             }
                             // [2026-08-15 持续抓屏驱动] 命中期间主动持续抓屏（banner 短暂窗口动画/背景
@@ -7082,21 +7083,21 @@ object BlurDrawHook {
                                 // [2026-08-15 自愈] 同 attach hook：新实例强制重置 running（防卡死假阳性）
                                 simpleBannerContinuousRunning = false
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: active host set (new instance) w=${thisView.width} h=${thisView.height}")
+                                    Lg.i(TAG, "simple-banner: active host set (new instance) w=${thisView.width} h=${thisView.height}")
                                 }
                             }
                             // [2026-08-15 诊断] dispatch 触发 start 前后打 running 值（定位 worker 未启动原因：
                             // 是 start 未被调用 / running 卡 true / start 内部 return）
                             if (!simpleBannerContinuousRunning) {
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: dispatch trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
+                                    Lg.i(TAG, "simple-banner: dispatch trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
                                 }
                                 startSimpleBannerContinuousCapture(force = true)
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: dispatch start returned, running now=$simpleBannerContinuousRunning")
+                                    Lg.i(TAG, "simple-banner: dispatch start returned, running now=$simpleBannerContinuousRunning")
                                 }
                             } else if (moduleLogEnabled) {
-                                Log.i(TAG, "simple-banner: dispatch skip start, already running")
+                                Lg.i(TAG, "simple-banner: dispatch skip start, already running")
                             }
                             val canvas = try {
                                 chain.getArg(0) as? Canvas
@@ -7108,21 +7109,21 @@ object BlurDrawHook {
                                 try {
                                     renderSimpleBannerGlass(canvas, thisView)
                                 } catch (t: Throwable) {
-                                    Log.e(TAG, "simple-banner: dispatchDraw glass failed", t)
+                                    Lg.e(TAG, "simple-banner: dispatchDraw glass failed", t)
                                 }
                             }
                             val result = chain.proceed()
                             return@intercept result
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "simple-banner: dispatchDraw intercept error", t)
+                        Lg.e(TAG, "simple-banner: dispatchDraw intercept error", t)
                     }
                     chain.proceed()
                 }
             simpleBannerGlassMounted = true
-            Log.i(TAG, "Simple banner glass mounted: $CLASS_FULL_SCREEN_BANNER#$METHOD_DISPATCH_DRAW(Canvas)")
+            Lg.i(TAG, "Simple banner glass mounted: $CLASS_FULL_SCREEN_BANNER#$METHOD_DISPATCH_DRAW(Canvas)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Simple banner glass mount FAILED: $CLASS_FULL_SCREEN_BANNER#$METHOD_DISPATCH_DRAW", t)
+            Lg.e(TAG, "Simple banner glass mount FAILED: $CLASS_FULL_SCREEN_BANNER#$METHOD_DISPATCH_DRAW", t)
         }
     }
 
@@ -7137,7 +7138,7 @@ object BlurDrawHook {
         // [2026-08-15 诊断] 无条件入口日志：确认函数被调用 + 提前 return 原因（enabled/mounted 值）。
         // 此前真机 install 日志缺失「Simple banner attach hook mounted」且无 FAILED → 函数疑似未执行到
         // mounted（被 enabled/mounted return 挡住）或 install 调用未生效——本条日志定论。
-        Log.i(TAG, "simple-banner: attach hook mount enter, enabled=$seedlingCardGlassEnabled mounted=$simpleBannerAttachMounted")
+        Lg.i(TAG, "simple-banner: attach hook mount enter, enabled=$seedlingCardGlassEnabled mounted=$simpleBannerAttachMounted")
         if (!seedlingCardGlassEnabled) return
         if (simpleBannerAttachMounted) return
         try {
@@ -7161,30 +7162,30 @@ object BlurDrawHook {
                                 // （且旧版无 skip 日志，静默失败，现象 = attach host set 出现但 continuous 全无）
                                 simpleBannerContinuousRunning = false
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: attach host set (force refresh) w=${thisView.width} h=${thisView.height}")
+                                    Lg.i(TAG, "simple-banner: attach host set (force refresh) w=${thisView.width} h=${thisView.height}")
                                 }
                             }
                             if (!simpleBannerContinuousRunning) {
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: attach trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
+                                    Lg.i(TAG, "simple-banner: attach trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
                                 }
                                 startSimpleBannerContinuousCapture(force = true)
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: attach start returned, running now=$simpleBannerContinuousRunning")
+                                    Lg.i(TAG, "simple-banner: attach start returned, running now=$simpleBannerContinuousRunning")
                                 }
                             } else if (moduleLogEnabled) {
-                                Log.i(TAG, "simple-banner: attach skip start, already running")
+                                Lg.i(TAG, "simple-banner: attach skip start, already running")
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "simple-banner: attach hook error", t)
+                        Lg.e(TAG, "simple-banner: attach hook error", t)
                     }
                     chain.proceed()
                 }
             simpleBannerAttachMounted = true
-            Log.i(TAG, "Simple banner attach hook mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
+            Lg.i(TAG, "Simple banner attach hook mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
         } catch (t: Throwable) {
-            Log.e(TAG, "Simple banner attach hook mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
+            Lg.e(TAG, "Simple banner attach hook mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
         }
     }
 
@@ -7199,7 +7200,7 @@ object BlurDrawHook {
      */
     private fun mountCardBackgroundAttachHook(api: XposedInterface, classLoader: ClassLoader) {
         if (!seedlingCardGlassEnabled) {
-            Log.i(TAG, "seedling-cardview: attach hook skip, glass disabled by prefs")
+            Lg.i(TAG, "seedling-cardview: attach hook skip, glass disabled by prefs")
             return
         }
         if (cardBgAttachMounted) return
@@ -7223,7 +7224,7 @@ object BlurDrawHook {
                                 // 防旧 worker 异常退出/卡死导致 running 卡 true → 新实例 start 被挡住永不启动
                                 cardBackgroundContinuousRunning = false
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "seedling-cardview: attach host set (force refresh) w=${thisView.width} h=${thisView.height}")
+                                    Lg.i(TAG, "seedling-cardview: attach host set (force refresh) w=${thisView.width} h=${thisView.height}")
                                 }
                             }
                             if (!cardBackgroundContinuousRunning) {
@@ -7231,14 +7232,14 @@ object BlurDrawHook {
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-cardview: attach hook error", t)
+                        Lg.e(TAG, "seedling-cardview: attach hook error", t)
                     }
                     chain.proceed()
                 }
             cardBgAttachMounted = true
-            Log.i(TAG, "Seedling card attach hook mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
+            Lg.i(TAG, "Seedling card attach hook mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
         } catch (t: Throwable) {
-            Log.e(TAG, "Seedling card attach hook mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
+            Lg.e(TAG, "Seedling card attach hook mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
         }
     }
 
@@ -7253,7 +7254,7 @@ object BlurDrawHook {
             Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_CC_BLUR_STRENGTH, Prefs.DEFAULT_CC_BLUR_STRENGTH)
                 .coerceIn(0, 200)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read cc_blur_strength failed, default 100", t)
+            Lg.w(TAG, "prefs read cc_blur_strength failed, default 100", t)
             Prefs.DEFAULT_CC_BLUR_STRENGTH
         }
         cachedCcBlurStrength = v
@@ -7271,7 +7272,7 @@ object BlurDrawHook {
         val v = try {
             Prefs.read(a).getBoolean(Prefs.KEY_KEEP_SYSTEM_CC_BLUR, Prefs.DEFAULT_KEEP_SYSTEM_CC_BLUR)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read keep_system_cc_blur failed, default false", t)
+            Lg.w(TAG, "prefs read keep_system_cc_blur failed, default false", t)
             Prefs.DEFAULT_KEEP_SYSTEM_CC_BLUR
         }
         cachedKeepCcBlur = v
@@ -7289,7 +7290,7 @@ object BlurDrawHook {
         val v = try {
             Prefs.read(a).getBoolean(Prefs.KEY_REMOVE_PANEL_MIX_COLOR, Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read remove_panel_mix_color failed, default true", t)
+            Lg.w(TAG, "prefs read remove_panel_mix_color failed, default true", t)
             Prefs.DEFAULT_REMOVE_PANEL_MIX_COLOR
         }
         cachedRemoveMixColor = v
@@ -7323,7 +7324,7 @@ object BlurDrawHook {
             val cfgCls = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
             mBlurConfigBlurRadiusField = cfgCls.getField("blurRadius")
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: resolve BlurConfig.blurRadius field failed", t)
+            Lg.w(TAG, "cc-blur: resolve BlurConfig.blurRadius field failed", t)
         }
         // 解析 ViewBlurProxy.view / blurConfig 字段（面板背景判定 + 力度修改）
         try {
@@ -7331,7 +7332,7 @@ object BlurDrawHook {
             mViewBlurProxyViewField = vbpCls.getDeclaredField("view").apply { isAccessible = true }
             mViewBlurProxyBlurConfigField = vbpCls.getDeclaredField("blurConfig").apply { isAccessible = true }
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: resolve ViewBlurProxy view/blurConfig fields failed", t)
+            Lg.w(TAG, "cc-blur: resolve ViewBlurProxy view/blurConfig fields failed", t)
         }
         mountApplyPanelMirrorScale(api, classLoader)
         // [doc/spec/106 方案 A] 统一圆角写穿：写口反射先解析（失败只关本特性），随后挂进下面的
@@ -7384,12 +7385,12 @@ object BlurDrawHook {
                 Class.forName(CLASS_BLUR_MIX_CONFIG_NONE, false, classLoader)
                     .getDeclaredField("INSTANCE").get(null)
             } catch (t: Throwable) {
-                Log.w(TAG, "cc-mixcolor: None.INSTANCE unresolved, feature disabled", t)
+                Lg.w(TAG, "cc-mixcolor: None.INSTANCE unresolved, feature disabled", t)
                 null
             }
-            Log.i(TAG, "cc-mixcolor: reflect chain resolved (panelMixConfig -> None)")
+            Lg.i(TAG, "cc-mixcolor: reflect chain resolved (panelMixConfig -> None)")
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-mixcolor: resolve reflect chain failed, feature disabled", t)
+            Lg.w(TAG, "cc-mixcolor: resolve reflect chain failed, feature disabled", t)
         }
     }
 
@@ -7421,7 +7422,7 @@ object BlurDrawHook {
                 "cc-mixcolor: panel platformMixConfig -> None (was=${cur.javaClass.simpleName})"
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "cc-mixcolor: replace with None failed", t)
+            Lg.e(TAG, "cc-mixcolor: replace with None failed", t)
         }
     }
 
@@ -7452,13 +7453,13 @@ object BlurDrawHook {
                             return@intercept chain.proceed(args)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "cc-blur: applyPanelMirrorScale intercept error", t)
+                        Lg.e(TAG, "cc-blur: applyPanelMirrorScale intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "cc-blur: applyPanelMirrorScale mounted (block panel mirror shrink)")
+            Lg.i(TAG, "cc-blur: applyPanelMirrorScale mounted (block panel mirror shrink)")
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: applyPanelMirrorScale mount FAILED", t)
+            Lg.w(TAG, "cc-blur: applyPanelMirrorScale mount FAILED", t)
         }
     }
 
@@ -7469,7 +7470,7 @@ object BlurDrawHook {
      *  改写幂等：同一 strength 反复调用结果恒定。 */
     private fun mountViewBlurProxyApplyBlurConfig(api: XposedInterface, classLoader: ClassLoader) {
         if (mBlurConfigBlurRadiusField == null) {
-            Log.w(TAG, "cc-blur: BlurConfig.blurRadius field unresolved, strength adjust disabled")
+            Lg.w(TAG, "cc-blur: BlurConfig.blurRadius field unresolved, strength adjust disabled")
             return
         }
         try {
@@ -7500,7 +7501,7 @@ object BlurDrawHook {
                         // PlatformBlurDrawable.applyBlurConfig 读到的才是统一值（回退路径同源生效）。
                         if (vbp != null) ucProviderWritten = applyUnifiedCornerToProxy(vbp)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "cc-blur: applyConfigToPlatformBlur intercept error", t)
+                        Lg.e(TAG, "cc-blur: applyConfigToPlatformBlur intercept error", t)
                     }
                     val result = chain.proceed()
                     if (ucProviderWritten) {
@@ -7523,9 +7524,9 @@ object BlurDrawHook {
                     }
                     result
                 }
-            Log.i(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mounted (strength adjust)")
+            Lg.i(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mounted (strength adjust)")
         } catch (t: Throwable) {
-            Log.w(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mount FAILED", t)
+            Lg.w(TAG, "cc-blur: ViewBlurProxy.applyConfigToPlatformBlur mount FAILED", t)
         }
     }
 
@@ -7636,10 +7637,10 @@ object BlurDrawHook {
             try {
                 triggerBackgroundCaptureOnMainThread()
             } catch (t: Throwable) {
-                Log.e(TAG, "simple-banner: first sync capture failed", t)
+                Lg.e(TAG, "simple-banner: first sync capture failed", t)
             }
             if (moduleLogEnabled) {
-                Log.i(TAG, "simple-banner: first appearance sync capture")
+                Lg.i(TAG, "simple-banner: first appearance sync capture")
             }
         }
         drawSeedlingGlassOnCanvas(canvas, banner, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
@@ -7671,12 +7672,12 @@ object BlurDrawHook {
      */
     private fun startSimpleBannerContinuousCapture(force: Boolean = false) {
         if (simpleBannerContinuousRunning) {
-            Log.i(TAG, "simple-banner: start return, already running")
+            Lg.i(TAG, "simple-banner: start return, already running")
             return
         }
         val host = simpleBannerActiveHost?.get()
         if (host == null) {
-            Log.i(TAG, "simple-banner: skip start, active host null")
+            Lg.i(TAG, "simple-banner: skip start, active host null")
             return
         }
         // [2026-08-15 强制刷新] force=true（attach hook 触发：横幅必然出现）跳过活跃/keyguard 判定立即启动；
@@ -7684,11 +7685,11 @@ object BlurDrawHook {
         if (!force) {
             if (!isSimpleBannerHostActive()) {
                 val attachOk = try { host.isAttachedToWindow } catch (t: Throwable) { false }
-                Log.i(TAG, "simple-banner: skip start, inactive attach=$attachOk")
+                Lg.i(TAG, "simple-banner: skip start, inactive attach=$attachOk")
                 return
             }
             if (isKeyguardLockedNow()) {
-                Log.i(TAG, "simple-banner: skip start, keyguard locked (passive only)")
+                Lg.i(TAG, "simple-banner: skip start, keyguard locked (passive only)")
                 return
             }
         }
@@ -7697,17 +7698,17 @@ object BlurDrawHook {
         val hz = try {
             panelCaptureHz()
         } catch (t: Throwable) {
-            Log.w(TAG, "simple-banner: panelCaptureHz failed, default 120", t)
+            Lg.w(TAG, "simple-banner: panelCaptureHz failed, default 120", t)
             Prefs.DEFAULT_PANEL_CAPTURE_HZ
         }
         if (moduleLogEnabled) {
-            Log.i(TAG, "simple-banner: continuous capture worker start (rate ${hz}Hz, force=$force)")
+            Lg.i(TAG, "simple-banner: continuous capture worker start (rate ${hz}Hz, force=$force)")
         }
         try {
             Thread {
                 try {
                     if (moduleLogEnabled) {
-                        Log.i(TAG, "simple-banner: continuous worker thread alive")
+                        Lg.i(TAG, "simple-banner: continuous worker thread alive")
                     }
                     while (true) {
                         try {
@@ -7715,7 +7716,7 @@ object BlurDrawHook {
                             // 防双 worker 并发；running 由 finally 复位）
                             if (simpleBannerActiveHost?.get() !== host) {
                                 if (moduleLogEnabled) {
-                                    Log.i(TAG, "simple-banner: host changed, old worker exiting")
+                                    Lg.i(TAG, "simple-banner: host changed, old worker exiting")
                                 }
                                 // [doc/spec/92 §5.3] 换实例 → 清旧 sfc（否则旧窗口 sfc 若仍 valid 会被
                                 // 长期排除错层 = 把别的层挖掉，spec/72 同型事故）
@@ -7728,7 +7729,7 @@ object BlurDrawHook {
                                 // [doc/spec/92 §5.3] 横幅消失 → 清 sfc 缓存 + 负缓存，下次出现立即重解析
                                 simpleBannerSfcCache = null
                                 simpleBannerSfcMissAt = 0L
-                                Log.i(TAG, "bg-element: simple-banner gone, continuous capture stopped")
+                                Lg.i(TAG, "bg-element: simple-banner gone, continuous capture stopped")
                                 break
                             }
                             if (isKeyguardLockedNow()) {
@@ -7736,7 +7737,7 @@ object BlurDrawHook {
                                 // [doc/spec/92 §5.3] 同上：锁屏收横幅 → 清缓存防排除错层
                                 simpleBannerSfcCache = null
                                 simpleBannerSfcMissAt = 0L
-                                Log.i(TAG, "bg-element: keyguard locked, simple-banner continuous capture stopped (passive only)")
+                                Lg.i(TAG, "bg-element: keyguard locked, simple-banner continuous capture stopped (passive only)")
                                 break
                             }
                             markContentChanged()
@@ -7751,7 +7752,7 @@ object BlurDrawHook {
                         } catch (t: Throwable) {
                             // [2026-08-15 诊断] 单轮异常不杀线程：打日志 + 短睡后继续（首轮 attach 时刻
                             // schedule 链路若异常，下轮重试；不再无日志静默退出）
-                            Log.e(TAG, "simple-banner: continuous worker loop error", t)
+                            Lg.e(TAG, "simple-banner: continuous worker loop error", t)
                             try {
                                 Thread.sleep(50)
                             } catch (ignored: InterruptedException) {
@@ -7760,14 +7761,14 @@ object BlurDrawHook {
                     }
                 } finally {
                     if (moduleLogEnabled) {
-                        Log.i(TAG, "simple-banner: continuous worker exited, running reset")
+                        Lg.i(TAG, "simple-banner: continuous worker exited, running reset")
                     }
                     simpleBannerContinuousRunning = false
                 }
             }.start()
         } catch (t: Throwable) {
             simpleBannerContinuousRunning = false
-            Log.e(TAG, "simple-banner: spawn continuous worker failed", t)
+            Lg.e(TAG, "simple-banner: spawn continuous worker failed", t)
         }
     }
 
@@ -7807,21 +7808,21 @@ object BlurDrawHook {
      */
     private fun mountOplusCustomRowGlass(api: XposedInterface, classLoader: ClassLoader) {
         if (!seedlingCardGlassEnabled) {
-            Log.i(TAG, "OplusCustomRow glass disabled by prefs, skip mount")
+            Lg.i(TAG, "OplusCustomRow glass disabled by prefs, skip mount")
             return
         }
         if (oplusRowGlassMounted) return
         val rowCls = try {
             Class.forName(CLASS_OPLUS_CUSTOM_ROW, false, classLoader)
         } catch (t: Throwable) {
-            Log.w(TAG, "OplusCustomRow glass: class not loaded, skip mount", t)
+            Lg.w(TAG, "OplusCustomRow glass: class not loaded, skip mount", t)
             return
         }
         hookOplusCustomRowDispatchDraw(api, classLoader, rowCls)
         hookOplusCustomRowUpdateResource(api, rowCls)
         hookOplusCustomRowSetNewSeedlingView(api, rowCls)
         oplusRowGlassMounted = true
-        Log.i(TAG, "OplusCustomRow glass mounted: dispatchDraw + updateResource + setNewSeedlingView")
+        Lg.i(TAG, "OplusCustomRow glass mounted: dispatchDraw + updateResource + setNewSeedlingView")
     }
     */
 
@@ -7846,7 +7847,7 @@ object BlurDrawHook {
                             if (moduleLogEnabled) {
                                 val count = ++oplusRowDispatchCount
                                 if (count % 120 == 1) {
-                                    Log.i(TAG, "seedling-row: dispatch count=$count w=${thisView.width} h=${thisView.height} cls=${thisView.javaClass.simpleName}")
+                                    Lg.i(TAG, "seedling-row: dispatch count=$count w=${thisView.width} h=${thisView.height} cls=${thisView.javaClass.simpleName}")
                                 }
                             }
                             val canvas = try {
@@ -7860,19 +7861,19 @@ object BlurDrawHook {
                                 try {
                                     renderSeedlingCardGlassOnRow(canvas, thisView)
                                 } catch (t: Throwable) {
-                                    Log.e(TAG, "seedling-row: dispatchDraw glass failed", t)
+                                    Lg.e(TAG, "seedling-row: dispatchDraw glass failed", t)
                                 }
                             }
                             return@intercept result
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-row: dispatchDraw intercept error", t)
+                        Lg.e(TAG, "seedling-row: dispatchDraw intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_VIEW_GROUP#$METHOD_DISPATCH_DRAW(Canvas) (OplusCustomRow glass)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_VIEW_GROUP#$METHOD_DISPATCH_DRAW(Canvas) (OplusCustomRow glass)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_VIEW_GROUP#$METHOD_DISPATCH_DRAW (OplusCustomRow glass)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_VIEW_GROUP#$METHOD_DISPATCH_DRAW (OplusCustomRow glass)", t)
         }
     }
     */
@@ -7892,13 +7893,13 @@ object BlurDrawHook {
                         if (row != null) applyOplusCustomRowTransparentBg(row)
                         return@intercept result
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-row: updateResource intercept error", t)
+                        Lg.e(TAG, "seedling-row: updateResource intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_UPDATE_RESOURCE() (bg transparent re-apply)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_UPDATE_RESOURCE() (bg transparent re-apply)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_UPDATE_RESOURCE (bg transparent re-apply)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_UPDATE_RESOURCE (bg transparent re-apply)", t)
         }
     }
     */
@@ -7920,18 +7921,18 @@ object BlurDrawHook {
                             row.invalidate()
                             triggerBackgroundCapture()
                             if (moduleLogEnabled) {
-                                Log.i(TAG, "seedling-row: setNewSeedlingView -> invalidate + triggerBackgroundCapture (row w=${row.width} h=${row.height})")
+                                Lg.i(TAG, "seedling-row: setNewSeedlingView -> invalidate + triggerBackgroundCapture (row w=${row.width} h=${row.height})")
                             }
                         }
                         return@intercept result
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seedling-row: setNewSeedlingView intercept error", t)
+                        Lg.e(TAG, "seedling-row: setNewSeedlingView intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_NEW_SEEDLING_VIEW(View)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_NEW_SEEDLING_VIEW(View)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_NEW_SEEDLING_VIEW", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_NEW_SEEDLING_VIEW", t)
         }
     }
     */
@@ -7978,13 +7979,13 @@ object BlurDrawHook {
     private fun applyOplusCustomRowTransparentBg(row: View) {
         if (!seedlingForceTransparentBg) return
         if (mCustomRowBgNormal == null || mNbvBackgroundField == null) {
-            if (moduleLogEnabled) Log.w(TAG, "seedling-row: bg transparent fields unresolved, skip")
+            if (moduleLogEnabled) Lg.w(TAG, "seedling-row: bg transparent fields unresolved, skip")
             return
         }
         val bgView = try {
             mCustomRowBgNormal?.get(row) as? View
         } catch (t: Throwable) {
-            if (moduleLogEnabled) Log.e(TAG, "seedling-row: read mBackgroundNormal failed", t)
+            if (moduleLogEnabled) Lg.e(TAG, "seedling-row: read mBackgroundNormal failed", t)
             null
         } ?: return
         try {
@@ -7993,11 +7994,11 @@ object BlurDrawHook {
                 mNbvBackgroundField?.set(bgView, ColorDrawable(0))
                 bgView.invalidate()
                 if (moduleLogEnabled) {
-                    Log.i(TAG, "seedling-row: bg transparent applied ${bgView.javaClass.simpleName} (was ${current?.javaClass?.simpleName ?: "null"})")
+                    Lg.i(TAG, "seedling-row: bg transparent applied ${bgView.javaClass.simpleName} (was ${current?.javaClass?.simpleName ?: "null"})")
                 }
             }
         } catch (t: Throwable) {
-            if (moduleLogEnabled) Log.e(TAG, "seedling-row: set bg transparent failed", t)
+            if (moduleLogEnabled) Lg.e(TAG, "seedling-row: set bg transparent failed", t)
         }
     }
     */
@@ -8027,7 +8028,7 @@ object BlurDrawHook {
             mQsColorUtilGetState = try {
                 clazz.getMethod("getQsColorState")
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast B getQsColorState resolve FAILED (mask-off text uses original color)", t)
+                Lg.e(TAG, "text-contrast B getQsColorState resolve FAILED (mask-off text uses original color)", t)
                 null
             }
             api.hook(method)
@@ -8046,7 +8047,7 @@ object BlurDrawHook {
                         brightness <= TEXT_CONTRAST_BRIGHTNESS_THRESHOLD
                     }
                 }
-            Log.i(TAG, "text-contrast B mounted: QsColorUtil#isTextNeedUseLightColorWhenLight(Context, int)")
+            Lg.i(TAG, "text-contrast B mounted: QsColorUtil#isTextNeedUseLightColorWhenLight(Context, int)")
             // [spec/52 文字强制刷新] hook **发布方** `QsColorUtil.setQsColorState(int)`（public static final
             // void，反编译实证 QsColorUtil.java:145-147；OplusQsColorManager 按模糊位图亮度算出后静态发布：
             // 亮度>196→0 / ≤196→1 / null→2 不发布，OplusQsColorManager.java:107-131）。系统黑白通道状态跳变
@@ -8065,16 +8066,16 @@ object BlurDrawHook {
                                 requestForceRefreshTextColors()
                             }
                         } catch (t: Throwable) {
-                            Log.e(TAG, "text-contrast forceRefresh on setQsColorState error", t)
+                            Lg.e(TAG, "text-contrast forceRefresh on setQsColorState error", t)
                         }
                         chain.proceed()
                     }
-                Log.i(TAG, "text-contrast B mounted: QsColorUtil#setQsColorState(int) (state jump -> force refresh all text colors)")
+                Lg.i(TAG, "text-contrast B mounted: QsColorUtil#setQsColorState(int) (state jump -> force refresh all text colors)")
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast B mount FAILED: QsColorUtil#setQsColorState(int)", t)
+                Lg.e(TAG, "text-contrast B mount FAILED: QsColorUtil#setQsColorState(int)", t)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast B mount FAILED: QsColorUtil#isTextNeedUseLightColorWhenLight", t)
+            Lg.e(TAG, "text-contrast B mount FAILED: QsColorUtil#isTextNeedUseLightColorWhenLight", t)
         }
     }
 
@@ -8101,13 +8102,13 @@ object BlurDrawHook {
                     try {
                         applyLocalTextContrast(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "text-contrast A intercept error", t)
+                        Lg.e(TAG, "text-contrast A intercept error", t)
                         chain.proceed()
                     }
                 }
-            Log.i(TAG, "text-contrast A mounted: TextView#setTextColor(int)")
+            Lg.i(TAG, "text-contrast A mounted: TextView#setTextColor(int)")
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast A mount FAILED: TextView#setTextColor(int)", t)
+            Lg.e(TAG, "text-contrast A mount FAILED: TextView#setTextColor(int)", t)
         }
     }
 
@@ -8200,13 +8201,13 @@ object BlurDrawHook {
                         val tv = chain.getThisObject() as? TextView
                         if (tv != null) maybeResampleTextContrast(tv)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "text-contrast A onDraw error", t)
+                        Lg.e(TAG, "text-contrast A onDraw error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "text-contrast A mounted: TextView#onDraw(Canvas) (throttled re-sample)")
+            Lg.i(TAG, "text-contrast A mounted: TextView#onDraw(Canvas) (throttled re-sample)")
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast A mount FAILED: TextView#onDraw(Canvas)", t)
+            Lg.e(TAG, "text-contrast A mount FAILED: TextView#onDraw(Canvas)", t)
         }
     }
 
@@ -8258,7 +8259,7 @@ object BlurDrawHook {
             try {
                 textView.setTextColor(injected)
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast A re-sample setTextColor failed", t)
+                Lg.e(TAG, "text-contrast A re-sample setTextColor failed", t)
             } finally {
                 textContrastResampling = false
             }
@@ -8277,7 +8278,7 @@ object BlurDrawHook {
                 maybeResampleTextContrast(tv)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast A resampleAll error", t)
+            Lg.e(TAG, "text-contrast A resampleAll error", t)
         }
     }
 
@@ -8298,7 +8299,7 @@ object BlurDrawHook {
         try {
             mainHandler().post { forceRefreshAllTextColors() }
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast forceRefresh post failed", t)
+            Lg.e(TAG, "text-contrast forceRefresh post failed", t)
         }
     }
 
@@ -8325,7 +8326,7 @@ object BlurDrawHook {
             }
             collectRegisteredHostRoots(roots)
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast forceRefresh collect roots error", t)
+            Lg.e(TAG, "text-contrast forceRefresh collect roots error", t)
         }
         if (roots.isEmpty()) return
         // TextView 不重写 equals → HashSet 按对象身份去重（同一 TextView 可能经 shade 根与宿主两条路径命中）
@@ -8334,7 +8335,7 @@ object BlurDrawHook {
             try {
                 collectTextViews(root, seen)
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast forceRefresh collect error", t)
+                Lg.e(TAG, "text-contrast forceRefresh collect error", t)
             }
         }
         for (tv in seen) {
@@ -8358,7 +8359,7 @@ object BlurDrawHook {
                 val root = v.rootView
                 if (root != null && root.isAttachedToWindow) roots.add(root)
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast forceRefresh host root error", t)
+                Lg.e(TAG, "text-contrast forceRefresh host root error", t)
             }
         }
     }
@@ -8445,7 +8446,7 @@ object BlurDrawHook {
         try {
             textView.setTextColor(injected)
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast forceRefresh setTextColor failed", t)
+            Lg.e(TAG, "text-contrast forceRefresh setTextColor failed", t)
         } finally {
             textContrastResampling = false
         }
@@ -8480,12 +8481,12 @@ object BlurDrawHook {
             val id = res.getIdentifier("status_bar_height", "dimen", "android")
             if (id <= 0) -1 else res.getDimensionPixelSize(id)
         } catch (t: Throwable) {
-            Log.e(TAG, "text-contrast: resolve status_bar_height failed, status-bar strip exclusion disabled", t)
+            Lg.e(TAG, "text-contrast: resolve status_bar_height failed, status-bar strip exclusion disabled", t)
             -1
         }
         statusBarBottomPx = v
         if (v > 0) {
-            Log.i(TAG, "text-contrast: status_bar_height=$v px, status-bar strip excluded from glass-region (text never recolored)")
+            Lg.i(TAG, "text-contrast: status_bar_height=$v px, status-bar strip excluded from glass-region (text never recolored)")
         }
         return v
     }
@@ -8618,7 +8619,7 @@ object BlurDrawHook {
         // [spec/47 诊断] 系统黑白通道值跳变才打一次（0 亮背景→深色字 / 1 暗背景→白字 / 2 null→原样 / -1 反射失败）。
         if (v != lastLoggedQsColorState) {
             lastLoggedQsColorState = v
-            Log.i(TAG, "text-contrast: QsColorUtil.getQsColorState()=$v (0 light→dark text / 1 dark→white text / 2 null / -1 reflect fail)")
+            Lg.i(TAG, "text-contrast: QsColorUtil.getQsColorState()=$v (0 light→dark text / 1 dark→white text / 2 null / -1 reflect fail)")
         }
         return v
     }
@@ -8748,10 +8749,10 @@ object BlurDrawHook {
                 // [2026-08-15 偶发不抓屏根治] 新根登记 → 失效旧 sfc（窗口重建后旧 handle 可能仍 valid
                 // 但已指向旧窗口，exclude 错窗口 → 快照含 shade 自采样），强制下次 resolveShadeSfc 重解析。
                 shadeSfcCache = null
-                Log.i(TAG, "bg-source: shade root view cached ${rootView.javaClass.simpleName}")
+                Lg.i(TAG, "bg-source: shade root view cached ${rootView.javaClass.simpleName}")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-source: cache shade root view failed", t)
+            Lg.e(TAG, "bg-source: cache shade root view failed", t)
         }
         // 整屏快照重抓触发点不在此时——screenRegionMap 的映射由 registerScreenRegionCore
         // 在登记之后写入，抓屏触发已移到映射写入分支（见 registerScreenRegionCore）
@@ -8803,7 +8804,7 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             hostInvalidatePending = false
             hostInvalidateLastAt = SystemClock.uptimeMillis()
-            Log.e(TAG, "taskG: schedule host invalidate failed, run inline", t)
+            Lg.e(TAG, "taskG: schedule host invalidate failed, run inline", t)
             doInvalidateRegisteredHostViews()
         }
     }
@@ -8828,7 +8829,7 @@ object BlurDrawHook {
             try {
                 v.invalidate()
             } catch (t: Throwable) {
-                Log.e(TAG, "taskG: invalidate host view failed", t)
+                Lg.e(TAG, "taskG: invalidate host view failed", t)
             }
         }
     }
@@ -8903,7 +8904,7 @@ object BlurDrawHook {
             try {
                 runTextContrastScanAsync(bg)
             } catch (t: Throwable) {
-                Log.e(TAG, "text-contrast: post-motion brightness resample failed", t)
+                Lg.e(TAG, "text-contrast: post-motion brightness resample failed", t)
             }
         }
     }
@@ -8919,7 +8920,7 @@ object BlurDrawHook {
             mainHandler().removeCallbacks(motionResetRunnable)
             mainHandler().postDelayed(motionResetRunnable, MOTION_CONIC_RESET_MS)
         } catch (t: Throwable) {
-            Log.e(TAG, "motion: markMotion failed", t)
+            Lg.e(TAG, "motion: markMotion failed", t)
         }
     }
 
@@ -8942,7 +8943,7 @@ object BlurDrawHook {
         glassRetryPending = false
         lastRetryInvalidateAt = SystemClock.uptimeMillis()
         retryIntervalMs = (retryIntervalMs * 2).coerceAtMost(4000L)
-        Log.i(TAG, "render: retry pending glass (handler-driven, interval=${retryIntervalMs}ms)")
+        Lg.i(TAG, "render: retry pending glass (handler-driven, interval=${retryIntervalMs}ms)")
         invalidateRegisteredHostViews()
     }
 
@@ -8955,7 +8956,7 @@ object BlurDrawHook {
             mainHandler().postDelayed(retryInvalidateRunnable, retryIntervalMs)
         } catch (t: Throwable) {
             retryLoopPosted = false
-            Log.e(TAG, "render: schedule glass retry failed", t)
+            Lg.e(TAG, "render: schedule glass retry failed", t)
         }
     }
 
@@ -9048,7 +9049,7 @@ object BlurDrawHook {
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "periodic-capture: triggerBackgroundCapture error", t)
+            Lg.e(TAG, "periodic-capture: triggerBackgroundCapture error", t)
         }
         // 续跑（kickPeriodicCapture 内部检查 enabled + 宿主存活；无场景门控）
         // 强制抓场景 → 高频续跑（面板同款速率），保证背景实时跟手
@@ -9081,7 +9082,7 @@ object BlurDrawHook {
             mainHandler().postDelayed(periodicCaptureRunnable, interval)
         } catch (t: Throwable) {
             periodicCapturePosted = false
-            Log.e(TAG, "periodic-capture: postDelayed failed", t)
+            Lg.e(TAG, "periodic-capture: postDelayed failed", t)
         }
     }
 
@@ -9101,7 +9102,7 @@ object BlurDrawHook {
             Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_MIN_INTERVAL_MS, Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS)
                 .coerceAtLeast(0)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_min_interval_ms failed, default 0", t)
+            Lg.w(TAG, "prefs read bg_capture_min_interval_ms failed, default 0", t)
             Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
         }
         cachedBgCaptureMinIntervalMs = v
@@ -9120,7 +9121,7 @@ object BlurDrawHook {
             Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_PANEL_CAPTURE_HZ, Prefs.DEFAULT_PANEL_CAPTURE_HZ)
                 .coerceIn(1, 240)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read panel_capture_hz failed, default 120", t)
+            Lg.w(TAG, "prefs read panel_capture_hz failed, default 120", t)
             Prefs.DEFAULT_PANEL_CAPTURE_HZ
         }
         cachedPanelCaptureHz = v
@@ -9155,7 +9156,7 @@ object BlurDrawHook {
             Prefs.read(a).getFloat(Prefs.KEY_BG_CAPTURE_SCALE, Prefs.DEFAULT_BG_CAPTURE_SCALE)
                 .coerceIn(0.25f, 1.0f)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_scale failed, default 0.5", t)
+            Lg.w(TAG, "prefs read bg_capture_scale failed, default 0.5", t)
             Prefs.DEFAULT_BG_CAPTURE_SCALE
         }
         cachedBgCaptureScale = v
@@ -9173,7 +9174,7 @@ object BlurDrawHook {
         val v = try {
             Prefs.read(a).getBoolean(Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_periodic_capture_enable failed, default true", t)
+            Lg.w(TAG, "prefs read bg_periodic_capture_enable failed, default true", t)
             Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
         }
         cachedPeriodicCaptureEnabled = v
@@ -9194,7 +9195,7 @@ object BlurDrawHook {
                 Prefs.read(a), Prefs.KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
             ).coerceIn(Prefs.BG_PERIODIC_CAPTURE_INTERVAL_MIN_MS, Prefs.BG_PERIODIC_CAPTURE_INTERVAL_MAX_MS)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_periodic_capture_interval_ms failed, default 500", t)
+            Lg.w(TAG, "prefs read bg_periodic_capture_interval_ms failed, default 500", t)
             Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
         }
         cachedPeriodicCaptureIntervalMs = v
@@ -9209,7 +9210,7 @@ object BlurDrawHook {
             Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_BG_CAPTURE_RETRY_MS, Prefs.DEFAULT_BG_CAPTURE_RETRY_MS)
                 .coerceAtLeast(0)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_retry_ms failed, default 320", t)
+            Lg.w(TAG, "prefs read bg_capture_retry_ms failed, default 320", t)
             Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
         }
     }
@@ -9221,7 +9222,7 @@ object BlurDrawHook {
             Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_BG_CAPTURE_RETRY_LIMIT, Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT)
                 .coerceAtLeast(1)
         } catch (t: Throwable) {
-            Log.w(TAG, "prefs read bg_capture_retry_limit failed, default 3", t)
+            Lg.w(TAG, "prefs read bg_capture_retry_limit failed, default 3", t)
             Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
         }
     }
@@ -9505,7 +9506,7 @@ object BlurDrawHook {
                 logThrottled("corner-radius-invalid", Log.DEBUG) { "map: BlurConfig cornerRadius invalid r=$r maxValid=$maxValid, no valid cornerRadius (use square)" }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "map: resolve BlurConfig cornerRadius failed, no valid cornerRadius (use square)", t)
+            Lg.e(TAG, "map: resolve BlurConfig cornerRadius failed, no valid cornerRadius (use square)", t)
         }
         return CornerInfo(DEFAULT_CORNER_RADIUS_PX, "default")
     }
@@ -9580,7 +9581,7 @@ object BlurDrawHook {
             }
             false to DEFAULT_CORNER_WEIGHT
         } catch (t: Throwable) {
-            Log.e(TAG, "map: resolve CornerParams getType/getWeight failed, conic 判定降级圆弧", t)
+            Lg.e(TAG, "map: resolve CornerParams getType/getWeight failed, conic 判定降级圆弧", t)
             false to DEFAULT_CORNER_WEIGHT
         }
     }
@@ -9598,7 +9599,7 @@ object BlurDrawHook {
             try {
                 cfgGetter.invoke(blurConfig)?.let { return it }
             } catch (t: Throwable) {
-                Log.e(TAG, "map: BlurConfig.getGradientStrokeCornerParam failed", t)
+                Lg.e(TAG, "map: BlurConfig.getGradientStrokeCornerParam failed", t)
             }
             return null
         }
@@ -9607,7 +9608,7 @@ object BlurDrawHook {
             val shader = mGetDrawableShader?.invoke(drawable)
             if (shader == null) null else mLegacyShaderGetGradientStrokeParams?.invoke(shader)
         } catch (t: Throwable) {
-            Log.e(TAG, "map: legacy BlurDrawableShader.getGradientStrokeCornerParams failed", t)
+            Lg.e(TAG, "map: legacy BlurDrawableShader.getGradientStrokeCornerParams failed", t)
             null
         }
     }
@@ -9638,7 +9639,7 @@ object BlurDrawHook {
             val r = try {
                 hostView.resources.getDimensionPixelSize(mNotificationCornerRadiusDimenId).toFloat()
             } catch (t: Throwable) {
-                Log.e(TAG, "swipe: resolve notification_corner_radius dimen failed", t)
+                Lg.e(TAG, "swipe: resolve notification_corner_radius dimen failed", t)
                 0f
             }
             if (r > 0f) return r to "dimen"
@@ -9649,7 +9650,7 @@ object BlurDrawHook {
             val v = mBlurMenuCornerRadiusMethod?.invoke(inst)
             (v as? Number)?.toFloat() ?: 0f
         } catch (t: Throwable) {
-            Log.e(TAG, "swipe: getBlurMenuCornerRadius reflect failed", t)
+            Lg.e(TAG, "swipe: getBlurMenuCornerRadius reflect failed", t)
             0f
         }
         if (r2 > 0f) return r2 to "getBlurMenuCornerRadius"
@@ -9660,7 +9661,7 @@ object BlurDrawHook {
             )
             if (id != 0) hostView.resources.getDimensionPixelSize(id).toFloat() else 0f
         } catch (t: Throwable) {
-            Log.e(TAG, "swipe: getIdentifier notification_corner_radius failed", t)
+            Lg.e(TAG, "swipe: getIdentifier notification_corner_radius failed", t)
             0f
         }
         if (r3 > 0f) return r3 to "getIdentifier"
@@ -9713,7 +9714,7 @@ object BlurDrawHook {
                     Int::class.javaPrimitiveType, Float::class.javaPrimitiveType,
                 ).also {
                     compatHitOnBlurReady = "4-arg (16.x)"
-                    Log.i(TAG, "lg-hook: onBlurReady @ 4-arg (16.x)")
+                    Lg.i(TAG, "lg-hook: onBlurReady @ 4-arg (16.x)")
                 }
             } catch (e: NoSuchMethodException) {
                 clazz.getDeclaredMethod(
@@ -9723,7 +9724,7 @@ object BlurDrawHook {
                     Rect::class.java,
                 ).also {
                     compatHitOnBlurReady = "5-arg (17.99.02, Rect ignored)"
-                    Log.i(TAG, "lg-hook: onBlurReady @ 5-arg (17.99.02, Rect ignored)")
+                    Lg.i(TAG, "lg-hook: onBlurReady @ 5-arg (17.99.02, Rect ignored)")
                 }
             }
             api.hook(method)
@@ -9732,14 +9733,14 @@ object BlurDrawHook {
                     try {
                         captureOriginalFrame(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "onBlurReady: intercept error", t)
+                        Lg.e(TAG, "onBlurReady: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY (${compatHitOnBlurReady})")
+            Lg.i(TAG, "Hook B mounted: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY (${compatHitOnBlurReady})")
         } catch (t: Throwable) {
             compatHitOnBlurReady = "MISS (disabled)"
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_BLUR_DRAWABLE_MANAGER#$METHOD_ON_BLUR_READY", t)
         }
     }
 
@@ -9793,13 +9794,13 @@ object BlurDrawHook {
                             registerScene(drawable, getDrawableId, getSurfaceControl, getDrawingParam)
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "addBlurDrawable: intercept error", t)
+                        Lg.e(TAG, "addBlurDrawable: intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE() (BlurSceneRegistry)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE() (BlurSceneRegistry)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE (registry disabled, system blur kept)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE (registry disabled, system blur kept)", t)
         }
     }
 
@@ -9870,17 +9871,17 @@ object BlurDrawHook {
                         if (ret != null) {
                             seekbarActiveDrawables[ret] = true
                             if (moduleLogEnabled) {
-                                Log.i(TAG, "seekbar: active drawable registered id=${System.identityHashCode(ret)}")
+                                Lg.i(TAG, "seekbar: active drawable registered id=${System.identityHashCode(ret)}")
                             }
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "seekbar: register active drawable failed", t)
+                        Lg.e(TAG, "seekbar: register active drawable failed", t)
                     }
                     ret
                 }
-            Log.i(TAG, "Hook mounted: $CLASS_QS_SEEKBAR_BLUR_MANAGER#$METHOD_GET_SEEKBAR_ACTIVE_DRAWABLE(View) (spec/86 seekbar active tint)")
+            Lg.i(TAG, "Hook mounted: $CLASS_QS_SEEKBAR_BLUR_MANAGER#$METHOD_GET_SEEKBAR_ACTIVE_DRAWABLE(View) (spec/86 seekbar active tint)")
         } catch (t: Throwable) {
-            Log.w(TAG, "Hook mount skipped: $CLASS_QS_SEEKBAR_BLUR_MANAGER#$METHOD_GET_SEEKBAR_ACTIVE_DRAWABLE", t)
+            Lg.w(TAG, "Hook mount skipped: $CLASS_QS_SEEKBAR_BLUR_MANAGER#$METHOD_GET_SEEKBAR_ACTIVE_DRAWABLE", t)
         }
     }
 
@@ -9896,13 +9897,13 @@ object BlurDrawHook {
                     val drawable = try {
                         chain.getThisObject()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "drawBlurShader: getThisObject failed", t); null
+                        Lg.e(TAG, "drawBlurShader: getThisObject failed", t); null
                     }
                     if (drawable != null) {
                         try {
                             replaceShaderIfPossible(drawable)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "render: drawBlurShader intercept error", t)
+                            Lg.e(TAG, "render: drawBlurShader intercept error", t)
                         }
                         // [2026-10-10 spec/91 §六] 外层 clip 诊断（用户假设：通知卡多层容器，父容器
                         // canvas clip 单侧收紧 → 该侧高光被裁）。打画布 clip 与 drawable bounds 的
@@ -9963,9 +9964,9 @@ object BlurDrawHook {
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER(Canvas)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER(Canvas)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
         }
     }
 
@@ -9983,26 +9984,26 @@ object BlurDrawHook {
                         val drawable = try {
                             chain.getThisObject()
                         } catch (t: Throwable) {
-                            Log.e(TAG, "onDrawContent: getThisObject failed", t); null
+                            Lg.e(TAG, "onDrawContent: getThisObject failed", t); null
                         }
                         val canvas = try {
                             chain.getArg(0) as? Canvas
                         } catch (t: Throwable) {
-                            Log.e(TAG, "onDrawContent: getArg(0) failed", t); null
+                            Lg.e(TAG, "onDrawContent: getArg(0) failed", t); null
                         }
                         var handled = false
                         if (drawable != null && canvas != null) {
                             try {
                                 handled = tryRenderOnDrawContent(drawable, canvas)
                             } catch (t: Throwable) {
-                                Log.e(TAG, "onDrawContent: intercept error", t)
+                                Lg.e(TAG, "onDrawContent: intercept error", t)
                             }
                         }
                         if (!handled) chain.proceed()
                     }
-                Log.i(TAG, "Hook B mounted: $clsName#$METHOD_ON_DRAW_CONTENT(Canvas)")
+                Lg.i(TAG, "Hook B mounted: $clsName#$METHOD_ON_DRAW_CONTENT(Canvas)")
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook B mount FAILED: $clsName#$METHOD_ON_DRAW_CONTENT", t)
+                Lg.e(TAG, "Hook B mount FAILED: $clsName#$METHOD_ON_DRAW_CONTENT", t)
             }
         }
     }
@@ -10027,26 +10028,26 @@ object BlurDrawHook {
                     val drawable = try {
                         chain.getThisObject()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "legacy-drawBlur: getThisObject failed", t); null
+                        Lg.e(TAG, "legacy-drawBlur: getThisObject failed", t); null
                     }
                     val canvas = try {
                         chain.getArg(0) as? Canvas
                     } catch (t: Throwable) {
-                        Log.e(TAG, "legacy-drawBlur: getArg(0) failed", t); null
+                        Lg.e(TAG, "legacy-drawBlur: getArg(0) failed", t); null
                     }
                     var handled = false
                     if (drawable != null && canvas != null) {
                         try {
                             handled = tryRenderLegacyDrawBlur(drawable, canvas)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "legacy-drawBlur: intercept error", t)
+                            Lg.e(TAG, "legacy-drawBlur: intercept error", t)
                         }
                     }
                     if (!handled) chain.proceed()
                 }
-            Log.i(TAG, "lg-hook: 16.00.14 旧架构挂载 $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR(Canvas,Paint,Bitmap,ForegroundBlurParam)（#43/#44 等价兜底）")
+            Lg.i(TAG, "lg-hook: 16.00.14 旧架构挂载 $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR(Canvas,Paint,Bitmap,ForegroundBlurParam)（#43/#44 等价兜底）")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR (legacy fallback off)", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR (legacy fallback off)", t)
         }
     }
 
@@ -10058,7 +10059,7 @@ object BlurDrawHook {
             mDrawBlurShader?.invoke(drawable, canvas)
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "legacy-drawBlur: drawBlurShader invoke failed", t)
+            Lg.e(TAG, "legacy-drawBlur: drawBlurShader invoke failed", t)
             false
         }
     }
@@ -10078,13 +10079,13 @@ object BlurDrawHook {
         val drawableShader = try {
             mGetDrawableShader?.invoke(drawable)
         } catch (t: Throwable) {
-            Log.e(TAG, "onDrawContent: getDrawableShader failed", t); null
+            Lg.e(TAG, "onDrawContent: getDrawableShader failed", t); null
         }
         if (drawableShader != null) {
             val sysShader = try {
                 mGetShaderOrNull?.invoke(drawableShader)
             } catch (t: Throwable) {
-                Log.e(TAG, "onDrawContent: getShaderOrNull failed", t); null
+                Lg.e(TAG, "onDrawContent: getShaderOrNull failed", t); null
             }
             // [修4 2026-08-12] 系统 onDrawContent 三分支（BlendDrawable.java:52-65）：enableShader=false 时
             // 即使 sysShader 非 null 也走 drawBitmapContent（画模糊位图+foregroundBlend 色层）→ 磨砂。
@@ -10092,7 +10093,7 @@ object BlurDrawHook {
             val enableShader = try {
                 (mGetEnableShader?.invoke(drawable) as? Boolean) ?: true
             } catch (t: Throwable) {
-                Log.e(TAG, "onDrawContent: getEnableShader failed, assume true", t); true
+                Lg.e(TAG, "onDrawContent: getEnableShader failed, assume true", t); true
             }
             if (sysShader != null && enableShader) return false  // 系统走 drawBlurShader，Hook 1 处理
         }
@@ -10107,7 +10108,7 @@ object BlurDrawHook {
             }
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "onDrawContent: drawBlurShader invoke failed", t)
+            Lg.e(TAG, "onDrawContent: drawBlurShader invoke failed", t)
             false
         }
     }
@@ -10134,7 +10135,7 @@ object BlurDrawHook {
             p.colorFilter = null
             true
         } catch (t: Throwable) {
-            Log.w(TAG, "power-save: restore system shader failed", t)
+            Lg.w(TAG, "power-save: restore system shader failed", t)
             false
         }
     }
@@ -10180,7 +10181,7 @@ object BlurDrawHook {
             val tintPaint = try {
                 mGetDrawableShaderPaint?.invoke(drawable) as? Paint
             } catch (t: Throwable) {
-                Log.e(TAG, "seekbar: getDrawableShaderPaint failed", t); null
+                Lg.e(TAG, "seekbar: getDrawableShaderPaint failed", t); null
             }
             if (tintPaint == null) {
                 logRenderMode(id, "BLUR", "seekbar tint: paint null", drawable)
@@ -10193,7 +10194,7 @@ object BlurDrawHook {
                     PorterDuff.Mode.SRC,
                 )
             } catch (t: Throwable) {
-                Log.e(TAG, "seekbar: active tint paint failed (id=$id)", t)
+                Lg.e(TAG, "seekbar: active tint paint failed (id=$id)", t)
                 return false
             }
             logRenderMode(id, "GLASS", "seekbar active tint")
@@ -10224,7 +10225,7 @@ object BlurDrawHook {
         val paint = try {
             mGetDrawableShaderPaint?.invoke(drawable) as? Paint
         } catch (t: Throwable) {
-            Log.e(TAG, "render: getDrawableShaderPaint failed", t); null
+            Lg.e(TAG, "render: getDrawableShaderPaint failed", t); null
         }
         if (paint == null) {
             logRenderMode(id, "BLUR", "getDrawableShaderPaint null", drawable)
@@ -10246,7 +10247,7 @@ object BlurDrawHook {
                 paint.color = maskPaint?.color ?: android.graphics.Color.TRANSPARENT
                 logThrottled("bg-scrim-mask2", Log.INFO) { "bg: black tint mask (drawBlurShader fallback), drawableAlpha=$drawableAlpha maskAlpha=$maskAlpha id=${System.identityHashCode(drawable)}" }
             } catch (t: Throwable) {
-                Log.e(TAG, "bg: scrim black tint paint failed", t)
+                Lg.e(TAG, "bg: scrim black tint paint failed", t)
             }
             return true
         }
@@ -10262,7 +10263,7 @@ object BlurDrawHook {
         val bounds = try {
             mGetBounds?.invoke(drawable) as? Rect
         } catch (t: Throwable) {
-            Log.e(TAG, "render: getBounds failed", t); null
+            Lg.e(TAG, "render: getBounds failed", t); null
         }
         if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
             logRenderMode(id, "BLUR", "empty bounds", drawable, bounds)
@@ -10293,7 +10294,7 @@ object BlurDrawHook {
             glassRetryPending = true
             scheduleGlassRetry()
             logRenderMode(id, "BLUR", "buildLiquidShader exception", drawable, bounds)
-            Log.w(TAG, "render: buildLiquidShader exception (id=$id)", t)
+            Lg.w(TAG, "render: buildLiquidShader exception (id=$id)", t)
             return false
         }
 
@@ -10311,13 +10312,13 @@ object BlurDrawHook {
             } catch (ignored: Throwable) {
             }
             logRenderMode(id, "BLUR", "setShader failed", drawable, bounds)
-            Log.w(TAG, "render: setShader failed (id=$id)", t)
+            Lg.w(TAG, "render: setShader failed (id=$id)", t)
             return false
         }
         logRenderMode(id, "GLASS")
         if (!replacedOnce) {
             replacedOnce = true
-            Log.i(TAG, "render: first liquid glass replace, bounds=$bounds")
+            Lg.i(TAG, "render: first liquid glass replace, bounds=$bounds")
         }
         return true
     }
@@ -10462,17 +10463,17 @@ object BlurDrawHook {
                         val cg = computeGeometry(id, taskBounds)
                         if (cg != null) writeGeometryCacheIfFresh(id, cg)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "geometry: background compute failed id=$id", t)
+                        Lg.e(TAG, "geometry: background compute failed id=$id", t)
                     } finally {
                         geometryComputingIds.remove(id)
                     }
                 }
             } catch (t: Throwable) {
                 geometryComputingIds.remove(id)
-                Log.e(TAG, "geometry: submit task failed id=$id", t)
+                Lg.e(TAG, "geometry: submit task failed id=$id", t)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "geometry: submit check failed id=$id", t)
+            Lg.e(TAG, "geometry: submit check failed id=$id", t)
         }
     }
 
@@ -10534,7 +10535,7 @@ object BlurDrawHook {
             }
             return applyComputedGeometry(paint, shader, id, cg, bounds)
         } catch (t: Throwable) {
-            Log.e(TAG, "render: refresh uniform failed, keep existing liquid glass shader", t)
+            Lg.e(TAG, "render: refresh uniform failed, keep existing liquid glass shader", t)
             return true   // 保持现有液态玻璃实例，不让刷新异常破坏绘制
         }
     }
@@ -10667,7 +10668,7 @@ object BlurDrawHook {
                 val coordRefreshNow = SystemClock.uptimeMillis()
                 if (moduleLogEnabled && refreshUniformCount % 64L == 0L && coordRefreshNow - lastRefreshCoordLogAt >= THROTTLE_LOG_INTERVAL_MS) {
                     lastRefreshCoordLogAt = coordRefreshNow
-                    Log.i(
+                    Lg.i(
                         TAG,
                         "coord: refresh id=$id view=${cg.hostViewName} frame=$frame " +
                             "srcRect=$srcRect viewport=$viewport " +
@@ -10687,7 +10688,7 @@ object BlurDrawHook {
                 val coordRefreshNow = SystemClock.uptimeMillis()
                 if (moduleLogEnabled && refreshUniformCount % 64L == 0L && coordRefreshNow - lastRefreshCoordLogAt >= THROTTLE_LOG_INTERVAL_MS) {
                     lastRefreshCoordLogAt = coordRefreshNow
-                    Log.i(
+                    Lg.i(
                         TAG,
                         "coord: refresh id=$id view=${cg.hostViewName} frame=$frame " +
                             "srcRect=$srcRect viewport=$viewport " +
@@ -10734,7 +10735,7 @@ object BlurDrawHook {
             val coordRefreshNow = SystemClock.uptimeMillis()
             if (moduleLogEnabled && refreshUniformCount % 64L == 0L && coordRefreshNow - lastRefreshCoordLogAt >= THROTTLE_LOG_INTERVAL_MS) {
                 lastRefreshCoordLogAt = coordRefreshNow
-                Log.i(
+                Lg.i(
                     TAG,
                     "coord: refresh id=$id view=${cg.hostViewName} frame=$frame " +
                         "srcRect=$srcRect viewport=$viewport " +
@@ -10743,7 +10744,7 @@ object BlurDrawHook {
             }
             return true
         } catch (t: Throwable) {
-            Log.e(TAG, "render: apply computed uniforms failed, keep existing liquid glass shader", t)
+            Lg.e(TAG, "render: apply computed uniforms failed, keep existing liquid glass shader", t)
             return true   // 保持现有液态玻璃实例，不让刷新异常破坏绘制
         }
     }
@@ -10881,7 +10882,7 @@ object BlurDrawHook {
                 bodyRect = geo.bodyRect,
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "geometry: compute failed id=$id bounds=$bounds", t)
+            Lg.e(TAG, "geometry: compute failed id=$id bounds=$bounds", t)
             return null
         }
     }
@@ -10949,7 +10950,7 @@ object BlurDrawHook {
             val compDetail = mbSnapNow?.companions?.joinToString(";") { c ->
                 "c(pos=${c.posX},${c.posY} hw=${c.halfW} hh=${c.halfH} bs=${c.blendShape})"
             } ?: "-"
-            Log.i(TAG, "ghost-diag: id=$id view=${entry.hostViewName} bounds=$bounds " +
+            Lg.i(TAG, "ghost-diag: id=$id view=${entry.hostViewName} bounds=$bounds " +
                 "mbSnap=${mbSnapNow != null} companions=${mbSnapNow?.companions?.size ?: -1} " +
                 "body(pos=${mbSnapNow?.body?.posX},${mbSnapNow?.body?.posY} " +
                 "hw=${mbSnapNow?.body?.halfW} hh=${mbSnapNow?.body?.halfH}) " +
@@ -11044,7 +11045,7 @@ object BlurDrawHook {
             val coordKey = "src=${region.srcRect} vp=$viewport"
             if (lastCoordRenderKey[region.id] != coordKey) {
                 lastCoordRenderKey[region.id] = coordKey
-                Log.i(
+                Lg.i(
                     TAG,
                     "coord: render drawable=${drawable.javaClass.simpleName} id=${region.id} " +
                         "view=${region.hostViewName} bounds=$bounds region=${region.screenRegion} " +
@@ -11055,7 +11056,7 @@ object BlurDrawHook {
             // [任务 D/问题 10] 圆角半径来源只在变化/首次打（替代硬编码 28）
             if (lastLoggedCornerRadius[region.id] != region.cornerRadius) {
                 lastLoggedCornerRadius[region.id] = region.cornerRadius
-                Log.i(TAG, "coord: cornerRadius=${region.cornerRadius} source=${region.cornerRadiusSource} (id=${region.id})")
+                Lg.i(TAG, "coord: cornerRadius=${region.cornerRadius} source=${region.cornerRadiusSource} (id=${region.id})")
             }
         }
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
@@ -11085,7 +11086,7 @@ object BlurDrawHook {
         // 正常关闭，需复测 coord 空间时临时开 1f。uDebugCoord 分支保留在 LiquidGlassShader.kt 供后续实验。
         // [2026-10-14 诊断] 打印最终传入 setUniforms 的 maskRect
         if (moduleLogEnabled) {
-            Log.i(TAG, "ghost-diag-set: id=${region.id} maskRect=${region.maskRect} " +
+            Lg.i(TAG, "ghost-diag-set: id=${region.id} maskRect=${region.maskRect} " +
                 "maskCornerRadius=${region.maskCornerRadius} vp=$viewport " +
                 "mbBridge=${mbNow != null && mbNow.balls.isNotEmpty()}")
         }
@@ -11179,7 +11180,7 @@ object BlurDrawHook {
         if (!captureInFlightIds.contains(SNAPSHOT_ID) && pendingCaptureIds.add(SNAPSHOT_ID)) {
             elementCaptureQueue.add(SNAPSHOT_ID)
             kickElementCaptureWorker()
-            Log.d(TAG, "bg-element: render-trigger async snapshot capture queued (render non-blocking, one-frame delay)")
+            Lg.d(TAG, "bg-element: render-trigger async snapshot capture queued (render non-blocking, one-frame delay)")
         }
         return null
     }
@@ -11275,7 +11276,7 @@ object BlurDrawHook {
             // 歧义仍无法消解：宁缺毋滥回退系统模糊 + 冷却记忆（防高频闪）；映射/位置更新后自然重试
             ambiguousUntil[id] = now + AMBIGUOUS_COOLDOWN_MS
             if (ambiguousUntil.size > 256) ambiguousUntil.clear()
-            Log.i(
+            Lg.i(
                 TAG,
                 "map: fallback ABORTED (ambiguous=${candidates.size} candidates) id=$id " +
                     "bounds=$drawableBounds, keep system blur"
@@ -11290,7 +11291,7 @@ object BlurDrawHook {
             lastHitRateLoggedAt = hitRateNow
             val hits = mapHitCount.get()
             val pct = if (lookups > 0) hits * 100 / lookups else 0
-            Log.i(TAG, "map: screen-region map hit rate $hits/$lookups ($pct%)")
+            Lg.i(TAG, "map: screen-region map hit rate $hits/$lookups ($pct%)")
         }
         return null
     }
@@ -11585,7 +11586,7 @@ object BlurDrawHook {
         val lowRes = try {
             getLowResBitmap(source)
         } catch (t: Throwable) {
-            Log.e(TAG, "render: getLowResBitmap failed", t)
+            Lg.e(TAG, "render: getLowResBitmap failed", t)
             null
         } ?: return null
         return try {
@@ -11602,7 +11603,7 @@ object BlurDrawHook {
                 ),
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "render: createLowResSourceBitmapShader failed", t)
+            Lg.e(TAG, "render: createLowResSourceBitmapShader failed", t)
             null
         }
     }
@@ -11639,10 +11640,10 @@ object BlurDrawHook {
             cur.also {
                 lowResBitmapCache = it
                 lowResBitmapSourceId = id
-                Log.i(TAG, "render: lowRes bitmap created ${it.width}x${it.height} (src ${source.width}x${source.height}, 2-step)")
+                Lg.i(TAG, "render: lowRes bitmap created ${it.width}x${it.height} (src ${source.width}x${source.height}, 2-step)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "render: createScaledBitmap(1/4 x2) failed", t)
+            Lg.e(TAG, "render: createScaledBitmap(1/4 x2) failed", t)
             null
         }
     }
@@ -11698,7 +11699,7 @@ object BlurDrawHook {
         val prefs = try {
             api?.let { Prefs.read(it) }
         } catch (t: Throwable) {
-            Log.e(TAG, "buildParams: prefs read failed", t); null
+            Lg.e(TAG, "buildParams: prefs read failed", t); null
         }
         val result = if (prefs == null) {
             CachedMaterialParams(
@@ -11726,7 +11727,7 @@ object BlurDrawHook {
                     prefs.getFloat(Prefs.KEY_INNER_GLOW, Prefs.DEFAULT_INNER_GLOW).coerceIn(0f, 1f),
                 )
             } catch (t: Throwable) {
-                Log.e(TAG, "buildParams: prefs float read failed, use defaults", t)
+                Lg.e(TAG, "buildParams: prefs float read failed, use defaults", t)
                 CachedMaterialParams(
                     Prefs.DEFAULT_BLUR_RADIUS,
                     def.refractionAmount, def.depth, def.dispersion,
@@ -11790,7 +11791,7 @@ object BlurDrawHook {
                 parallaxY = m.parallaxY,
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "buildParams: prefs float read failed, use defaults", t)
+            Lg.e(TAG, "buildParams: prefs float read failed, use defaults", t)
             def
         }
     }
@@ -12085,7 +12086,7 @@ object BlurDrawHook {
                         headsUpBurstRemaining = n - 1
                         // 停止条件满足（通知已消失等）→ 提前停止连抓
                         if (burstStop()) {
-                            Log.i(TAG, "bg-element: $logTag burst stopped, condition met")
+                            Lg.i(TAG, "bg-element: $logTag burst stopped, condition met")
                             break
                         }
                         // [2026-08-15 恢复 worker] 连抓 tick 入队主 worker 队列（scheduleElementCaptures →
@@ -12111,7 +12112,7 @@ object BlurDrawHook {
             }.start()
         } catch (t: Throwable) {
             headsUpBurstRunning = false
-            Log.e(TAG, "bg-element: spawn $logTag burst worker failed", t)
+            Lg.e(TAG, "bg-element: spawn $logTag burst worker failed", t)
         }
     }
 
@@ -12132,21 +12133,21 @@ object BlurDrawHook {
         // 定位主动源启动失败或中途停止根因（日志过滤 heads-up-capture）
         val host = headsUpActiveHost?.get()
         if (host == null) {
-            Log.i(TAG, "heads-up-capture: skip start, active host null")
+            Lg.i(TAG, "heads-up-capture: skip start, active host null")
             return
         }
         val attachOk = try { host.isAttachedToWindow } catch (t: Throwable) { false }
         val rootOk = try { isHeadsUpRootView(host.rootView) } catch (t: Throwable) { false }
         if (!attachOk || !rootOk) {
             val rv = try { host.rootView } catch (t: Throwable) { null }
-            Log.i(TAG, "heads-up-capture: skip start, attach=$attachOk rootOk=$rootOk root=${rv?.javaClass?.name} type=${rv?.let { reflectWindowType(it) }}")
+            Lg.i(TAG, "heads-up-capture: skip start, attach=$attachOk rootOk=$rootOk root=${rv?.javaClass?.name} type=${rv?.let { reflectWindowType(it) }}")
             return
         }
         if (headsUpContinuousRunning) return
         // [2026-08-14 锁屏被动] 锁屏期间不启动通知持续抓屏——锁屏与解锁桌面一样只走被动事件触发
         // （映射写入 / onBlurReady 等），避免锁屏耗电/不必要抓屏。
         if (isKeyguardLockedNow()) {
-            Log.i(TAG, "bg-element: keyguard locked, heads-up continuous capture skipped (passive only)")
+            Lg.i(TAG, "bg-element: keyguard locked, heads-up continuous capture skipped (passive only)")
             return
         }
         headsUpContinuousRunning = true
@@ -12157,15 +12158,15 @@ object BlurDrawHook {
                         // 通知消失（detach/回 shade）→ 停止（零后台耗电）
                         if (!isHeadsUpHostActive()) {
                             val h = headsUpActiveHost?.get()
-                            Log.i(TAG, "heads-up-capture: stop, active false host=${h?.javaClass?.simpleName} attach=${try { h?.isAttachedToWindow } catch (t: Throwable) { null }} root=${try { h?.rootView?.javaClass?.name } catch (t: Throwable) { null }}")
+                            Lg.i(TAG, "heads-up-capture: stop, active false host=${h?.javaClass?.simpleName} attach=${try { h?.isAttachedToWindow } catch (t: Throwable) { null }} root=${try { h?.rootView?.javaClass?.name } catch (t: Throwable) { null }}")
                             headsUpActiveHost = null
-                            Log.i(TAG, "bg-element: heads-up gone, continuous capture stopped")
+                            Lg.i(TAG, "bg-element: heads-up gone, continuous capture stopped")
                             break
                         }
                         // [2026-08-14 锁屏被动] 运行期间进入锁屏 → 退出主动持续抓屏（被动事件触发不受影响）
                         if (isKeyguardLockedNow()) {
                             headsUpActiveHost = null
-                            Log.i(TAG, "bg-element: keyguard locked, heads-up continuous capture stopped (passive only)")
+                            Lg.i(TAG, "bg-element: keyguard locked, heads-up continuous capture stopped (passive only)")
                             break
                         }
                         // [2026-08-14 横幅主动源·根因修复] 移除 panelExpansionActive 暂停：ColorOS QS 收起时
@@ -12203,7 +12204,7 @@ object BlurDrawHook {
             }.start()
         } catch (t: Throwable) {
             headsUpContinuousRunning = false
-            Log.e(TAG, "heads-up-capture: spawn continuous worker failed", t)
+            Lg.e(TAG, "heads-up-capture: spawn continuous worker failed", t)
         }
     }
 
@@ -12225,7 +12226,7 @@ object BlurDrawHook {
         // [2026-08-14 锁屏被动] 锁屏期间不启动主动持续抓屏——锁屏与解锁桌面一样只走被动事件触发
         // （映射写入 / onBlurReady / setExpansionHeight 等），避免锁屏耗电/不必要抓屏。
         if (isKeyguardLockedNow()) {
-            Log.i(TAG, "bg-element: keyguard locked, panel continuous capture skipped (passive only)")
+            Lg.i(TAG, "bg-element: keyguard locked, panel continuous capture skipped (passive only)")
             return
         }
         panelContinuousRunning = true
@@ -12235,7 +12236,7 @@ object BlurDrawHook {
                     while (true) {
                         // 面板收起（setExpansionHeight<=0）→ 停止（零后台耗电）
                         if (!panelExpansionActive) {
-                            Log.i(TAG, "bg-element: panel collapsed, continuous capture stopped")
+                            Lg.i(TAG, "bg-element: panel collapsed, continuous capture stopped")
                             break
                         }
                         // [2026-08-14 CPU 修复] sfc 长期无效兜底停止：panelExpansionActive 卡 true（收起时
@@ -12243,13 +12244,13 @@ object BlurDrawHook {
                         // 杜绝 120Hz 空转耗电。sfc 恢复（下次真正下拉 attach）由 startPanelContinuousCapture
                         // 重新启动。
                         if (SystemClock.uptimeMillis() - lastValidSfcCaptureMs > CONTINUOUS_CAPTURE_STOP_SFC_STALE_MS) {
-                            Log.i(TAG, "bg-element: shade sfc stale (not rendering), panel continuous capture stopped (CPU guard)")
+                            Lg.i(TAG, "bg-element: shade sfc stale (not rendering), panel continuous capture stopped (CPU guard)")
                             break
                         }
                         // [2026-08-14 锁屏被动] 运行期间进入锁屏（锁屏下拉被系统拦截 / 锁屏过程中面板仍
                         // 展开）→ 退出主动持续抓屏（被动事件触发不受影响），解锁后下次下拉再启动。
                         if (isKeyguardLockedNow()) {
-                            Log.i(TAG, "bg-element: keyguard locked, panel continuous capture stopped (passive only)")
+                            Lg.i(TAG, "bg-element: keyguard locked, panel continuous capture stopped (passive only)")
                             break
                         }
                         // [2026-08-14 用户要求·去冷却] 移除失败冷却感知（不再设置冷却）
@@ -12269,7 +12270,7 @@ object BlurDrawHook {
             }.start()
         } catch (t: Throwable) {
             panelContinuousRunning = false
-            Log.e(TAG, "bg-element: spawn panel continuous capture worker failed", t)
+            Lg.e(TAG, "bg-element: spawn panel continuous capture worker failed", t)
         }
     }
 
@@ -12470,14 +12471,14 @@ object BlurDrawHook {
                     updateQsBrightness(bg)
                     mainHandler().post { resampleAllTextContrast() }
                 } catch (t: Throwable) {
-                    Log.e(TAG, "bg-element: text contrast scan failed", t)
+                    Lg.e(TAG, "bg-element: text contrast scan failed", t)
                 } finally {
                     textScanRunning.set(false)
                 }
             }.start()
         } catch (t: Throwable) {
             textScanRunning.set(false)
-            Log.e(TAG, "bg-element: spawn text contrast scan thread failed", t)
+            Lg.e(TAG, "bg-element: spawn text contrast scan thread failed", t)
         }
     }
 
@@ -12517,7 +12518,7 @@ object BlurDrawHook {
                 Thread { runElementCaptureWorker() }.start()
             } catch (t: Throwable) {
                 elementCaptureWorkerRunning--
-                Log.e(TAG, "bg-element: spawn worker failed", t)
+                Lg.e(TAG, "bg-element: spawn worker failed", t)
             }
         }
     }
@@ -12550,7 +12551,7 @@ object BlurDrawHook {
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: worker error", t)
+            Lg.e(TAG, "bg-element: worker error", t)
         } finally {
             synchronized(this) {
                 if (elementCaptureWorkerRunning > 0) elementCaptureWorkerRunning--
@@ -12559,7 +12560,7 @@ object BlurDrawHook {
                     // 前有并发入队又被本 worker 消费，或竞态窗口入队但未入队成功的残留；保证下次入队
                     // pending.add 成功）。正常路径 pending 应为空，此分支仅日志不误删在途任务。
                     if (pendingCaptureIds.isNotEmpty()) {
-                        Log.w(TAG, "bg-element: worker exit, clear orphan pending=$pendingCaptureIds")
+                        Lg.w(TAG, "bg-element: worker exit, clear orphan pending=$pendingCaptureIds")
                         pendingCaptureIds.clear()
                     }
                     // [spec/59 追加 2026-08-14 诊断] worker 正常退出（队列空）——对比 worker-spawn 看 worker
@@ -12575,7 +12576,7 @@ object BlurDrawHook {
                         Thread { runElementCaptureWorker() }.start()
                     } catch (t: Throwable) {
                         elementCaptureWorkerRunning--
-                        Log.e(TAG, "bg-element: respawn worker failed", t)
+                        Lg.e(TAG, "bg-element: respawn worker failed", t)
                     }
                 }
             }
@@ -12593,12 +12594,12 @@ object BlurDrawHook {
         val n = (elementCaptureRetries[id] ?: 0) + 1
         elementCaptureRetries[id] = n
         if (n < retryLimit) {
-            Log.w(TAG, "bg-element: snapshot $reason, retry $n/$retryLimit")
+            Lg.w(TAG, "bg-element: snapshot $reason, retry $n/$retryLimit")
             scheduleCaptureRetry(retryMs.toLong())
         } else {
             elementCaptureRetries[id] = 0
             elementCaptureQuitAt[id] = SystemClock.uptimeMillis() + ELEMENT_CAPTURE_COOLDOWN_MS
-            Log.w(TAG, "bg-element: snapshot $reason $retryLimit x, cooldown ${ELEMENT_CAPTURE_COOLDOWN_MS}ms")
+            Lg.w(TAG, "bg-element: snapshot $reason $retryLimit x, cooldown ${ELEMENT_CAPTURE_COOLDOWN_MS}ms")
             // [spec/58 追加 2026-08-15 诊断日志] 主线程首帧路径连续失败进冷却（lg-first）：确认失败重试用尽、
             // 走短暂冷却（300ms 防 spin），之后 force=true 持续抓屏恢复
             if (isMainThreadNow()) diagFirstLog("retry-cooldown", " reason=$reason n=$n")
@@ -12627,13 +12628,13 @@ object BlurDrawHook {
         logThrottled("sfc-fallback-anyhost", Log.DEBUG) { "bg-element: resolveShadeSfc null/invalid, trying any-attached-host-root fallback" }
         val host = resolveAnyAttachedHostSfc()
         if (host != null && host.isValid) {
-            Log.i(TAG, "bg-element: fallback sfc from attached host root, name=${reflectSurfaceControlName(host)}")
+            Lg.i(TAG, "bg-element: fallback sfc from attached host root, name=${reflectSurfaceControlName(host)}")
             return host
         }
         logThrottled("sfc-fallback-headsup", Log.DEBUG) { "bg-element: any-attached-host fallback null/invalid, trying heads-up window sfc" }
         val hu = resolveHeadsUpSfc()
         if (hu != null && hu.isValid) {
-            Log.i(TAG, "bg-element: fallback sfc from heads-up window, name=${reflectSurfaceControlName(hu)}")
+            Lg.i(TAG, "bg-element: fallback sfc from heads-up window, name=${reflectSurfaceControlName(hu)}")
             return hu
         }
         // [spec/59 追加 2026-08-14 诊断] 三路全断：输出解析前缓存状态，定位 sfc 失败根因
@@ -12679,7 +12680,7 @@ object BlurDrawHook {
             }
             val sfc = reflectViewRootSurfaceControl(rootView)
             if (sfc != null && sfc.isValid) {
-                Log.i(TAG, "bg-element: fallback sfc from attached host root, root=${rootView.javaClass.name}")
+                Lg.i(TAG, "bg-element: fallback sfc from attached host root, root=${rootView.javaClass.name}")
                 return sfc
             }
         }
@@ -12732,7 +12733,7 @@ object BlurDrawHook {
         try {
             mainHandler().post { invalidateRegisteredHostViews() }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: postInvalidateHosts failed", t)
+            Lg.e(TAG, "bg-element: postInvalidateHosts failed", t)
         }
     }
 
@@ -12762,13 +12763,13 @@ object BlurDrawHook {
                 if (shadeRootViewCache === root) {
                     shadeRootViewCache = null
                     shadeSfcCache = null
-                    Log.i(TAG, "bg-source: shade root cache self-healed (stale root detached), will re-resolve")
+                    Lg.i(TAG, "bg-source: shade root cache self-healed (stale root detached), will re-resolve")
                 }
             } else {
                 val sfc = reflectViewRootSurfaceControl(root)
                 if (sfc != null && sfc.isValid) {
                     shadeSfcCache = sfc
-                    Log.i(TAG, "bg-source: shade sfc resolved from cached root ${root.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
+                    Lg.i(TAG, "bg-source: shade sfc resolved from cached root ${root.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
                     return sfc
                 }
             }
@@ -12789,7 +12790,7 @@ object BlurDrawHook {
             val sfc = reflectViewRootSurfaceControl(rootView)
             if (sfc != null && sfc.isValid) {
                 shadeSfcCache = sfc
-                Log.i(TAG, "bg-source: shade sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
+                Lg.i(TAG, "bg-source: shade sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
                 return sfc
             }
         }
@@ -12827,7 +12828,7 @@ object BlurDrawHook {
             val sfc = reflectViewRootSurfaceControl(rootView)
             if (sfc != null && sfc.isValid) {
                 headsUpSfcCache = sfc
-                Log.i(TAG, "bg-source: heads-up sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
+                Lg.i(TAG, "bg-source: heads-up sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
                 return sfc
             }
         }
@@ -12886,7 +12887,7 @@ object BlurDrawHook {
                 simpleBannerSfcCache = sfc
                 // 成功解析 → 清负缓存，宿主变化后能立即重解析（不被 300ms 窗口挡住）
                 simpleBannerSfcMissAt = 0L
-                Log.i(
+                Lg.i(
                     TAG,
                     "bg-source: simple-banner sfc resolved from active host root " +
                         "${host.rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}",
@@ -12910,7 +12911,7 @@ object BlurDrawHook {
             val sfc = reflectViewRootSurfaceControl(rootView)
             if (sfc != null && sfc.isValid) {
                 simpleBannerSfcCache = sfc
-                Log.i(TAG, "bg-source: simple-banner sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
+                Lg.i(TAG, "bg-source: simple-banner sfc resolved from ${rootView.javaClass.simpleName}, name=${reflectSurfaceControlName(sfc)}")
                 return sfc
             }
         }
@@ -13025,7 +13026,7 @@ object BlurDrawHook {
             if (!sfc.isValid) return null
             sfc
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-source: getViewRootImpl().getSurfaceControl() reflect failed", t)
+            Lg.e(TAG, "bg-source: getViewRootImpl().getSurfaceControl() reflect failed", t)
             null
         }
     }
@@ -13062,19 +13063,19 @@ object BlurDrawHook {
         val hu = try {
             resolveHeadsUpSfc()
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: resolve heads-up sfc failed", t)
+            Lg.e(TAG, "bg-element: resolve heads-up sfc failed", t)
             null
         }
         val banner = try {
             resolveSimpleBannerSfc()
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
+            Lg.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
             null
         }
         val card = try {
             resolveCardBackgroundSfc()
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
+            Lg.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
             null
         }
         if (shade != null && shade.isValid) excludes.add(shade)
@@ -13122,7 +13123,7 @@ object BlurDrawHook {
             region.bottom.toInt().coerceIn(0, maxH),
         )
         if (crop.width() <= 0 || crop.height() <= 0) {
-            Log.w(TAG, "bg-element: empty crop after clamp $region -> $crop")
+            Lg.w(TAG, "bg-element: empty crop after clamp $region -> $crop")
             return null
         }
         return try {
@@ -13147,13 +13148,13 @@ object BlurDrawHook {
             val wmBinder = Class.forName("android.os.ServiceManager")
                 .getMethod("getService", String::class.java).invoke(null, "window")
             if (wmBinder == null) {
-                Log.w(TAG, "bg-element: ServiceManager.getService(window) null")
+                Lg.w(TAG, "bg-element: ServiceManager.getService(window) null")
                 null
             } else {
                 val wm = Class.forName("android.view.IWindowManager\$Stub")
                     .getMethod("asInterface", IBinder::class.java).invoke(null, wmBinder)
                 if (wm == null) {
-                    Log.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
+                    Lg.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
                     null
                 } else {
                     val captureCls = Class.forName("android.window.ScreenCapture")
@@ -13173,12 +13174,12 @@ object BlurDrawHook {
                     builderCls.getMethod("setFrameScale", Float::class.javaPrimitiveType).invoke(builder, scale)
                     val args = builderCls.getMethod("build").invoke(builder)
                     if (args == null) {
-                        Log.w(TAG, "bg-element: CaptureArgs.build() null")
+                        Lg.w(TAG, "bg-element: CaptureArgs.build() null")
                         null
                     } else {
                         val listener = captureCls.getMethod("createSyncCaptureListener").invoke(null)
                         if (listener == null) {
-                            Log.w(TAG, "bg-element: createSyncCaptureListener() null")
+                            Lg.w(TAG, "bg-element: createSyncCaptureListener() null")
                             null
                         } else {
                             val listenerCls = Class.forName("android.window.ScreenCapture\$ScreenCaptureListener")
@@ -13199,27 +13200,27 @@ object BlurDrawHook {
                             m.invoke(wm, 0, args, listener)
                             val shb = listener.javaClass.getMethod("getBuffer").invoke(listener)
                             if (shb == null) {
-                                Log.w(TAG, "bg-element: captureDisplay getBuffer null")
+                                Lg.w(TAG, "bg-element: captureDisplay getBuffer null")
                                 null
                             } else {
                                 val hb = shb.javaClass.getMethod("getHardwareBuffer").invoke(shb) as? HardwareBuffer
                                 if (hb == null) {
-                                    Log.w(TAG, "bg-element: ScreenshotHardwareBuffer.getHardwareBuffer() null")
+                                    Lg.w(TAG, "bg-element: ScreenshotHardwareBuffer.getHardwareBuffer() null")
                                     null
                                 } else if (hb.isClosed) {
-                                    Log.w(TAG, "bg-element: captureDisplay returned closed buffer")
+                                    Lg.w(TAG, "bg-element: captureDisplay returned closed buffer")
                                     null
                                 } else {
                                     try {
                                         val wrapped = Bitmap.wrapHardwareBuffer(hb, null)
                                         if (wrapped == null) {
-                                            Log.w(TAG, "bg-element: wrapHardwareBuffer null hw=${hb.width}x${hb.height}")
+                                            Lg.w(TAG, "bg-element: wrapHardwareBuffer null hw=${hb.width}x${hb.height}")
                                             null
                                         } else {
                                             try {
                                                 val copy = wrapped.copy(Bitmap.Config.ARGB_8888, false)
                                                 if (copy == null) {
-                                                    Log.w(TAG, "bg-element: copy null hw=${hb.width}x${hb.height}")
+                                                    Lg.w(TAG, "bg-element: copy null hw=${hb.width}x${hb.height}")
                                                     null
                                                 } else {
                                                     logThrottled("capture-display-ok", Log.INFO) { "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl shade)" }
@@ -13259,7 +13260,7 @@ object BlurDrawHook {
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "bg-element: IWindowManager.captureDisplay failed", t)
+            Lg.e(TAG, "bg-element: IWindowManager.captureDisplay failed", t)
             null
         }
     }
@@ -13417,13 +13418,13 @@ object BlurDrawHook {
                         }
                         if (isBehindScrimHost(host)) behindScrimAlpha = alpha.coerceIn(0f, 1f)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "scrimViewAlpha: $className#$METHOD_SET_VIEW_ALPHA intercept error", t)
+                        Lg.e(TAG, "scrimViewAlpha: $className#$METHOD_SET_VIEW_ALPHA intercept error", t)
                     }
                     chain.proceed()
                 }
-            Log.i(TAG, "Hook B mounted: $className#$METHOD_SET_VIEW_ALPHA(float) (behind-scrim mask transition)")
+            Lg.i(TAG, "Hook B mounted: $className#$METHOD_SET_VIEW_ALPHA(float) (behind-scrim mask transition)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $className#$METHOD_SET_VIEW_ALPHA", t)
+            Lg.e(TAG, "Hook B mount FAILED: $className#$METHOD_SET_VIEW_ALPHA", t)
         }
     }
 
@@ -13440,7 +13441,7 @@ object BlurDrawHook {
                     val result = try {
                         chain.proceed()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "scrimViewAlpha: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA proceed error", t)
+                        Lg.e(TAG, "scrimViewAlpha: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA proceed error", t)
                         0f
                     }
                     try {
@@ -13448,13 +13449,13 @@ object BlurDrawHook {
                         val host = try { chain.getThisObject() as? View } catch (t: Throwable) { null }
                         if (alpha != null && isBehindScrimHost(host)) behindScrimAlpha = alpha.coerceIn(0f, 1f)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "scrimViewAlpha: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA intercept error", t)
+                        Lg.e(TAG, "scrimViewAlpha: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA intercept error", t)
                     }
                     result // 返回原值，不改变系统行为
                 }
-            Log.i(TAG, "Hook B mounted: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA() (behind-scrim mask transition, getter)")
+            Lg.i(TAG, "Hook B mounted: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA() (behind-scrim mask transition, getter)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook B mount FAILED: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA", t)
+            Lg.e(TAG, "Hook B mount FAILED: $CLASS_SCRIM_VIEW#$METHOD_GET_VIEW_ALPHA", t)
         }
     }
 

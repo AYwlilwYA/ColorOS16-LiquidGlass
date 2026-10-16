@@ -160,6 +160,9 @@
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">运行日志</string>
     <string name="settings_enable_logs_desc">关闭后只保留错误日志。修改后需重启系统界面。</string>
+    <string name="settings_share_log">分享日志</string>
+    <string name="settings_share_log_empty">还没有日志可分享。先打开上面的「运行日志」，下拉一次通知栏，再回来分享。</string>
+    <string name="settings_share_log_failed">分享失败：%1$s</string>
     <string name="settings_dump_original_note">原图 dump 诊断已改走触发文件机制（/data/local/tmp/lg_dump_trigger → lg_dump.png）。</string>
 
     <!-- 关于 -->

@@ -4,8 +4,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.os.Bundle
-import android.util.Log
 import android.view.SurfaceControl
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.reflect.Executable
@@ -165,16 +165,16 @@ object BlurCaptureHook {
                         if (binder != null) {
                             resolveAndHook(api, binder.javaClass)
                         } else {
-                            Log.w(TAG, "BlurService.onBind returned null, dynamic resolve skipped")
+                            Lg.w(TAG, "BlurService.onBind returned null, dynamic resolve skipped")
                         }
                     } catch (t: Throwable) {
-                        Log.e(TAG, "BlurService.onBind dynamic resolve error", t)
+                        Lg.e(TAG, "BlurService.onBind dynamic resolve error", t)
                     }
                     binder
                 }
-            Log.i(TAG, "Hook A(BlurService) anchor mounted: $CLASS_BLUR_SERVICE#$METHOD_ON_BIND(Intent)")
+            Lg.i(TAG, "Hook A(BlurService) anchor mounted: $CLASS_BLUR_SERVICE#$METHOD_ON_BIND(Intent)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook A(BlurService) anchor mount FAILED: $CLASS_BLUR_SERVICE#$METHOD_ON_BIND(Intent)", t)
+            Lg.e(TAG, "Hook A(BlurService) anchor mount FAILED: $CLASS_BLUR_SERVICE#$METHOD_ON_BIND(Intent)", t)
         }
     }
 
@@ -188,7 +188,7 @@ object BlurCaptureHook {
                 if (m != null) {
                     val ok = hookCaptureMethod(api, "${c.name}.${m.name}", m)
                     if (ok) {
-                        Log.i(TAG, "Hook A(BlurService) resolved via BlurService.onBind -> ${c.name}.${m.name}")
+                        Lg.i(TAG, "Hook A(BlurService) resolved via BlurService.onBind -> ${c.name}.${m.name}")
                         // 新增：c.s 已确定，锚定 c.w / f.c（onBlurReady 通道剩余 hook）
                         resolveSessionClasses(api, c)
                     }
@@ -209,7 +209,7 @@ object BlurCaptureHook {
                 if (m != null) {
                     val ok = hookCaptureMethod(api, "${itf.name}.${m.name}", m)
                     if (ok) {
-                        Log.i(TAG, "Hook A(BlurService) resolved via BlurService.onBind -> ${itf.name}.${m.name}")
+                        Lg.i(TAG, "Hook A(BlurService) resolved via BlurService.onBind -> ${itf.name}.${m.name}")
                         resolveSessionClasses(api, itf)
                     }
                     return ok
@@ -217,7 +217,7 @@ object BlurCaptureHook {
                 queue.add(itf)
             }
         }
-        Log.w(TAG, "Hook A(BlurService) dynamic resolve: no (String, HardwareBuffer, int, boolean) method in ${root.name} hierarchy")
+        Lg.w(TAG, "Hook A(BlurService) dynamic resolve: no (String, HardwareBuffer, int, boolean) method in ${root.name} hierarchy")
         return false
     }
 
@@ -229,17 +229,17 @@ object BlurCaptureHook {
                 val clazz = Class.forName(candidate, false, classLoader)
                 val m = findCaptureMethod(clazz)
                 if (m == null) {
-                    Log.w(TAG, "Hook A(BlurService) fallback: $candidate has no (String, HardwareBuffer, int, boolean) method")
+                    Lg.w(TAG, "Hook A(BlurService) fallback: $candidate has no (String, HardwareBuffer, int, boolean) method")
                     continue
                 }
                 val ok = hookCaptureMethod(api, "$candidate.${m.name}", m)
                 if (ok) {
-                    Log.i(TAG, "Hook A(BlurService) fallback anchor hit: $candidate")
+                    Lg.i(TAG, "Hook A(BlurService) fallback anchor hit: $candidate")
                     resolveSessionClasses(api, clazz)
                 }
                 return
             } catch (t: Throwable) {
-                Log.e(TAG, "Hook A(BlurService) fallback mount FAILED: $candidate", t)
+                Lg.e(TAG, "Hook A(BlurService) fallback mount FAILED: $candidate", t)
             }
         }
     }
@@ -260,7 +260,7 @@ object BlurCaptureHook {
     private fun hookCaptureMethod(api: XposedInterface, label: String, method: Method): Boolean {
         val already = mountedCaptureMethod
         if (already != null && already == method) {
-            Log.i(TAG, "Hook A(BlurService) capture method already mounted: $label, skip")
+            Lg.i(TAG, "Hook A(BlurService) capture method already mounted: $label, skip")
             return true
         }
         try {
@@ -270,15 +270,15 @@ object BlurCaptureHook {
                     try {
                         captureOriginalBuffer(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "$label intercept error", t)
+                        Lg.e(TAG, "$label intercept error", t)
                     }
                     chain.proceed()
                 }
             mountedCaptureMethod = method
-            Log.i(TAG, "Hook A(BlurService) mounted: $label(String, HardwareBuffer, int, boolean)")
+            Lg.i(TAG, "Hook A(BlurService) mounted: $label(String, HardwareBuffer, int, boolean)")
             return true
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook A(BlurService) mount FAILED: $label", t)
+            Lg.e(TAG, "Hook A(BlurService) mount FAILED: $label", t)
             return false
         }
     }
@@ -288,17 +288,17 @@ object BlurCaptureHook {
         val layerName = try {
             chain.getArg(0) as? String
         } catch (t: Throwable) {
-            Log.e(TAG, "capture getArg(0) failed", t)
+            Lg.e(TAG, "capture getArg(0) failed", t)
             null
         }
         val hw = try {
             chain.getArg(1)
         } catch (t: Throwable) {
-            Log.e(TAG, "capture getArg(1) failed", t)
+            Lg.e(TAG, "capture getArg(1) failed", t)
             return
         }
         if (hw !is HardwareBuffer) {
-            Log.w(TAG, "capture arg1 is not HardwareBuffer: ${hw?.javaClass?.name ?: "null"}")
+            Lg.w(TAG, "capture arg1 is not HardwareBuffer: ${hw?.javaClass?.name ?: "null"}")
             return
         }
         // 原图存 map + latestOriginalBuffer（持引用不 close，与系统 f193k 同源：系统换帧/关窗时统一 close）。
@@ -308,7 +308,7 @@ object BlurCaptureHook {
         }
         latestOriginalBuffer = hw
         latestLayerName = layerName
-        Log.i(TAG, "capture original stored, layer=$layerName, hw=${hw.width}x${hw.height}")
+        Lg.i(TAG, "capture original stored, layer=$layerName, hw=${hw.width}x${hw.height}")
         // [原图清晰度验证 2026-08-12] 低频采样抓屏 buffer 相邻亮度差均值，判定"blur 传回是否模糊图"
         sampleSharpness(hw, layerName)
         // 会话类未解析时，从 c.s 实例延迟解析 c.w（f148b map value 的 class）
@@ -320,7 +320,7 @@ object BlurCaptureHook {
                     resolveSessionClasses(api, self.javaClass)
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "capture: resolveSessionClasses from instance failed", t)
+                Lg.e(TAG, "capture: resolveSessionClasses from instance failed", t)
             }
         }
     }
@@ -364,10 +364,10 @@ object BlurCaptureHook {
             copy.recycle()
             if (n > 0) {
                 val mean = sum / n
-                Log.i(TAG, "capture sharpness: layer=$layerName hw=${w}x${h} meanDiff=${String.format(Locale.US, "%.1f", mean)} (low<8=blur, high>20=sharp)")
+                Lg.i(TAG, "capture sharpness: layer=$layerName hw=${w}x${h} meanDiff=${String.format(Locale.US, "%.1f", mean)} (low<8=blur, high>20=sharp)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "capture sharpness: sample failed", t)
+            Lg.e(TAG, "capture sharpness: sample failed", t)
         }
     }
 
@@ -389,14 +389,14 @@ object BlurCaptureHook {
         if (sessionResolved) return
         val wClass = resolveWClass(cSClass)
         if (wClass == null) {
-            Log.w(TAG, "Hook A(BlurService) resolve c.w class FAILED, blur-complete hook disabled")
+            Lg.w(TAG, "Hook A(BlurService) resolve c.w class FAILED, blur-complete hook disabled")
             return
         }
         hookBlurComplete(api, wClass)
         hookWPrepared(api, wClass)
         hookBufferEncode(api, wClass.classLoader ?: return)
         sessionResolved = true
-        Log.i(TAG, "Hook A(BlurService) onBlurReady session resolved: c.w=${wClass.name}, encoder=${CLASS_BLUR_BUFFER_ENCODER}")
+        Lg.i(TAG, "Hook A(BlurService) onBlurReady session resolved: c.w=${wClass.name}, encoder=${CLASS_BLUR_BUFFER_ENCODER}")
     }
 
     /** 解析 c.w 类：优先 f148b 字段泛型（Map<String, c.w>），退回候选类名 "c.w" */
@@ -409,12 +409,12 @@ object BlurCaptureHook {
                 if (t != null) return t
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "resolveWClass via f148b generic failed", t)
+            Lg.e(TAG, "resolveWClass via f148b generic failed", t)
         }
         try {
             return Class.forName("c.w", false, cSClass.classLoader)
         } catch (t: Throwable) {
-            Log.e(TAG, "resolveWClass via candidate c.w failed", t)
+            Lg.e(TAG, "resolveWClass via candidate c.w failed", t)
         }
         return null
     }
@@ -423,7 +423,7 @@ object BlurCaptureHook {
     private fun hookBlurComplete(api: XposedInterface, wClass: Class<*>) {
         val already = mountedBlurCompleteMethod
         if (already != null) {
-            Log.i(TAG, "Hook A(BlurService) blur-complete already mounted, skip")
+            Lg.i(TAG, "Hook A(BlurService) blur-complete already mounted, skip")
             return
         }
         val method = wClass.declaredMethods.firstOrNull { m ->
@@ -431,7 +431,7 @@ object BlurCaptureHook {
             p.size == 1 && p[0] == Boolean::class.javaPrimitiveType
         }
         if (method == null) {
-            Log.w(TAG, "Hook A(BlurService) blur-complete method b(boolean) not found in ${wClass.name}")
+            Lg.w(TAG, "Hook A(BlurService) blur-complete method b(boolean) not found in ${wClass.name}")
             return
         }
         try {
@@ -449,9 +449,9 @@ object BlurCaptureHook {
                     result
                 }
             mountedBlurCompleteMethod = method
-            Log.i(TAG, "Hook A(BlurService) mounted blur-complete: ${wClass.name}.b(boolean)")
+            Lg.i(TAG, "Hook A(BlurService) mounted blur-complete: ${wClass.name}.b(boolean)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook A(BlurService) blur-complete mount FAILED: ${wClass.name}.b(boolean)", t)
+            Lg.e(TAG, "Hook A(BlurService) blur-complete mount FAILED: ${wClass.name}.b(boolean)", t)
         }
     }
 
@@ -465,7 +465,7 @@ object BlurCaptureHook {
         if (already != null) return
         val method = wClass.declaredMethods.firstOrNull { m -> m.parameterCount == 0 && m.name == "e" }
         if (method == null) {
-            Log.w(TAG, "Hook A(BlurService) prepared method e() not found in ${wClass.name}")
+            Lg.w(TAG, "Hook A(BlurService) prepared method e() not found in ${wClass.name}")
             return
         }
         try {
@@ -475,14 +475,14 @@ object BlurCaptureHook {
                     try {
                         captureUnblurredOriginal(chain)
                     } catch (t: Throwable) {
-                        Log.e(TAG, "capture unblurred: intercept error", t)
+                        Lg.e(TAG, "capture unblurred: intercept error", t)
                     }
                     chain.proceed()
                 }
             mountedPreparedMethod = method
-            Log.i(TAG, "Hook A(BlurService) mounted prepared: ${wClass.name}.e() (capture unblurred f193k)")
+            Lg.i(TAG, "Hook A(BlurService) mounted prepared: ${wClass.name}.e() (capture unblurred f193k)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook A(BlurService) prepared mount FAILED: ${wClass.name}.e()", t)
+            Lg.e(TAG, "Hook A(BlurService) prepared mount FAILED: ${wClass.name}.e()", t)
         }
     }
 
@@ -491,18 +491,18 @@ object BlurCaptureHook {
         val winst = try {
             chain.getThisObject()
         } catch (t: Throwable) {
-            Log.e(TAG, "capture unblurred: getThisObject failed", t); null
+            Lg.e(TAG, "capture unblurred: getThisObject failed", t); null
         } ?: return
         val layerName = reflectLayerNameField(winst)
         val hw = reflectOriginalBuffer(winst)
         if (hw == null || hw.isClosed) {
-            Log.w(TAG, "capture unblurred: f193k not available (null/closed)")
+            Lg.w(TAG, "capture unblurred: f193k not available (null/closed)")
             return
         }
         if (layerName != null) originalBufferMap[layerName] = hw
         latestOriginalBuffer = hw
         latestLayerName = layerName
-        Log.i(TAG, "capture unblurred original (f193k @prepared), layer=$layerName hw=${hw.width}x${hw.height}")
+        Lg.i(TAG, "capture unblurred original (f193k @prepared), layer=$layerName hw=${hw.width}x${hw.height}")
     }
 
     /**
@@ -525,19 +525,19 @@ object BlurCaptureHook {
                 // fallback b()（模糊完成）反射 f193k（此时可能已被系统写回模糊结果 → 间歇）。
                 hw = if (layerName != null) originalBufferMap[layerName] else null
                 if (hw != null && !hw.isClosed) {
-                    Log.i(TAG, "onBlurComplete: using unblurred f193k (captured @prepared), layer=$layerName hw=${hw.width}x${hw.height}")
+                    Lg.i(TAG, "onBlurComplete: using unblurred f193k (captured @prepared), layer=$layerName hw=${hw.width}x${hw.height}")
                 } else {
-                    Log.w(TAG, "onBlurComplete: prepared-captured unavailable, fallback reflect b() f193k")
+                    Lg.w(TAG, "onBlurComplete: prepared-captured unavailable, fallback reflect b() f193k")
                     hw = reflectOriginalBuffer(winst)
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "onBlurComplete: reflect layer/original from w instance failed", t)
+            Lg.e(TAG, "onBlurComplete: reflect layer/original from w instance failed", t)
         }
         if (hw == null || hw.isClosed) {
             val latest = latestOriginalBuffer
             if (latest == null || latest.isClosed) {
-                Log.w(TAG, "onBlurComplete: original buffer unavailable (null/closed), keep system blur result")
+                Lg.w(TAG, "onBlurComplete: original buffer unavailable (null/closed), keep system blur result")
                 pendingLayerName = null
                 return
             }
@@ -546,12 +546,12 @@ object BlurCaptureHook {
         }
         pendingOriginalBuffer = hw
         pendingLayerName = layerName
-        Log.i(TAG, "onBlurComplete: original buffer pending, layer=$layerName, hw=${hw.width}x${hw.height}")
+        Lg.i(TAG, "onBlurComplete: original buffer pending, layer=$layerName, hw=${hw.width}x${hw.height}")
         // 确保 f.c.b hook 已安装（兜底延迟安装，防止 f.c 类加载时序早于 resolveSessionClasses）
         try {
             ensureEncodeHook(chain.getExecutable())
         } catch (t: Throwable) {
-            Log.e(TAG, "onBlurComplete: ensureEncodeHook failed", t)
+            Lg.e(TAG, "onBlurComplete: ensureEncodeHook failed", t)
         }
     }
 
@@ -602,7 +602,7 @@ object BlurCaptureHook {
         try {
             hookBufferEncode(api, executable.declaringClass.classLoader ?: return)
         } catch (t: Throwable) {
-            Log.e(TAG, "ensureEncodeHook failed", t)
+            Lg.e(TAG, "ensureEncodeHook failed", t)
         }
     }
 
@@ -613,7 +613,7 @@ object BlurCaptureHook {
         val clazz = try {
             Class.forName(CLASS_BLUR_BUFFER_ENCODER, false, classLoader)
         } catch (t: Throwable) {
-            Log.w(TAG, "Hook A(BlurService) encode class $CLASS_BLUR_BUFFER_ENCODER not found", t)
+            Lg.w(TAG, "Hook A(BlurService) encode class $CLASS_BLUR_BUFFER_ENCODER not found", t)
             return
         }
         val method = clazz.declaredMethods.firstOrNull { m ->
@@ -625,7 +625,7 @@ object BlurCaptureHook {
                 p[3] == Int::class.javaPrimitiveType
         }
         if (method == null) {
-            Log.w(TAG, "Hook A(BlurService) encode method b(Bundle, List, List, int) not found in ${clazz.name}")
+            Lg.w(TAG, "Hook A(BlurService) encode method b(Bundle, List, List, int) not found in ${clazz.name}")
             return
         }
         try {
@@ -635,9 +635,9 @@ object BlurCaptureHook {
                     replaceBlurBuffersWithOriginal(chain)
                 }
             mountedEncodeMethod = method
-            Log.i(TAG, "Hook A(BlurService) mounted encode: ${clazz.name}.b(Bundle, List, List, int)")
+            Lg.i(TAG, "Hook A(BlurService) mounted encode: ${clazz.name}.b(Bundle, List, List, int)")
         } catch (t: Throwable) {
-            Log.e(TAG, "Hook A(BlurService) encode mount FAILED: ${clazz.name}.b(Bundle, List, List, int)", t)
+            Lg.e(TAG, "Hook A(BlurService) encode mount FAILED: ${clazz.name}.b(Bundle, List, List, int)", t)
         }
     }
 
@@ -656,19 +656,19 @@ object BlurCaptureHook {
         val layerName = pendingLayerName
         if (original == null || original.isClosed) {
             if (original == null) {
-                Log.d(TAG, "cross-process: original unavailable, keep system blur result")
+                Lg.d(TAG, "cross-process: original unavailable, keep system blur result")
             }
             return chain.proceed()
         }
         // 场景过滤：非 SystemUI 场景（Launcher 文件夹层等）或层名未知 → 保留系统模糊结果。
         if (!isSystemUiLayer(layerName)) {
-            Log.i(TAG, "cross-process: skip replace for layer=$layerName (non-SystemUI), keep system blur result")
+            Lg.i(TAG, "cross-process: skip replace for layer=$layerName (non-SystemUI), keep system blur result")
             return chain.proceed()
         }
         val blurBuffers = try {
             chain.getArg(2) as? List<*>
         } catch (t: Throwable) {
-            Log.e(TAG, "cross-process: getArg(2) failed", t)
+            Lg.e(TAG, "cross-process: getArg(2) failed", t)
             null
         }
         if (blurBuffers == null || blurBuffers.isEmpty()) {
@@ -682,7 +682,7 @@ object BlurCaptureHook {
         // LibXposed Chain 无 setArg，构造新参数数组走 proceed(newArgs)
         val args = chain.getArgs().toTypedArray()
         args[2] = replaced
-        Log.i(TAG, "cross-process: original replaced for layer=$layerName, count=${blurBuffers.size}, hw=${original.width}x${original.height}")
+        Lg.i(TAG, "cross-process: original replaced for layer=$layerName, count=${blurBuffers.size}, hw=${original.width}x${original.height}")
         return chain.proceed(args)
     }
 
@@ -732,7 +732,7 @@ object BlurCaptureHook {
         val clazz = try {
             Class.forName(CLASS_CAPTURE_UTILS, false, classLoader)
         } catch (t: Throwable) {
-            Log.w(TAG, "FrameScale: capture utils class $CLASS_CAPTURE_UTILS not found, full-res capture disabled", t)
+            Lg.w(TAG, "FrameScale: capture utils class $CLASS_CAPTURE_UTILS not found, full-res capture disabled", t)
             return
         }
         // 1) 主 hook：e.a.c(SurfaceControl, Float, Integer, Long) 构造 LayerCaptureArgs
@@ -745,7 +745,7 @@ object BlurCaptureHook {
                 p[3] == java.lang.Long::class.java
         }
         if (createMethod == null) {
-            Log.w(TAG, "FrameScale: create args method c(SurfaceControl, Float, Integer, Long) not found in $CLASS_CAPTURE_UTILS")
+            Lg.w(TAG, "FrameScale: create args method c(SurfaceControl, Float, Integer, Long) not found in $CLASS_CAPTURE_UTILS")
         } else {
             try {
                 api.hook(createMethod)
@@ -754,14 +754,14 @@ object BlurCaptureHook {
                         val result = try {
                             forceFullFrameScaleOnArgs(chain)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "FrameScale: e.a.c intercept error, keep original args", t)
+                            Lg.e(TAG, "FrameScale: e.a.c intercept error, keep original args", t)
                             null
                         }
                         result ?: chain.proceed()
                     }
-                Log.i(TAG, "FrameScale: mounted create-args hook: $CLASS_CAPTURE_UTILS.c(SurfaceControl, Float, Integer, Long)")
+                Lg.i(TAG, "FrameScale: mounted create-args hook: $CLASS_CAPTURE_UTILS.c(SurfaceControl, Float, Integer, Long)")
             } catch (t: Throwable) {
-                Log.e(TAG, "FrameScale: mount create-args hook FAILED: $CLASS_CAPTURE_UTILS.c", t)
+                Lg.e(TAG, "FrameScale: mount create-args hook FAILED: $CLASS_CAPTURE_UTILS.c", t)
             }
         }
         // 2) 兜底 hook：e.a.a(Object) -> HardwareBuffer（captureLayers 入口，覆盖 e.a.e 反射路径）
@@ -774,7 +774,7 @@ object BlurCaptureHook {
             p.size == 1 && p[0] == Any::class.java && m.returnType == HardwareBuffer::class.java
         }
         if (captureMethod == null) {
-            Log.w(TAG, "FrameScale: capture method a(Object) not found in $CLASS_CAPTURE_UTILS")
+            Lg.w(TAG, "FrameScale: capture method a(Object) not found in $CLASS_CAPTURE_UTILS")
         } else {
             try {
                 api.hook(captureMethod)
@@ -786,7 +786,7 @@ object BlurCaptureHook {
                         var result: Any? = try {
                             forceFullFrameScaleOnCapture(chain)
                         } catch (t: Throwable) {
-                            Log.e(TAG, "FrameScale: e.a.a intercept error, keep original args", t)
+                            Lg.e(TAG, "FrameScale: e.a.a intercept error, keep original args", t)
                             null
                         }
                         if (result == null) {
@@ -794,7 +794,7 @@ object BlurCaptureHook {
                             result = try {
                                 chain.proceed()
                             } catch (t: Throwable) {
-                                Log.e(TAG, "FrameScale: e.a.a proceed failed, return null", t)
+                                Lg.e(TAG, "FrameScale: e.a.a proceed failed, return null", t)
                                 null
                             }
                         }
@@ -802,9 +802,9 @@ object BlurCaptureHook {
                         if (result is HardwareBuffer) latestRawCapture = result
                         result
                     }
-                Log.i(TAG, "FrameScale: mounted capture-args hook: $CLASS_CAPTURE_UTILS.a(Object)")
+                Lg.i(TAG, "FrameScale: mounted capture-args hook: $CLASS_CAPTURE_UTILS.a(Object)")
             } catch (t: Throwable) {
-                Log.e(TAG, "FrameScale: mount capture-args hook FAILED: $CLASS_CAPTURE_UTILS.a", t)
+                Lg.e(TAG, "FrameScale: mount capture-args hook FAILED: $CLASS_CAPTURE_UTILS.a", t)
             }
         }
         mountedFrameScaleHooks = true
@@ -820,7 +820,7 @@ object BlurCaptureHook {
         try {
             val ctx = Class.forName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: run {
-                Log.w(TAG, "capture-dump: ActivityThread.currentApplication() null")
+                Lg.w(TAG, "capture-dump: ActivityThread.currentApplication() null")
                 return
             }
             val filter = android.content.IntentFilter("com.coloros16.liquidglass.DUMP")
@@ -830,15 +830,15 @@ object BlurCaptureHook {
                 }
             }
             ctx.registerReceiver(receiver, filter)
-            Log.i(TAG, "capture-dump: broadcast receiver mounted (adb: am broadcast -a com.coloros16.liquidglass.DUMP)")
+            Lg.i(TAG, "capture-dump: broadcast receiver mounted (adb: am broadcast -a com.coloros16.liquidglass.DUMP)")
         } catch (t: Throwable) {
-            Log.e(TAG, "capture-dump: register receiver failed", t)
+            Lg.e(TAG, "capture-dump: register receiver failed", t)
         }
     }
 
     private fun dumpRawCapture() {
         val hw = latestRawCapture ?: run {
-            Log.w(TAG, "capture-dump: latestRawCapture null, nothing to dump")
+            Lg.w(TAG, "capture-dump: latestRawCapture null, nothing to dump")
             return
         }
         try {
@@ -851,16 +851,16 @@ object BlurCaptureHook {
                         java.io.FileOutputStream(f).use { out ->
                             bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
                         }
-                        Log.i(TAG, "capture-dump: dumped original captureLayers $f ${bmp.width}x${bmp.height} layer=$latestLayerName")
+                        Lg.i(TAG, "capture-dump: dumped original captureLayers $f ${bmp.width}x${bmp.height} layer=$latestLayerName")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "capture-dump: write failed", t)
+                        Lg.e(TAG, "capture-dump: write failed", t)
                     }
                 }.start()
             } else {
-                Log.w(TAG, "capture-dump: wrapHardwareBuffer null")
+                Lg.w(TAG, "capture-dump: wrapHardwareBuffer null")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "capture-dump: wrap failed", t)
+            Lg.e(TAG, "capture-dump: wrap failed", t)
         }
     }
 
@@ -869,7 +869,7 @@ object BlurCaptureHook {
         val args = try {
             chain.getArgs().toTypedArray()
         } catch (t: Throwable) {
-            Log.e(TAG, "FrameScale: getArgs failed", t)
+            Lg.e(TAG, "FrameScale: getArgs failed", t)
             return null
         }
         if (args.size < 2) return null
@@ -882,7 +882,7 @@ object BlurCaptureHook {
             result = chain.proceed(args)
         } else {
             args[1] = 1.0f
-            Log.i(TAG, "FrameScale: create-args frameScale $original -> 1.0f (full-res original)")
+            Lg.i(TAG, "FrameScale: create-args frameScale $original -> 1.0f (full-res original)")
             result = chain.proceed(args)
         }
         // [doc/spec/06] 排除自身层/整屏排除替换（rebuildWithSelfExclude / oplus 整屏排除）均已移除，
@@ -912,7 +912,7 @@ object BlurCaptureHook {
         val obj = try {
             chain.getArg(0)
         } catch (t: Throwable) {
-            Log.e(TAG, "FrameScale: getArg(0) failed", t)
+            Lg.e(TAG, "FrameScale: getArg(0) failed", t)
             return null
         }
         val argsCls = obj?.javaClass ?: return null
@@ -963,10 +963,10 @@ object BlurCaptureHook {
             changed = setReflectField(argsCls, obj, "mFrameScale", FRAME_SCALE_FULL) || changed
         }
         if (changed) {
-            Log.i(TAG, "FrameScale: set CaptureArgs frameScale ($x, $y) -> (1.0, 1.0) via field reflect (full-res original)")
+            Lg.i(TAG, "FrameScale: set CaptureArgs frameScale ($x, $y) -> (1.0, 1.0) via field reflect (full-res original)")
             return chain.proceed()  // 原地改字段，复用原 args
         }
-        Log.w(TAG, "FrameScale: frameScale ($x, $y) not 1.0 but field set failed, keep original")
+        Lg.w(TAG, "FrameScale: frameScale ($x, $y) not 1.0 but field set failed, keep original")
         return null
     }
 
@@ -1011,9 +1011,9 @@ object BlurCaptureHook {
                 }
                 c = c.superclass
             }
-            Log.w(TAG, sb.toString())
+            Lg.w(TAG, sb.toString())
         } catch (t: Throwable) {
-            Log.e(TAG, "FrameScale: field dump failed", t)
+            Lg.e(TAG, "FrameScale: field dump failed", t)
         }
     }
 

@@ -1,7 +1,9 @@
 package com.coloros16.liquidglass
 
 import android.app.Application
-import android.util.Log
+import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.log.FileLog
+import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import java.util.concurrent.CopyOnWriteArraySet
@@ -25,19 +27,35 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
 
     override fun onCreate() {
         super.onCreate()
+        // 文件日志通道用本进程 Context，门控读「运行日志」开关
+        FileLog.setContext(this)
+        FileLog.installGateReader { readEnableLogs() }
         // 官方约定：全进程只注册一次。
         XposedServiceHelper.registerListener(this)
     }
 
+    /** 「运行日志」开关（框架侧优先，框架未就绪时读本地 XML 兜底）。 */
+    private fun readEnableLogs(): Boolean {
+        val svc = serviceRef
+        if (svc != null) {
+            return try {
+                Prefs.remote(svc).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+            } catch (t: Throwable) {
+                Prefs.DEFAULT_ENABLE_LOGS
+            }
+        }
+        return Prefs.read(this).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+    }
+
     override fun onServiceBind(service: XposedService) {
-        Log.i(TAG, "framework service bound: ${service.getFrameworkName()} v${service.getFrameworkVersion()}")
+        Lg.i(TAG, "framework service bound: ${service.getFrameworkName()} v${service.getFrameworkVersion()}")
         serviceRef = service
         serviceLost = false
         listeners.forEach { it.onServiceStateChanged(service) }
     }
 
     override fun onServiceDied(service: XposedService) {
-        Log.w(TAG, "framework service died")
+        Lg.w(TAG, "framework service died")
         serviceRef = null
         // [2026-10-10] binder 注入只在进程启动时来一次，死后无重连机制 → UI 读写全部落空
         //（读走 XML 兜底显示旧值、写进队列永远发不出）。置标志供 UI 提示用户「划掉设置页重开」自愈。
