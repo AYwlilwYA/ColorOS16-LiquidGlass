@@ -1162,6 +1162,12 @@ object BlurDrawHook {
         return ctx
     }
 
+    // 宿主 ClassLoader 加载 hide 类：模块类做 caller 会按模块签名判 hidden API 名单被拦成 CNFE
+    private fun hostForName(name: String): Class<*> {
+        val cl = systemUiContext()?.classLoader
+        return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
+    }
+
     /** [doc/spec/105 P0-3] 多源解析 SystemUI context（任一成功即用；全部失败返回 null → 下次限频重试）：
      *  ① 宿主 View context（registerHostView 捕获，最可靠）；② ActivityThread.currentApplication（原实现）；
      *  ③ ActivityThread.getSystemContext()（Application 未就绪时 system context 已存在）；
@@ -13168,9 +13174,9 @@ object BlurDrawHook {
                     Lg.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
                     null
                 } else {
-                    val captureCls = Class.forName("android.window.ScreenCapture")
-                    val argsCls = Class.forName("android.window.ScreenCapture\$CaptureArgs")
-                    val builderCls = Class.forName("android.window.ScreenCapture\$CaptureArgs\$Builder")
+                    val captureCls = hostForName("android.window.ScreenCapture")
+                    val argsCls = hostForName("android.window.ScreenCapture\$CaptureArgs")
+                    val builderCls = hostForName("android.window.ScreenCapture\$CaptureArgs\$Builder")
                     val builder = builderCls.getConstructor().newInstance()
                     // [spec/17 配置接线] 降采样比例读 Prefs（KEY_BG_CAPTURE_SCALE，clamp 0.25~1.0，替代硬编码 0.5f）
                     // [doc/spec/49 回退 2026-08-13] 拖动期不再强制 0.25 降采样：运动时保持配置清晰度
@@ -13193,7 +13199,7 @@ object BlurDrawHook {
                             Lg.w(TAG, "bg-element: createSyncCaptureListener() null")
                             null
                         } else {
-                            val listenerCls = Class.forName("android.window.ScreenCapture\$ScreenCaptureListener")
+                            val listenerCls = hostForName("android.window.ScreenCapture\$ScreenCaptureListener")
                             val m = wm.javaClass.getMethod(
                                 "captureDisplay",
                                 Int::class.javaPrimitiveType, argsCls, listenerCls

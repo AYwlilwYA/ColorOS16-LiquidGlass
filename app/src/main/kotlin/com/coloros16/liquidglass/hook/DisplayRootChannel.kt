@@ -152,6 +152,12 @@ object DisplayRootChannel {
         }
     }
 
+    // 宿主 ClassLoader 加载 hide 类：模块类做 caller 会按模块签名判 hidden API 名单被拦成 CNFE
+    private fun hostForName(name: String, ctx: Context?): Class<*> {
+        val cl = ctx?.classLoader
+        return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
+    }
+
     /**
      * 进程内静态抓屏：`ScreenCapture.captureDisplay(DisplayCaptureArgs)`。
      *
@@ -169,9 +175,9 @@ object DisplayRootChannel {
         val token = displayToken(ctx) ?: return null
         return try {
             val dm = android.content.res.Resources.getSystem().displayMetrics
-            val builderCls = Class.forName("android.window.ScreenCapture\$DisplayCaptureArgs\$Builder")
-            val baseBuilderCls = Class.forName("android.window.ScreenCapture\$CaptureArgs\$Builder")
-            val argsCls = Class.forName("android.window.ScreenCapture\$DisplayCaptureArgs")
+            val builderCls = hostForName("android.window.ScreenCapture\$DisplayCaptureArgs\$Builder", ctx)
+            val baseBuilderCls = hostForName("android.window.ScreenCapture\$CaptureArgs\$Builder", ctx)
+            val argsCls = hostForName("android.window.ScreenCapture\$DisplayCaptureArgs", ctx)
 
             val builder = builderCls.getConstructor(IBinder::class.java).newInstance(token)
             // setSourceCrop / setExcludeLayers 继承自 CaptureArgs.Builder
@@ -189,7 +195,7 @@ object DisplayRootChannel {
             ).invoke(builder, outW, outH)
 
             val args = builderCls.getMethod("build").invoke(builder) ?: return null
-            val shot = Class.forName("android.window.ScreenCapture")
+            val shot = hostForName("android.window.ScreenCapture", ctx)
                 .getMethod("captureDisplay", argsCls)
                 .invoke(null, args) ?: return null
             val hb = shot.javaClass.getMethod("getHardwareBuffer").invoke(shot) as? HardwareBuffer
