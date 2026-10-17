@@ -30,18 +30,22 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
         // 文件日志通道用本进程 Context，门控读「运行日志」开关
         FileLog.setContext(this)
         FileLog.installGateReader { readEnableLogs() }
+        FileLog.installDiagWriter { slug, hb, chunk ->
+            serviceRef?.let { Prefs.writeLogDiag(it, slug, hb, chunk) }
+        }
+        Lg.e("lg-boot", "app pid=${android.os.Process.myPid()}")
         // 官方约定：全进程只注册一次。
         XposedServiceHelper.registerListener(this)
     }
 
-    /** 「运行日志」开关（框架侧优先，框架未就绪时读本地 XML 兜底）。 */
+    /** 「运行日志」开关（框架侧优先，框架未就绪时读本地 XML 兜底；读失败默认开，避免静默丢日志）。 */
     private fun readEnableLogs(): Boolean {
         val svc = serviceRef
         if (svc != null) {
             return try {
                 Prefs.remote(svc).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
             } catch (t: Throwable) {
-                Prefs.DEFAULT_ENABLE_LOGS
+                true
             }
         }
         return Prefs.read(this).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)

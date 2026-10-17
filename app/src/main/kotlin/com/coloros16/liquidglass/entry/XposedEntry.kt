@@ -37,19 +37,23 @@ class XposedEntry : XposedModule() {
     override fun onModuleLoaded(param: io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam) {
         // 先装文件日志门控，后面的日志才按「运行日志」开关入文件
         installLogGate()
+        Lg.e("lg-boot", "loaded process=${param.processName} pid=${android.os.Process.myPid()}")
         // 模块注入完成（SystemUI 类尚未加载）。标记入口加载成功，便于真机确认模块生效。
         Lg.i(TAG, "module loaded, process=${param.processName}, isSystemServer=${param.isSystemServer()}")
     }
 
-    /** 文件日志门控：读框架侧「运行日志」开关（读失败按默认关处理）。 */
+    /** 文件日志门控：读框架侧「运行日志」开关（读失败默认开，避免静默丢日志）；并装 C 通道心跳回传。 */
     private fun installLogGate() {
         val module = this
         FileLog.installGateReader {
             try {
                 Prefs.read(module).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
             } catch (t: Throwable) {
-                Prefs.DEFAULT_ENABLE_LOGS
+                true
             }
+        }
+        FileLog.installDiagWriter { slug, hb, chunk ->
+            Prefs.writeLogDiag(module, slug, hb, chunk)
         }
     }
 
@@ -138,6 +142,7 @@ class XposedEntry : XposedModule() {
 
     /** [doc/spec/110] 安装主入口（onPackageLoaded 与 onHotReloaded 共用同一套门槛与分发）。 */
     private fun doInstall(packageName: String, classLoader: ClassLoader) {
+        Lg.e("lg-boot", "host=$packageName pid=${android.os.Process.myPid()}")
         // 模块默认全关（Prefs.masterEnabled=false 直接跳过，零侵入）。
         if (!Prefs.masterEnabled(this)) {
             Lg.d(TAG, "package loaded but master disabled, skip install")

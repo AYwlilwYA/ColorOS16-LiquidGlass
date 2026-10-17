@@ -163,6 +163,15 @@
     <string name="settings_share_log">分享日志</string>
     <string name="settings_share_log_empty">还没有日志可分享。先打开上面的「运行日志」，下拉一次通知栏，再回来分享。</string>
     <string name="settings_share_log_failed">分享失败：%1$s</string>
+    <string name="settings_log_diag">通道状态（点击刷新）</string>
+    <string name="settings_log_diag_busy">正在读取通道状态…</string>
+    <string name="settings_log_diag_noframe">框架服务未就绪，读不到通道状态。请重开本页。</string>
+    <string name="settings_log_diag_fmt">%1$s：最近写入 %2$s；通道失败 %3$d 次，日志丢弃 %4$d 条</string>
+    <string name="settings_log_diag_none">无心跳（进程未运行新版本，或心跳回传失败）</string>
+    <string name="settings_log_diag_never">从未</string>
+    <string name="settings_log_proc_systemui">系统界面</string>
+    <string name="settings_log_proc_launcher">桌面</string>
+    <string name="settings_log_proc_app">模块自身</string>
     <string name="settings_dump_original_note">原图 dump 诊断已改走触发文件机制（/data/local/tmp/lg_dump_trigger → lg_dump.png）。</string>
 
     <!-- 关于 -->

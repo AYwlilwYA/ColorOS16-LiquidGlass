@@ -921,4 +921,32 @@ object Prefs {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun write(context: Context): SharedPreferences.Editor = read(context).edit()
+
+    // ---------- 日志通道诊断（心跳 + 失败尾部回传，供设置页仪表盘） ----------
+    const val KEY_LG_HB_PREFIX = "lg_hb_"
+    const val KEY_LG_CHUNK_PREFIX = "lg_chunk_"
+
+    /** hook 端回传日志通道心跳（写框架侧存储）。 */
+    fun writeLogDiag(api: XposedInterface, slug: String, hb: String, chunk: String) {
+        try {
+            read(api).edit()
+                .putString(KEY_LG_HB_PREFIX + slug, hb)
+                .putString(KEY_LG_CHUNK_PREFIX + slug, chunk)
+                .apply()
+        } catch (t: Throwable) {
+            android.util.Log.w("Prefs", "writeLogDiag failed: $t")
+        }
+    }
+
+    /** 模块 UI 进程回传（自身进程心跳，走框架服务通道）。 */
+    fun writeLogDiag(service: XposedService, slug: String, hb: String, chunk: String) {
+        try {
+            remote(service).edit()
+                .putString(KEY_LG_HB_PREFIX + slug, hb)
+                .putString(KEY_LG_CHUNK_PREFIX + slug, chunk)
+                .apply()
+        } catch (t: Throwable) {
+            android.util.Log.w("Prefs", "writeLogDiag failed: $t")
+        }
+    }
 }

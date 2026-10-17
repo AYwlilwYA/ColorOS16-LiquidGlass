@@ -1147,12 +1147,60 @@ class SettingsActivity : AppCompatActivity() {
         refreshBooleanSwitch(switchLogs, logsListener, Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
         // 分享日志文件（经 FileProvider 换 content uri，交给系统分享面板）
         view.findViewById<View>(R.id.shareLogRow).setOnClickListener { shareLogFile() }
+        // 通道状态仪表盘：读框架侧心跳（binder），放后台线程
+        val diagRow = view.findViewById<TextView>(R.id.logDiagRow)
+        diagRow.setOnClickListener { refreshLogDiag(diagRow) }
+        refreshLogDiag(diagRow)
     }
 
-    /** 分享 lg.log；没有日志时提示先开「运行日志」并下拉一次通知栏。 */
+    /** 读三进程日志通道心跳并刷新显示（最近写入时间 + 失败/丢弃计数）。 */
+    private fun refreshLogDiag(row: TextView) {
+        row.setText(R.string.settings_log_diag_busy)
+        Thread {
+            val prefs = frameworkPrefs()
+            val text = if (prefs == null) {
+                getString(R.string.settings_log_diag_noframe)
+            } else {
+                val procs = listOf(
+                    "systemui" to R.string.settings_log_proc_systemui,
+                    "launcher" to R.string.settings_log_proc_launcher,
+                    "app" to R.string.settings_log_proc_app,
+                )
+                val sb = StringBuilder()
+                for ((slug, labelRes) in procs) {
+                    val hb = prefs.getString(Prefs.KEY_LG_HB_PREFIX + slug, "") ?: ""
+                    val label = getString(labelRes)
+                    val line = if (hb.isEmpty()) {
+                        "$label：${getString(R.string.settings_log_diag_none)}"
+                    } else {
+                        val ok = Regex("ok=(\\d+)").find(hb)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                        val fail = Regex("fail=(\\d+)").find(hb)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                        val drop = Regex("drop=(\\d+)").find(hb)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                        val age = if (ok > 0L) formatAge(ok) else getString(R.string.settings_log_diag_never)
+                        getString(R.string.settings_log_diag_fmt, label, age, fail, drop)
+                    }
+                    sb.append(line).append('\n')
+                }
+                sb.toString().trimEnd()
+            }
+            runOnUiThread { row.text = text }
+        }.start()
+    }
+
+    /** 毫秒时间距今 → 「x秒前 / x分钟前 / x小时前」。 */
+    private fun formatAge(ms: Long): String {
+        val diff = System.currentTimeMillis() - ms
+        return when {
+            diff < 60_000L -> "${diff / 1000} 秒前"
+            diff < 3_600_000L -> "${diff / 60_000} 分钟前"
+            else -> "${diff / 3_600_000} 小时前"
+        }
+    }
+
+    /** 分享日志；优先合并各进程经框架回传的日志尾部，再拼主文件。 */
     private fun shareLogFile() {
-        val file = File(filesDir, "logs/lg.log")
-        if (!file.exists() || file.length() == 0L) {
+        val file = buildShareFile(File(filesDir, "logs/lg.log"))
+        if (file == null) {
             Toast.makeText(this, R.string.settings_share_log_empty, Toast.LENGTH_SHORT).show()
             return
         }
@@ -1166,6 +1214,31 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent.createChooser(send, getString(R.string.settings_share_log)))
         } catch (t: Throwable) {
             Toast.makeText(this, getString(R.string.settings_share_log_failed, t.message ?: "error"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 拼接回传尾部与主日志为临时分享文件；无可分享内容返回 null。 */
+    private fun buildShareFile(main: File): File? {
+        val hasMain = main.exists() && main.length() > 0L
+        val prefs = frameworkPrefs()
+        val chunks = if (prefs != null) {
+            listOf("systemui", "launcher", "app").mapNotNull { slug ->
+                val c = prefs.getString(Prefs.KEY_LG_CHUNK_PREFIX + slug, "") ?: ""
+                if (c.isEmpty()) null else "===== $slug 回传尾部 =====\n$c\n"
+            }
+        } else {
+            emptyList()
+        }
+        if (!hasMain && chunks.isEmpty()) return null
+        if (chunks.isEmpty()) return main
+        return try {
+            val out = File(filesDir, "logs/lg-share.txt")
+            out.parentFile?.mkdirs()
+            val body = if (hasMain) main.readText() else ""
+            out.writeText(chunks.joinToString("\n") + "===== 主日志 =====\n" + body)
+            out
+        } catch (t: Throwable) {
+            if (hasMain) main else null
         }
     }
 
