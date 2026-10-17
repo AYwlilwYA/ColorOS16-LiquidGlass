@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="16dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="16dp">
+
+    <TextView
+        android:id="@+id/presetClassHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/glass_preset_class_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?android:attr/textColorSecondary" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:id="@+id/presetClassScroll">
+
+        <LinearLayout
+            android:id="@+id/presetClassContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+</LinearLayout>

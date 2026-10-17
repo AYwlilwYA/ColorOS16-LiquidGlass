@@ -25,9 +25,11 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.CompoundButton
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.Switch
@@ -42,6 +44,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.log.Lg
 import com.coloros16.liquidglass.update.UpdateChecker
@@ -454,6 +457,12 @@ class SettingsActivity : AppCompatActivity() {
         // 视差 X/Y 不喂预览 —— 它会把采样区整体移出预览框，画面会变成空白玻璃（见 doc/spec/89）。
         val preview: LiquidGlassPreviewView? = view.findViewById(R.id.materialPreview)
 
+        // 顶栏预设：选中预设后下方滑杆改读/改写该预设的参数键，未设的键回落全局值
+        val glassPresets = readGlassPresets()
+        val presetId = normalizeSelectedPresetId(glassPresets)
+        val presetParams: Map<String, Float>? = glassPresets.find { it.id == presetId }?.params
+        bindGlassPresetBar(view, glassPresets, presetId)
+
         // [doc/spec/101] 统一界面圆角：开关 + 半径滑杆（8~200px，默认 48）。
         // 开关关时滑杆整组隐藏（label/seek/value/desc 全 GONE）；预览不喂 —— 预览框是单个固定形状，
         // 统一圆角的语义是「跨元素对齐」，在单元素预览上没有可比对象（同 spec/89 视差不喂预览的理由）。
@@ -497,6 +506,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> v.roundToInt().coerceIn(0, Prefs.BLUR_RADIUS_UI_MAX) },
             format = { v -> getString(R.string.settings_blur_radius_value, v.roundToInt()) },
             onChanged = { v -> preview?.let { it.blurRadius = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // vibrancy：1.0~3.0（progress 0~100 → 1.0+2.0×p/100，默认 1.54）
         bindFloatSeekBar(
@@ -506,6 +516,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> ((v - 1.0f) * 50f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_vibrancy_value, v) },
             onChanged = { v -> preview?.let { it.vibrancy = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // highlightFalloff：1~4（默认 2，越大越聚光）
         bindFloatSeekBar(
@@ -585,6 +596,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> v.roundToInt().coerceIn(0, Prefs.REFRACTION_AMOUNT_UI_MAX) },
             format = { v -> getString(R.string.settings_refraction_amount_value, v.roundToInt()) },
             onChanged = { v -> preview?.let { it.refractionAmount = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // [2026-08-15 材质参数控件补齐] 色散/深度/高光/高光宽度/光角度/视差（读 KEY_*，readMaterialParams
         // 已接线，改动约 1s 内生效）
@@ -596,6 +608,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 30) },
             format = { v -> getString(R.string.settings_dispersion_value, v) },
             onChanged = { v -> preview?.let { it.dispersion = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // depth：0~100 → 0~15（默认 0.72）
         bindFloatSeekBar(
@@ -605,6 +618,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v / 15f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_depth_value, v) },
             onChanged = { v -> preview?.let { it.depth = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // highlight：0~100 → 0~2（默认 0.5）
         bindFloatSeekBar(
@@ -614,6 +628,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v / 2f * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_value, v) },
             onChanged = { v -> preview?.let { it.highlight = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // highlightWidth：0~200 px（默认 12；2026-10-13 上限放开 60→200）
         bindFloatSeekBar(
@@ -651,6 +666,7 @@ class SettingsActivity : AppCompatActivity() {
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_inner_glow_value, (v * 100f).roundToInt()) },
             onChanged = { v -> preview?.let { it.innerGlow = v; it.refresh() } },
+            presetParams = presetParams, presetId = presetId,
         )
         // 玻璃内压暗：0~100 → 0.00~1.00（默认 0=不压暗）：喂 shader uMaskAlpha，与遮罩开关/面板遮罩独立
         bindFloatSeekBar(
@@ -677,6 +693,7 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p - 100f },
             toProgress = { v -> (v + 100f).roundToInt().coerceIn(0, 200) },
             format = { v -> getString(R.string.settings_parallax_x_value, v.roundToInt()) },
+            presetParams = presetParams, presetId = presetId,
         )
         // parallaxY：-100~100 px（默认 0 = 关闭视差）
         bindFloatSeekBar(
@@ -685,7 +702,272 @@ class SettingsActivity : AppCompatActivity() {
             fromProgress = { p -> p - 100f },
             toProgress = { v -> (v + 100f).roundToInt().coerceIn(0, 200) },
             format = { v -> getString(R.string.settings_parallax_y_value, v.roundToInt()) },
+            presetParams = presetParams, presetId = presetId,
         )
+    }
+
+    // ------------------------------------------------------------ 玻璃效果预设 ------------------------------------------------------------
+
+    /** 会话内预设缓存：读改写都留在设置页进程内，避开远程存储读写往返取到旧值。 */
+    private var glassPresetsCache: List<GlassRegistry.Preset>? = null
+
+    /** 读框架侧预设列表；框架未就绪 → 空表且不入缓存（就绪后重新读）。 */
+    private fun readGlassPresets(): List<GlassRegistry.Preset> {
+        glassPresetsCache?.let { return it }
+        val framework = frameworkPrefs() ?: return emptyList()
+        val parsed = GlassRegistry.parsePresets(framework.getString(Prefs.KEY_GLASS_PRESETS, null))
+        glassPresetsCache = parsed
+        return parsed
+    }
+
+    /** 读探测到的玻璃类清单（类勾选对话框的数据源）。 */
+    private fun detectedGlassClasses(): List<String> =
+        GlassRegistry.parseClasses(frameworkPrefs()?.getString(Prefs.KEY_GLASS_CLASSES, null)).map { it.cls }
+
+    /** 改一次预设列表后写回框架侧；框架未就绪 → 提示并放弃（不用空表覆盖已有数据）。 */
+    private fun editGlassPresets(block: (MutableList<GlassRegistry.Preset>) -> Unit): Boolean {
+        val framework = frameworkPrefs()
+        if (framework == null) {
+            Toast.makeText(this, R.string.config_framework_not_ready, Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val list = readGlassPresets().toMutableList()
+        block(list)
+        glassPresetsCache = list
+        Lg.i(TAG, "write glass_presets count=${list.size}")
+        framework.edit().putString(Prefs.KEY_GLASS_PRESETS, GlassRegistry.encodePresets(list)).apply()
+        return true
+    }
+
+    /** 顶栏选中态：选中 id 已不存在时回落默认并写回本地；null = 编辑全局参数。 */
+    private fun normalizeSelectedPresetId(presets: List<GlassRegistry.Preset>): String? {
+        val raw = xmlPrefs.getString(Prefs.KEY_UI_GLASS_PRESET, Prefs.GLASS_PRESET_DEFAULT_ID)
+            ?: Prefs.GLASS_PRESET_DEFAULT_ID
+        if (raw == Prefs.GLASS_PRESET_DEFAULT_ID) return null
+        if (presets.any { it.id == raw }) return raw
+        xmlPrefs.edit().putString(Prefs.KEY_UI_GLASS_PRESET, Prefs.GLASS_PRESET_DEFAULT_ID).apply()
+        return null
+    }
+
+    private fun selectGlassPreset(id: String) {
+        xmlPrefs.edit().putString(Prefs.KEY_UI_GLASS_PRESET, id).apply()
+    }
+
+    /** 新预设序号：取历史序号与现存 id 数字后缀的较大者再加一，保证 id 不与旧预设复用。 */
+    private fun nextGlassPresetSeq(presets: List<GlassRegistry.Preset>): Int? {
+        val framework = frameworkPrefs() ?: return null
+        var max = Prefs.readIntCompat(framework, Prefs.KEY_GLASS_PRESET_SEQ, 0)
+        for (p in presets) {
+            val suffix = p.id.removePrefix("p").toIntOrNull() ?: continue
+            if (suffix > max) max = suffix
+        }
+        val next = max + 1
+        framework.edit().putInt(Prefs.KEY_GLASS_PRESET_SEQ, next).apply()
+        return next
+    }
+
+    /** 新建预设（名字与 id 共用同一序号），建好即选中它。 */
+    private fun createGlassPreset() {
+        var created: GlassRegistry.Preset? = null
+        val ok = editGlassPresets { list ->
+            val seq = nextGlassPresetSeq(list) ?: return@editGlassPresets
+            val preset = GlassRegistry.Preset(
+                id = "p$seq",
+                name = getString(R.string.glass_preset_name_fmt, seq),
+                classes = emptyList(),
+                params = emptyMap(),
+            )
+            list.add(preset)
+            created = preset
+        }
+        if (!ok) return
+        val preset = created ?: return
+        selectGlassPreset(preset.id)
+        Toast.makeText(this, getString(R.string.glass_preset_created, preset.name), Toast.LENGTH_SHORT).show()
+        bindCurrentPage()
+    }
+
+    /** 删除预设；被它占用的类自动回到默认效果，选中态若指向它则回落默认。 */
+    private fun deleteGlassPreset(id: String) {
+        var removed: String? = null
+        val ok = editGlassPresets { list ->
+            val idx = list.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                removed = list[idx].name
+                list.removeAt(idx)
+            }
+        }
+        if (!ok) return
+        if (xmlPrefs.getString(Prefs.KEY_UI_GLASS_PRESET, Prefs.GLASS_PRESET_DEFAULT_ID) == id) {
+            selectGlassPreset(Prefs.GLASS_PRESET_DEFAULT_ID)
+        }
+        removed?.let {
+            Toast.makeText(this, getString(R.string.glass_preset_deleted, it), Toast.LENGTH_SHORT).show()
+        }
+        bindCurrentPage()
+    }
+
+    /** 勾选 / 取消某个玻璃类归属某预设。 */
+    private fun toggleGlassPresetClass(presetId: String, cls: String, checked: Boolean) {
+        editGlassPresets { list ->
+            val i = list.indexOfFirst { it.id == presetId }
+            if (i >= 0) {
+                val preset = list[i]
+                val classes = preset.classes.toMutableList()
+                if (checked) {
+                    if (!classes.contains(cls)) classes.add(cls)
+                } else {
+                    classes.remove(cls)
+                }
+                list[i] = preset.copy(classes = classes)
+            }
+        }
+    }
+
+    /** 写一个预设参数键（滑杆拖动结束时调用）。 */
+    private fun writeGlassPresetParam(presetId: String, key: String, value: Float) {
+        editGlassPresets { list ->
+            val i = list.indexOfFirst { it.id == presetId }
+            if (i >= 0) {
+                val preset = list[i]
+                val params = preset.params.toMutableMap()
+                params[key] = value
+                list[i] = preset.copy(params = params)
+            }
+        }
+    }
+
+    /** 材质分类顶栏：预设横滑条 + 「配置」按钮。 */
+    private fun bindGlassPresetBar(view: View, presets: List<GlassRegistry.Preset>, selectedId: String?) {
+        val bar = view.findViewById<LinearLayout>(R.id.glassPresetBar)
+        bar.removeAllViews()
+        fun chip(text: String, checkable: Boolean, checked: Boolean): Chip = Chip(view.context).apply {
+            this.text = text
+            isCheckable = checkable
+            isChecked = checkable && checked
+            isCloseIconVisible = false
+        }
+        val defaultChip = chip(getString(R.string.glass_preset_default), true, selectedId == null)
+        defaultChip.setOnClickListener {
+            selectGlassPreset(Prefs.GLASS_PRESET_DEFAULT_ID)
+            bindCurrentPage()
+        }
+        bar.addView(defaultChip)
+        presets.forEach { preset ->
+            val presetChip = chip(preset.name, true, preset.id == selectedId)
+            presetChip.setOnClickListener {
+                selectGlassPreset(preset.id)
+                bindCurrentPage()
+            }
+            presetChip.setOnLongClickListener {
+                showPresetClassDialog(preset.id) { bindCurrentPage() }
+                true
+            }
+            bar.addView(presetChip)
+        }
+        val addChip = chip(getString(R.string.glass_preset_add), false, false)
+        addChip.setOnClickListener { createGlassPreset() }
+        bar.addView(addChip)
+        view.findViewById<View>(R.id.glassPresetConfigBtn).setOnClickListener { showPresetManageDialog() }
+    }
+
+    /** 对话框列表行：带水波纹背景，给了点击回调才可点。 */
+    private fun glassPresetRow(text: String, onClick: (() -> Unit)?): TextView {
+        val row = TextView(this)
+        row.text = text
+        row.textSize = 15f
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        row.setPadding(0, pad, 0, pad)
+        val ta = obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
+        val bg = ta.getDrawable(0)
+        ta.recycle()
+        if (bg != null) row.background = bg
+        if (onClick != null) row.setOnClickListener { onClick() }
+        return row
+    }
+
+    /** 预设管理页：逐条列出「预设名: 已应用类」，底部可新增预设。 */
+    private fun showPresetManageDialog() {
+        val root = layoutInflater.inflate(R.layout.view_dialog_preset_list, contentFrame, false)
+        val container = root.findViewById<LinearLayout>(R.id.presetListContainer)
+        fun rebuild() {
+            container.removeAllViews()
+            val presets = readGlassPresets()
+            if (presets.isEmpty()) {
+                container.addView(glassPresetRow(getString(R.string.glass_preset_empty), null))
+            }
+            presets.forEach { preset ->
+                val detail = if (preset.classes.isEmpty()) {
+                    getString(R.string.glass_preset_none_applied)
+                } else {
+                    preset.classes.joinToString(", ")
+                }
+                container.addView(glassPresetRow("${preset.name}: $detail") {
+                    showPresetClassDialog(preset.id) { rebuild() }
+                })
+            }
+            container.addView(glassPresetRow(getString(R.string.glass_preset_add_row)) {
+                createGlassPreset()
+                rebuild()
+            })
+        }
+        rebuild()
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.glass_preset_manage_title)
+            .setView(root)
+            .setPositiveButton(R.string.glass_preset_close, null)
+            .create()
+        dialog.setOnDismissListener { bindCurrentPage() }
+        dialog.show()
+    }
+
+    /** 预设的玻璃类多选对话框：已被其他预设占用的类置灰不可勾，另附删除预设按钮。 */
+    private fun showPresetClassDialog(presetId: String, onClosed: () -> Unit) {
+        val presets = readGlassPresets()
+        val target = presets.firstOrNull { it.id == presetId } ?: return
+        val occupied = mutableSetOf<String>()
+        presets.forEach { p -> if (p.id != presetId) occupied.addAll(p.classes) }
+        val classes = detectedGlassClasses().toMutableList()
+        target.classes.forEach { if (!classes.contains(it)) classes.add(it) }
+
+        val root = layoutInflater.inflate(R.layout.view_dialog_preset_classes, contentFrame, false)
+        val container = root.findViewById<LinearLayout>(R.id.presetClassContainer)
+        val scroll = root.findViewById<ScrollView>(R.id.presetClassScroll)
+        if (classes.isEmpty()) {
+            container.addView(glassPresetRow(getString(R.string.glass_preset_class_empty), null))
+        }
+        val pad = (8 * resources.displayMetrics.density).toInt()
+        classes.forEach { cls ->
+            val box = CheckBox(this)
+            box.text = cls
+            box.textSize = 13f
+            box.setPadding(0, pad, 0, pad)
+            if (occupied.contains(cls)) {
+                box.isChecked = false
+                box.isEnabled = false
+                box.alpha = 0.4f
+            } else {
+                box.isChecked = target.classes.contains(cls)
+                box.setOnCheckedChangeListener { _, checked -> toggleGlassPresetClass(presetId, cls, checked) }
+            }
+            container.addView(box)
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(target.name)
+            .setView(root)
+            .setPositiveButton(R.string.glass_preset_close, null)
+            .setNeutralButton(R.string.glass_preset_delete) { _, _ -> deleteGlassPreset(presetId) }
+            .create()
+        dialog.setOnDismissListener { onClosed() }
+        dialog.show()
+        scroll.post {
+            val max = (320 * resources.displayMetrics.density).toInt()
+            if (scroll.height > max) {
+                val lp = scroll.layoutParams
+                lp.height = max
+                scroll.layoutParams = lp
+            }
+        }
     }
 
     /** 背景与抓屏：背景档位 / 抓屏节流 / 空置抓屏 / 持续抓屏 / 降采样 / 重试 / UID 过滤。 */
@@ -1519,6 +1801,8 @@ class SettingsActivity : AppCompatActivity() {
      *
      * @param onChanged [spec/89] 拖动中（含初始回显）实时回调当前值，用于喂效果预览；
      *                  **落盘仍只在 onStopTrackingTouch**，不改变配置写入时机。
+     * @param presetParams 预设编辑态：该键在预设里有值显示预设值，否则显示全局值。
+     * @param presetId 非空时拖动结束写进该预设的参数键，空时写全局键。
      */
     private fun bindFloatSeekBar(
         seek: SeekBar,
@@ -1529,8 +1813,12 @@ class SettingsActivity : AppCompatActivity() {
         toProgress: (Float) -> Int,
         format: (Float) -> String,
         onChanged: ((Float) -> Unit)? = null,
+        presetParams: Map<String, Float>? = null,
+        presetId: String? = null,
     ) {
-        val current = frameworkPrefs()?.getFloat(key, default) ?: xmlPrefs.getFloat(key, default)
+        val current = presetParams?.get(key)
+            ?: frameworkPrefs()?.getFloat(key, default)
+            ?: xmlPrefs.getFloat(key, default)
         seek.progress = toProgress(current)
         val initial = fromProgress(seek.progress)
         valueText.text = format(initial)
@@ -1546,7 +1834,8 @@ class SettingsActivity : AppCompatActivity() {
             }
 
             override fun onStopTrackingTouch(sb: SeekBar) {
-                writePrefFloat(key, fromProgress(sb.progress))
+                val v = fromProgress(sb.progress)
+                if (presetId != null) writeGlassPresetParam(presetId, key, v) else writePrefFloat(key, v)
             }
         })
     }

@@ -290,6 +290,22 @@
     <string name="settings_notif_fly_scale_value">%1$d%%</string>
     <string name="settings_notif_fly_scale_desc">横幅弹出和收回时的缩放幅度。0 表示只倾斜不缩放。</string>
 
+    <!-- 玻璃效果预设（顶栏 + 预设管理） -->
+    <string name="glass_preset_config">配置</string>
+    <string name="glass_preset_default">默认</string>
+    <string name="glass_preset_add">+新增</string>
+    <string name="glass_preset_manage_title">玻璃预设管理</string>
+    <string name="glass_preset_add_row">+新增预设</string>
+    <string name="glass_preset_none_applied">未应用</string>
+    <string name="glass_preset_empty">还没有预设，点下方「+新增预设」创建一个。</string>
+    <string name="glass_preset_class_empty">还没有探测到玻璃类，打开或下拉一次系统界面后重开本页。</string>
+    <string name="glass_preset_class_hint">已被其他预设占用的类会置灰，需先在原预设取消勾选。</string>
+    <string name="glass_preset_delete">删除预设</string>
+    <string name="glass_preset_close">关闭</string>
+    <string name="glass_preset_created">已新建「%1$s」</string>
+    <string name="glass_preset_deleted">已删除「%1$s」，它的类已回到默认效果</string>
+    <string name="glass_preset_name_fmt">预设%1$d</string>
+
     <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
     <string name="update_dialog_title">发现新版本</string>
     <string name="update_dialog_message">当前版本 %1$s，最新版本 %2$s。\n\n是否前往下载？</string>

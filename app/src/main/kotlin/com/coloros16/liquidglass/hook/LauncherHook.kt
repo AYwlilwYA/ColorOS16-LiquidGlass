@@ -21,6 +21,7 @@ import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import com.coloros16.liquidglass.log.Lg
@@ -249,6 +250,8 @@ object LauncherHook {
          *  必须显式比对；存**折算后的 px**（而非比例）才能同时抓住「比例改了」「切了模式」
          *  「绝对像素值改了」三种变化（任一变化都会改变该值 → 重设 uRefractionHeight）。 */
         val refractionHeight: Float = 0f,
+        /** 材质参数指纹（含预设覆盖值）：任一材质键变化都要重设 uniform，否则被早退分支吃掉。 */
+        val materialHash: Int = 0,
     )
 
     private class LiquidShaderBuild(val shader: RuntimeShader)
@@ -448,6 +451,7 @@ object LauncherHook {
 
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
+        GlassRegistry.attach { this.api?.let { a -> Prefs.read(a) } }
         // [2026-08-13 用户要求·关闭日志选项] install 时读取并缓存（热路径不每帧读 Prefs 防 binder 开销）
         moduleLogEnabled = try {
             Prefs.read(api).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
@@ -1465,6 +1469,7 @@ object LauncherHook {
             (loc[1] + bh).toFloat(),
         )
         val key = System.identityHashCode(inner)
+        GlassRegistry.bind(key, inner)
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
         registerHostView(hostView)
         val entry = RegionEntry(region, Rect(0, 0, bw, bh), "FolderIcon", resolvedCorner)
@@ -1512,6 +1517,7 @@ object LauncherHook {
      */
     private fun replaceShaderIfPossible(drawable: Any): Boolean {
         val id = System.identityHashCode(drawable)
+        GlassRegistry.bind(id, drawable)
         // [spec/85 补接·Launcher] 省电开启 → 还原模块 shader 并回退系统绘制（与 SystemUI 同门控，
         // 最优先）。paint.shader 若是本模块实例 → 置 null（系统 BaseDrawable 自配 blur shader，
         // getShaderOrNull 语义同 SystemUI 侧：通常 null）。只 return false 不还原会残留玻璃。
@@ -1611,7 +1617,7 @@ object LauncherHook {
         val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
         shaderOwnerSet.add(shader)
         if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
-        val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius)
+        val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius, elementId = id)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
         LiquidGlassShader.setUniforms(
             shader, params, sourceShader, sourceShader,
@@ -1627,6 +1633,7 @@ object LauncherHook {
                 minOf(bounds.width(), bounds.height()).toFloat(),
                 api,
             ),
+            materialHash = params.hashCode(),
         )
         if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
         return LiquidShaderBuild(shader)
@@ -1650,14 +1657,16 @@ object LauncherHook {
             minOf(bounds.width(), bounds.height()).toFloat(),
             api,
         )
+        val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius, elementId = id)
+        val materialHash = params.hashCode()
         if (applied != null && applied.sourceBitmapId == sourceBitmapId &&
             applied.viewport == viewport && applied.srcRect == srcRect &&
             applied.cornerRadius == entry.cornerRadius &&
-            applied.refractionHeight == refractionHeight
+            applied.refractionHeight == refractionHeight &&
+            applied.materialHash == materialHash
         ) {
             return true
         }
-            val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius)
             if (applied == null || applied.sourceBitmapId != sourceBitmapId) {
                 val sourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
                 LiquidGlassShader.setUniforms(
@@ -1670,7 +1679,7 @@ object LauncherHook {
                     sourceRect = srcRect, lowResSourceRect = srcRect,
                 )
             }
-            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight)
+            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight, materialHash)
             if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
             return true
         } catch (t: Throwable) {
@@ -2367,19 +2376,91 @@ object LauncherHook {
 
     // ------------------------------------------------------------ 材质参数
 
-    private fun buildParams(width: Float, height: Float, cornerRadius: Float): LiquidGlassShader.Params {
+    /** 材质参数（全部来自框架侧 Prefs）的进程内快照，渲染热路径按 TTL 复用。 */
+    private data class CachedMaterialParams(
+        val blurRadius: Float,
+        val refractionAmount: Float,
+        val depth: Float,
+        val dispersion: Float,
+        val highlight: Float,
+        val highlightWidth: Float,
+        val highlightFalloff: Float,
+        val highlightInnerAtt: Float,
+        val innerGlow: Float,
+        val vibrancy: Float,
+        val lightAngleDegrees: Float,
+        val parallaxX: Float,
+        val parallaxY: Float,
+    )
+
+    @Volatile
+    private var materialParamsCache: CachedMaterialParams? = null
+
+    @Volatile
+    private var materialParamsCacheTimeMs = 0L
+
+    /** 材质参数重读间隔（毫秒）：热路径每帧调用改为每周期才读一次远程 Prefs。 */
+    private const val MATERIAL_PREFS_CACHE_MS = 1000L
+
+    /** 读材质参数（时间节流缓存）；Prefs 不可用 / 读取失败 → 配置默认值。 */
+    private fun readMaterialParams(): CachedMaterialParams {
+        val now = SystemClock.uptimeMillis()
+        materialParamsCache?.let { cached ->
+            if (now - materialParamsCacheTimeMs < MATERIAL_PREFS_CACHE_MS) return cached
+        }
+        materialParamsCacheTimeMs = now
+        val def = LiquidGlassShader.Params(0f, 0f)
+        val fallback = CachedMaterialParams(
+            Prefs.DEFAULT_BLUR_RADIUS,
+            def.refractionAmount, def.depth, def.dispersion,
+            def.highlight, def.highlightWidth, Prefs.DEFAULT_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
+            Prefs.DEFAULT_INNER_GLOW, Prefs.DEFAULT_VIBRANCY,
+            def.lightAngleDegrees, def.parallaxX, def.parallaxY,
+        )
+        val prefs = try {
+            api?.let { Prefs.read(it) }
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher material: prefs read failed", t); null
+        }
+        val result = if (prefs == null) {
+            fallback
+        } else {
+            try {
+                CachedMaterialParams(
+                    prefs.getFloat(Prefs.KEY_BLUR_RADIUS, Prefs.DEFAULT_BLUR_RADIUS),
+                    prefs.getFloat(Prefs.KEY_REFRACTION_AMOUNT, def.refractionAmount),
+                    prefs.getFloat(Prefs.KEY_DEPTH, def.depth),
+                    prefs.getFloat(Prefs.KEY_DISPERSION, def.dispersion),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT, def.highlight),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_WIDTH, def.highlightWidth),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FALLOFF),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
+                    prefs.getFloat(Prefs.KEY_INNER_GLOW, Prefs.DEFAULT_INNER_GLOW).coerceIn(0f, 1f),
+                    prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY).coerceIn(1.0f, 3.0f),
+                    prefs.getFloat(Prefs.KEY_LIGHT_ANGLE, def.lightAngleDegrees),
+                    prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),
+                    prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
+                )
+            } catch (t: Throwable) {
+                Lg.e(TAG, "launcher material: prefs float read failed, use defaults", t)
+                fallback
+            }
+        }
+        materialParamsCache = result
+        return result
+    }
+
+    private fun buildParams(width: Float, height: Float, cornerRadius: Float, elementId: Int = 0): LiquidGlassShader.Params {
         // def 兼作 prefs 不可用时的兜底：blurRadius 须带上配置默认值（否则退回 Params 默认 0f = 清晰透镜）
         val def = LiquidGlassShader.Params(
             viewportWidth = width, viewportHeight = height,
             blurRadius = Prefs.DEFAULT_BLUR_RADIUS,
         )
-        val prefs = try {
-            api?.let { Prefs.read(it) }
-        } catch (t: Throwable) {
-            Lg.e(TAG, "launcher buildParams: prefs read failed", t); null
-        }
-        if (prefs == null) return def
         return try {
+            val m = readMaterialParams()
+            // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
+            val ov = GlassRegistry.overridesFor(elementId)
+            fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
             LiquidGlassShader.Params(
                 viewportWidth = width,
                 viewportHeight = height,
@@ -2389,24 +2470,24 @@ object LauncherHook {
                 cornerWeight = DEFAULT_CORNER_WEIGHT,
                 // [2026-09-16 恢复配置化] 原硬编码 0（清晰透镜，同 SystemUI 的「强制透明诊断档」），
                 // 改回读 KEY_BLUR_RADIUS —— 用户反馈「玻璃太透、背景看得一清二楚」。
-                blurRadius = prefs.getFloat(Prefs.KEY_BLUR_RADIUS, Prefs.DEFAULT_BLUR_RADIUS),
+                blurRadius = pick(Prefs.KEY_BLUR_RADIUS, m.blurRadius),
                 // [doc/spec/95 + spec/96 2026-10-10] 折射环带高度走统一出口 Prefs.refractionHeightPx：
                 // 相对模式 = 元素短边 × KEY_REFRACTION_HEIGHT_RATIO（默认 0.5 = 改动前的 min(w,h)/2f）；
                 // 绝对模式 = KEY_REFRACTION_HEIGHT_PX（固定像素，默认 64）。三参数各自 500ms TTL 缓存
                 // （热路径零 IPC）；变化经 AppliedKey.refractionHeight 早退比对触发全量 setUniforms。
                 refractionHeight = Prefs.refractionHeightPx(minOf(width, height), api),
-                refractionAmount = prefs.getFloat(Prefs.KEY_REFRACTION_AMOUNT, def.refractionAmount),
-                depth = prefs.getFloat(Prefs.KEY_DEPTH, def.depth),
-                dispersion = prefs.getFloat(Prefs.KEY_DISPERSION, def.dispersion),
-                highlight = prefs.getFloat(Prefs.KEY_HIGHLIGHT, def.highlight),
-                highlightWidth = prefs.getFloat(Prefs.KEY_HIGHLIGHT_WIDTH, def.highlightWidth),
-                highlightFalloff = prefs.getFloat(Prefs.KEY_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FALLOFF),
-                highlightInnerAtt = prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
-                innerGlow = prefs.getFloat(Prefs.KEY_INNER_GLOW, Prefs.DEFAULT_INNER_GLOW).coerceIn(0f, 1f),
-                vibrancy = prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY).coerceIn(1.0f, 3.0f),
-                lightAngleDegrees = prefs.getFloat(Prefs.KEY_LIGHT_ANGLE, def.lightAngleDegrees),
-                parallaxX = prefs.getFloat(Prefs.KEY_PARALLAX_X, def.parallaxX),
-                parallaxY = prefs.getFloat(Prefs.KEY_PARALLAX_Y, def.parallaxY),
+                refractionAmount = pick(Prefs.KEY_REFRACTION_AMOUNT, m.refractionAmount),
+                depth = pick(Prefs.KEY_DEPTH, m.depth),
+                dispersion = pick(Prefs.KEY_DISPERSION, m.dispersion),
+                highlight = pick(Prefs.KEY_HIGHLIGHT, m.highlight),
+                highlightWidth = m.highlightWidth,
+                highlightFalloff = m.highlightFalloff,
+                highlightInnerAtt = m.highlightInnerAtt,
+                innerGlow = pick(Prefs.KEY_INNER_GLOW, m.innerGlow),
+                vibrancy = pick(Prefs.KEY_VIBRANCY, m.vibrancy),
+                lightAngleDegrees = m.lightAngleDegrees,
+                parallaxX = pick(Prefs.KEY_PARALLAX_X, m.parallaxX),
+                parallaxY = pick(Prefs.KEY_PARALLAX_Y, m.parallaxY),
             )
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher buildParams: prefs float read failed, use defaults", t)

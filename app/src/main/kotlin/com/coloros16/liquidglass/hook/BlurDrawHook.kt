@@ -28,6 +28,7 @@ import android.view.ViewParent
 import android.view.WindowManager
 import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import com.coloros16.liquidglass.log.Lg
@@ -2179,6 +2180,7 @@ object BlurDrawHook {
 
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
+        GlassRegistry.attach { this.api?.let { a -> Prefs.read(a) } }
         // [2026-08-13 用户要求·关闭日志选项] install 时读取并缓存（热路径不每帧读 Prefs 防 binder 开销）
         moduleLogEnabled = try {
             Prefs.read(api).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
@@ -4376,6 +4378,7 @@ object BlurDrawHook {
             registerTargetCache[proxyKey] = RegisterTargetCache(resolved)
             target = resolved
         }
+        GlassRegistry.bind(System.identityHashCode(target), target)
         // [spec/38 修复 2026-08-13] ScrimView（面板背景 scrim，ScrimControllerExImp.refreshBehindDrawable 的
         // hostView）恒透明不渲染玻璃：**不写入 screenRegionMap**——否则全屏 region 令 isOverGlassRegion 对
         // 状态栏时钟等一切坐标判"玻璃区域" → 文字变色（mask 强制白 / 采样分支注入黑）。region 无渲染用途：
@@ -6727,6 +6730,7 @@ object BlurDrawHook {
         // 所有走本函数的注入点）
         if (isPowerSaveGlassOff()) return
         if (w <= 0 || h <= 0) return
+        GlassRegistry.bind(id, host)
         val entry = screenRegionMap[id] ?: run {
             logThrottled("seedling-nomap", Log.WARN, 500L) { "seedling-card: ABORT no region map id=$id" }
             return
@@ -6742,7 +6746,7 @@ object BlurDrawHook {
         val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
         val cornerRadius = entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
-        val params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight)
+        val params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
         val shader = obtainShader(id, metaball = entry.metaBall != null)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
         LiquidGlassShader.setUniforms(
@@ -9841,6 +9845,7 @@ object BlurDrawHook {
             }
         }
         BlurSceneRegistry.register(drawable, drawableId, layerName, params)
+        GlassRegistry.bind(System.identityHashCode(drawable), drawable)
         logThrottled("registry-register-$drawableId", Log.INFO) {
             "registry: registered id=$drawableId layer=$layerName drawable=${drawable.javaClass.simpleName}"
         }
@@ -10148,6 +10153,7 @@ object BlurDrawHook {
      */
     private fun replaceShaderIfPossible(drawable: Any): Boolean {
         val id = System.identityHashCode(drawable)
+        GlassRegistry.bind(id, drawable)
 
         // [spec/85 省电模式·关玻璃] 省电开启 → 还原系统 shader 并回退系统绘制（**最优先**：省电下
         // 音量条 tint、背景 scrim 黑 tint 等一切模块绘制都应一并消失）。
@@ -10853,7 +10859,7 @@ object BlurDrawHook {
             val cornerConicBlend = if (effectiveCornerIsConic) this.cornerConicBlend else 1f
             // [用户补充 2026-08-13] buildParams（材质参数 14 项 Prefs 派生：vibrancy/falloff/refraction/
             // highlight/depth/dispersion 等）一并后台算；readMaterialParams 1s 节流缓存 @Volatile 线程安全。
-            val params = buildParams(viewport.width(), viewport.height(), cornerRadius, effectiveCornerIsConic, entry.cornerWeight)
+            val params = buildParams(viewport.width(), viewport.height(), cornerRadius, effectiveCornerIsConic, entry.cornerWeight, elementId = id)
             return ComputedGeometry(
                 bounds = Rect(bounds),
                 frame = 0L,  // [2026-08-13] 无全局帧概念（BlurService 端全移除）；源变化靠 sourceBitmapId
@@ -10929,6 +10935,7 @@ object BlurDrawHook {
 
     private fun buildLiquidShader(drawable: Any, bounds: Rect): LiquidShaderBuild? {
         val id = System.identityHashCode(drawable)
+        GlassRegistry.bind(id, drawable)
         // 每个 drawable 只映射【自己屏幕位置对应的原图区域】——查 AutoBlurDrawable.draw hook
         // 建立的「drawable(identityHashCode) → 屏幕区域(全屏像素)」映射。映射缺失 → fallback 系统模糊。
         // [R3] 查表走 lookupScreenRegion：主键命中优先，主键 miss 时按 bounds 宽高 + 屏幕位置兜底匹配
@@ -11081,7 +11088,7 @@ object BlurDrawHook {
         // uViewport 必须与 shader coord 空间一致（main 里 halfSize=uViewport×0.5），用元素自身尺寸
         // [任务 D] uCornerRadius = RegionEntry 真实圆角（反射 BlurConfig / 启发式），替代硬编码 28；
         // [spec/18 修正] CONIC 本体（通知卡/custom 卡/seekbar）→ uCornerIsConic/uCornerWeight
-        val params = buildParams(viewport.width(), viewport.height(), region.cornerRadius, effectiveCornerIsConic, region.cornerWeight)
+        val params = buildParams(viewport.width(), viewport.height(), region.cornerRadius, effectiveCornerIsConic, region.cornerWeight, elementId = id)
         // uDebugCoord 实验开关：coord 决定性实验用。0=玻璃正常渲染；1=直接输出红/绿周期调试网格（不走玻璃管线）。
         // 正常关闭，需复测 coord 空间时临时开 1f。uDebugCoord 分支保留在 LiquidGlassShader.kt 供后续实验。
         // [2026-10-14 诊断] 打印最终传入 setUniforms 的 maskRect
@@ -11747,6 +11754,7 @@ object BlurDrawHook {
         cornerRadius: Float,
         cornerIsConic: Boolean = false,
         cornerWeight: Float = DEFAULT_CORNER_WEIGHT,
+        elementId: Int = 0,
     ): LiquidGlassShader.Params {
         val def = LiquidGlassShader.Params(viewportWidth = width, viewportHeight = height)
         return try {
@@ -11754,6 +11762,9 @@ object BlurDrawHook {
             // 调用本方法时原来每帧 11 次远程 Prefs IPC 读 → 现 ≥MATERIAL_PREFS_CACHE_MS 才重读一次，
             // 动画期 IPC 读降至 ~1 次/s；配置改动 ≤1s 生效（无需重启）。渲染输出不变（同值复用）。
             val m = readMaterialParams()
+            // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
+            val ov = GlassRegistry.overridesFor(elementId)
+            fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
             LiquidGlassShader.Params(
                 viewportWidth = width,
                 viewportHeight = height,
@@ -11767,7 +11778,7 @@ object BlurDrawHook {
                 cornerWeight = cornerWeight,
                 // [2026-09-16 恢复配置化] 撤回原「强制透明诊断档」的硬编码 0，改回读 KEY_BLUR_RADIUS
                 // （默认 8px）。用户反馈「横幅太透」即因长期被强制成清晰透镜。
-                blurRadius = m.blurRadius,
+                blurRadius = pick(Prefs.KEY_BLUR_RADIUS, m.blurRadius),
                 // [doc/spec/95 + spec/96 2026-10-10] 折射环带高度走统一出口 Prefs.refractionHeightPx：
                 // 相对模式 = 元素短边 × KEY_REFRACTION_HEIGHT_RATIO（默认 0.5 = 改动前的 min(w,h)/2f，
                 // 零视觉变化）；绝对模式 = KEY_REFRACTION_HEIGHT_PX（固定像素，默认 64）。
@@ -11776,19 +11787,19 @@ object BlurDrawHook {
                 // （applyComputedGeometry）→ 全量 setUniforms 重设 uRefractionHeight，不逐帧读。
                 // 折射强度读 KEY_REFRACTION_AMOUNT（默认 def=28）。
                 refractionHeight = Prefs.refractionHeightPx(minOf(width, height), api),
-                refractionAmount = m.refractionAmount,
-                depth = m.depth,
-                dispersion = m.dispersion,
-                highlight = m.highlight,
+                refractionAmount = pick(Prefs.KEY_REFRACTION_AMOUNT, m.refractionAmount),
+                depth = pick(Prefs.KEY_DEPTH, m.depth),
+                dispersion = pick(Prefs.KEY_DISPERSION, m.dispersion),
+                highlight = pick(Prefs.KEY_HIGHLIGHT, m.highlight),
                 highlightWidth = m.highlightWidth,
                 highlightFalloff = m.highlightFalloff,
                 highlightFloor = m.highlightFloor,
                 highlightInnerAtt = m.highlightInnerAtt,
-                innerGlow = m.innerGlow,
-                vibrancy = m.vibrancy,
+                innerGlow = pick(Prefs.KEY_INNER_GLOW, m.innerGlow).coerceIn(0f, 1f),
+                vibrancy = pick(Prefs.KEY_VIBRANCY, m.vibrancy).coerceIn(1.0f, 3.0f),
                 lightAngleDegrees = m.lightAngleDegrees,
-                parallaxX = m.parallaxX,
-                parallaxY = m.parallaxY,
+                parallaxX = pick(Prefs.KEY_PARALLAX_X, m.parallaxX),
+                parallaxY = pick(Prefs.KEY_PARALLAX_Y, m.parallaxY),
             )
         } catch (t: Throwable) {
             Lg.e(TAG, "buildParams: prefs float read failed, use defaults", t)

@@ -37,6 +37,22 @@ object Prefs {
     const val KEY_GLASS_ENABLE = "glass_enable"
     const val DEFAULT_GLASS_ENABLE = true
 
+    // ---------- 玻璃效果预设 ----------
+    /** 玻璃预设列表（JSON 数组，元素含 id/name/classes/params，params 逐键覆盖全局值）。 */
+    const val KEY_GLASS_PRESETS = "glass_presets"
+
+    /** 探测到的玻璃类缓存（JSON 数组，元素含 cls/lastSeenMs，供设置页列出可选类）。 */
+    const val KEY_GLASS_CLASSES = "glass_classes"
+
+    /** 预设序号：新建预设时自增写回，保证预设 id 不与历史 id 复用。 */
+    const val KEY_GLASS_PRESET_SEQ = "glass_preset_seq"
+
+    /** 设置页顶栏当前选中的预设 id（存模块本地 XML，仅 UI 态，不进框架侧）。 */
+    const val KEY_UI_GLASS_PRESET = "ui_glass_preset_selected"
+
+    /** [KEY_UI_GLASS_PRESET] 的默认取值 = 编辑全局参数。 */
+    const val GLASS_PRESET_DEFAULT_ID = "default"
+
     // [2026-09-17 死键清理] 背景档位已删除：KEY_BACKGROUND_MODE + BACKGROUND_TRANSPARENT/LIGHT/SYSTEM
     // 三个取值 + Prefs.backgroundMode()，全部零调用方（档位语义早已被材质参数逐项取代）。
 

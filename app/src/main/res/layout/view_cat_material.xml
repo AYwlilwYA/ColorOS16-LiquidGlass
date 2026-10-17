@@ -7,6 +7,43 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- 玻璃预设顶栏：横滑选择要编辑的预设，右侧按钮打开预设管理 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fadeScrollbars="false"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/glassPresetBar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <TextView
+            android:id="@+id/glassPresetConfigBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:paddingStart="12dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="8dp"
+            android:text="@string/glass_preset_config"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+    </LinearLayout>
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
