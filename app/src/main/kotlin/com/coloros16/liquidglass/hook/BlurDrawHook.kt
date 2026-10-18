@@ -1646,18 +1646,21 @@ object BlurDrawHook {
      * - hostViewName 参数保留仅为兼容 3 处调用点签名（computeGeometry / buildLiquidShader
      *   ×2），不参与判定。
      */
-    private fun maskAlphaFor(hostViewName: String?): Float {
+    private fun maskAlphaFor(hostViewName: String?, elementId: Int = 0): Float {
         val a = api ?: return Prefs.DEFAULT_MASK_GLASS_DIM
         val now = SystemClock.uptimeMillis()
-        if (now - maskGlassDimAtMs < MATERIAL_PREFS_CACHE_MS) return maskGlassDim
-        maskGlassDimAtMs = now
-        maskGlassDim = try {
-            Prefs.read(a).getFloat(Prefs.KEY_MASK_GLASS_DIM, Prefs.DEFAULT_MASK_GLASS_DIM).coerceIn(0f, 1f)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read mask_glass_dim failed, keep $maskGlassDim", t)
-            maskGlassDim
+        if (now - maskGlassDimAtMs >= MATERIAL_PREFS_CACHE_MS) {
+            maskGlassDimAtMs = now
+            maskGlassDim = try {
+                Prefs.read(a).getFloat(Prefs.KEY_MASK_GLASS_DIM, Prefs.DEFAULT_MASK_GLASS_DIM).coerceIn(0f, 1f)
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read mask_glass_dim failed, keep $maskGlassDim", t)
+                maskGlassDim
+            }
         }
-        return maskGlassDim
+        // 预设覆盖：该元素归属的预设有压暗值则用预设值，否则用全局缓存值
+        return GlassRegistry.overridesFor(elementId)?.get(Prefs.KEY_MASK_GLASS_DIM)?.coerceIn(0f, 1f)
+            ?: maskGlassDim
     }
 
     /**
@@ -4293,7 +4296,6 @@ object BlurDrawHook {
                     }
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)")
-            GlassRegistry.registerClass(CLASS_NOTIF_HEADER_MASK)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)", t)
         }
@@ -4920,7 +4922,6 @@ object BlurDrawHook {
                     suppressPlatformBlurMaskColor(chain)
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)")
-            GlassRegistry.registerClass(CLASS_PLATFORM_BLUR_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)", t)
         }
@@ -10924,7 +10925,7 @@ object BlurDrawHook {
                 realRegionOffset = geo.realRegion,
                 // [spec/35 黑遮罩 / spec/41 作用范围修正] SystemUI 下拉所有玻璃元素统一遮罩值
                 //（后台线程读 install 缓存字段，线程安全；不再按宿主 View 名关键词判定）
-                maskAlpha = maskAlphaFor(entry.hostViewName),
+                maskAlpha = maskAlphaFor(entry.hostViewName, id),
                 // [doc/spec/99] 本次计算用到的宿主 clip 快照 → 主线程比对变化，变了强制重算
                 clipBounds = entry.clipBounds,
                 // [doc/spec/100 方案2] metaball 本体矩形（球/blendRange 变 → 主线程比对强制重算）
@@ -11154,7 +11155,7 @@ object BlurDrawHook {
             maskOffsetY = geo.offsetY,
             // [spec/35 黑遮罩 / spec/41 作用范围修正] SystemUI 下拉所有玻璃元素统一遮罩值
             //（不再按宿主 View 名关键词判定；uMaskAlpha=0 即遮罩关闭时 shader 内分支零开销跳过）
-            maskAlpha = maskAlphaFor(entry.hostViewName),
+            maskAlpha = maskAlphaFor(entry.hostViewName, region.id),
             // [doc/spec/100 方案2] metaball 黏连桥（null = 非 metaball，shader 侧零变化）
             metaBalls = mbNow,
             // [doc/spec/112] 通知卡倾斜角（0 = 恒等零变化）
@@ -11170,7 +11171,7 @@ object BlurDrawHook {
             cornerIsConic = effectiveCornerIsConic, cornerWeight = region.cornerWeight, cornerRadius = region.cornerRadius,
             cornerConicBlend = cornerConicBlend,
             // [spec/35 黑遮罩] 与 setUniforms 传入的遮罩值一致（防下帧 maskOverlayChanged 误判多一次全量重设）
-            maskAlpha = maskAlphaFor(entry.hostViewName),
+            maskAlpha = maskAlphaFor(entry.hostViewName, region.id),
             // [doc/spec/100 方案2] metaball 状态（球动 → 下帧 metaBallChanged 触发全量重设）
             metaBalls = mbNow,
             // [doc/spec/112] 倾斜角（与 setUniforms 传入一致，防下帧 tiltChanged 误判）
@@ -11829,18 +11830,21 @@ object BlurDrawHook {
                 // 三者任一变化都会改变本字段值 → Params.hashCode() 变 → materialHash 变
                 // （applyComputedGeometry）→ 全量 setUniforms 重设 uRefractionHeight，不逐帧读。
                 // 折射强度读 KEY_REFRACTION_AMOUNT（默认 def=28）。
-                refractionHeight = Prefs.refractionHeightPx(minOf(width, height), api),
+                // 预设覆盖：有 px 用 px；否则有 ratio 用短边×ratio；否则走全局模式出口
+                refractionHeight = ov?.get(Prefs.KEY_REFRACTION_HEIGHT_PX)?.coerceIn(0f, 4096f)
+                    ?: ov?.get(Prefs.KEY_REFRACTION_HEIGHT_RATIO)?.let { (minOf(width, height) * it).coerceIn(0f, 4096f) }
+                    ?: Prefs.refractionHeightPx(minOf(width, height), api),
                 refractionAmount = pick(Prefs.KEY_REFRACTION_AMOUNT, m.refractionAmount),
                 depth = pick(Prefs.KEY_DEPTH, m.depth),
                 dispersion = pick(Prefs.KEY_DISPERSION, m.dispersion),
                 highlight = pick(Prefs.KEY_HIGHLIGHT, m.highlight),
-                highlightWidth = m.highlightWidth,
-                highlightFalloff = m.highlightFalloff,
-                highlightFloor = m.highlightFloor,
-                highlightInnerAtt = m.highlightInnerAtt,
+                highlightWidth = pick(Prefs.KEY_HIGHLIGHT_WIDTH, m.highlightWidth),
+                highlightFalloff = pick(Prefs.KEY_HIGHLIGHT_FALLOFF, m.highlightFalloff),
+                highlightFloor = pick(Prefs.KEY_HIGHLIGHT_FLOOR, m.highlightFloor),
+                highlightInnerAtt = pick(Prefs.KEY_HIGHLIGHT_INNER_ATT, m.highlightInnerAtt),
                 innerGlow = pick(Prefs.KEY_INNER_GLOW, m.innerGlow).coerceIn(0f, 1f),
                 vibrancy = pick(Prefs.KEY_VIBRANCY, m.vibrancy).coerceIn(1.0f, 3.0f),
-                lightAngleDegrees = m.lightAngleDegrees,
+                lightAngleDegrees = pick(Prefs.KEY_LIGHT_ANGLE, m.lightAngleDegrees),
                 parallaxX = pick(Prefs.KEY_PARALLAX_X, m.parallaxX),
                 parallaxY = pick(Prefs.KEY_PARALLAX_Y, m.parallaxY),
             )

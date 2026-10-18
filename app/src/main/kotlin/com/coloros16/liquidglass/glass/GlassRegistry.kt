@@ -45,6 +45,14 @@ object GlassRegistry {
         Prefs.KEY_VIBRANCY,
         Prefs.KEY_PARALLAX_X,
         Prefs.KEY_PARALLAX_Y,
+        Prefs.KEY_HIGHLIGHT_FALLOFF,
+        Prefs.KEY_HIGHLIGHT_WIDTH,
+        Prefs.KEY_HIGHLIGHT_FLOOR,
+        Prefs.KEY_HIGHLIGHT_INNER_ATT,
+        Prefs.KEY_LIGHT_ANGLE,
+        Prefs.KEY_REFRACTION_HEIGHT_RATIO,
+        Prefs.KEY_REFRACTION_HEIGHT_PX,
+        Prefs.KEY_MASK_GLASS_DIM,
     )
 
     // ------------------------------------------------------------ JSON 编解码（两端共用） ------------------------------------------------------------
@@ -216,11 +224,9 @@ object GlassRegistry {
         "com.oplus.posteffect.drawable.ContinuousBlurDrawable" to "连续模糊层",
         "com.oplusos.systemui.common.blurability.drawable.MaskDrawable" to "侧滑操作菜单",
         "com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable" to "磁贴模糊背景",
-        "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable" to "系统模糊包装层",
         "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable" to "快捷开关磁贴",
         "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable" to "描边磁贴",
         "com.oplus.systemui.statusbar.notification.row.NotificationBackgroundViewExtImp" to "通知卡片",
-        "com.oplus.systemui.statusbar.notification.stack.NotificationChildrenContainerExtImp\$NotificationHeaderMaskColorDrawable" to "折叠组通知头",
         "com.oplus.systemui.statusbar.notification.customcard.OplusCustomRow" to "自定义通知卡行",
         "com.oplus.systemui.notification.lockscreen.capsule.CapsuleBackgroundHelper" to "锁屏胶囊背景",
         "com.oplus.systemui.notification.lockscreen.capsule.CapsuleEarView" to "锁屏胶囊耳朵",

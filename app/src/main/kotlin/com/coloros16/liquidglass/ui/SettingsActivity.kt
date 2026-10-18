@@ -522,6 +522,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekHighlightFalloff), valueText = view.findViewById(R.id.highlightFalloffValue),
             key = Prefs.KEY_HIGHLIGHT_FALLOFF, default = Prefs.DEFAULT_HIGHLIGHT_FALLOFF,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> 1f + p },
             toProgress = { v -> (v - 1f).roundToInt().coerceIn(0, 3) },
             format = { v -> getString(R.string.settings_highlight_falloff_value, v.roundToInt()) },
@@ -532,6 +533,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekRefractionHeightRatio), valueText = view.findViewById(R.id.refractionHeightRatioValue),
             key = Prefs.KEY_REFRACTION_HEIGHT_RATIO, default = Prefs.DEFAULT_REFRACTION_HEIGHT_RATIO,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> Prefs.REFRACTION_HEIGHT_RATIO_MIN + p / 100f },
             toProgress = { v -> ((v - Prefs.REFRACTION_HEIGHT_RATIO_MIN) * 100f).roundToInt().coerceIn(0, 90) },
             format = { v -> getString(R.string.settings_refraction_height_ratio_value, v) },
@@ -541,6 +543,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekRefractionHeightPx), valueText = view.findViewById(R.id.refractionHeightPxValue),
             key = Prefs.KEY_REFRACTION_HEIGHT_PX, default = Prefs.DEFAULT_REFRACTION_HEIGHT_PX,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> Prefs.REFRACTION_HEIGHT_PX_MIN + p },
             toProgress = { v -> (v - Prefs.REFRACTION_HEIGHT_PX_MIN).roundToInt().coerceIn(0, 392) },
             format = { v -> getString(R.string.settings_refraction_height_px_value, v.roundToInt()) },
@@ -634,6 +637,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekHighlightWidth), valueText = view.findViewById(R.id.highlightWidthValue),
             key = Prefs.KEY_HIGHLIGHT_WIDTH, default = Prefs.DEFAULT_HIGHLIGHT_WIDTH,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 200) },
             format = { v -> getString(R.string.settings_highlight_width_value, v.roundToInt()) },
@@ -644,6 +648,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekHighlightFloor), valueText = view.findViewById(R.id.highlightFloorValue),
             key = Prefs.KEY_HIGHLIGHT_FLOOR, default = Prefs.DEFAULT_HIGHLIGHT_FLOOR,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> p / 100f },
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_floor_value, (v * 100f).roundToInt()) },
@@ -653,6 +658,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekHighlightInnerAtt), valueText = view.findViewById(R.id.highlightInnerAttValue),
             key = Prefs.KEY_HIGHLIGHT_INNER_ATT, default = Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> p / 100f },
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_highlight_inner_att_value, (v * 100f).roundToInt()) },
@@ -672,6 +678,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekMaskGlassDim), valueText = view.findViewById(R.id.maskGlassDimValue),
             key = Prefs.KEY_MASK_GLASS_DIM, default = Prefs.DEFAULT_MASK_GLASS_DIM,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> p / 100f },
             toProgress = { v -> (v * 100f).roundToInt().coerceIn(0, 100) },
             format = { v -> getString(R.string.settings_mask_glass_dim_value, v) },
@@ -681,6 +688,7 @@ class SettingsActivity : AppCompatActivity() {
         bindFloatSeekBar(
             seek = view.findViewById(R.id.seekLightAngle), valueText = view.findViewById(R.id.lightAngleValue),
             key = Prefs.KEY_LIGHT_ANGLE, default = Prefs.DEFAULT_LIGHT_ANGLE,
+            presetParams = presetParams, presetId = presetId,
             fromProgress = { p -> p.toFloat() },
             toProgress = { v -> v.roundToInt().coerceIn(0, 360) },
             format = { v -> getString(R.string.settings_light_angle_value, v.roundToInt()) },
