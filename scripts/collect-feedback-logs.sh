@@ -44,6 +44,13 @@ done
 cp /data/adb/drip/db/drip.db "$OUT/drip.db" 2>/dev/null
 cp -r /data/adb/lspd/shared_prefs "$OUT/lspd-shared-prefs" 2>/dev/null
 cp -r /data/misc/lspd "$OUT/lspd-misc" 2>/dev/null
+mkdir -p "$OUT/framework-prefs"
+find /data/adb /data/misc /data/system_de -name "*liquid_glass*" -type f 2>/dev/null | while read -r F; do
+    cp "$F" "$OUT/framework-prefs/" 2>/dev/null
+done
+find /data/adb /data/misc -name "*.xml" -path "*shared_prefs*" 2>/dev/null | grep -E "lspd|lsposed|drip" | head -20 | while read -r F; do
+    cp "$F" "$OUT/framework-prefs/" 2>/dev/null
+done
 
 echo "[6/7] 导出系统与版本信息..."
 getprop > "$OUT/props.txt" 2>/dev/null
