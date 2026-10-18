@@ -135,7 +135,7 @@ object DisplayRootChannel {
                 Lg.w(TAG, "display-token: 非物理显示地址（address=$address），放弃")
                 return null
             }
-            val cls = Class.forName(CLASS_OPLUS_DISPLAY_MANAGER)
+            val cls = hostForName(CLASS_OPLUS_DISPLAY_MANAGER, c)
             val instance = cls.getMethod(METHOD_GET_INSTANCE).invoke(null)
             val token = cls.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType)
                 .invoke(instance, physId) as? IBinder

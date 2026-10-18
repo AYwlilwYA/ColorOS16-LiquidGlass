@@ -166,9 +166,20 @@ object LockScreenClockHook {
     /** 壁纸「贴屏 cover」映射：把屏幕坐标折算回位图坐标。 */
     private class WallpaperMapping(val scale: Float, val cropX: Float, val cropY: Float)
 
+    /** 宿主 ClassLoader（install 期保存）：hide 类反射用它做 caller，模块类做 caller 会被 hidden API 名单拦成 CNFE */
+    @Volatile
+    private var hostClassLoader: ClassLoader? = null
+
+    // 宿主 ClassLoader 加载 hide 类：宿主 loader miss 时回退裸加载（保留原降级行为）
+    private fun hostForName(name: String): Class<*> {
+        val cl = hostClassLoader
+        return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
+    }
+
     /** SystemUI 进程安装（XposedEntry.installHooks 调用）。 */
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
+        hostClassLoader = classLoader
         enabled = try {
             Prefs.read(api).getBoolean(Prefs.KEY_LOCKSCREEN_CLOCK_GLASS, Prefs.DEFAULT_LOCKSCREEN_CLOCK_GLASS)
         } catch (t: Throwable) {
@@ -584,7 +595,7 @@ object LockScreenClockHook {
     /** WallpaperManager 实例（ActivityThread.currentApplication 上下文，SystemUI 进程内）。 */
     private fun wallpaperManager(): WallpaperManager? {
         return try {
-            val app = Class.forName("android.app.ActivityThread")
+            val app = hostForName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: return null
             WallpaperManager.getInstance(app)
         } catch (t: Throwable) {

@@ -135,8 +135,19 @@ object BlurCaptureHook {
     @Volatile
     private var apiRef: XposedInterface? = null
 
+    /** 宿主 ClassLoader（install 期保存）：hide 类反射用它做 caller，模块类做 caller 会被 hidden API 名单拦成 CNFE */
+    @Volatile
+    private var hostClassLoader: ClassLoader? = null
+
+    // 宿主 ClassLoader 加载 hide 类：宿主 loader miss 时回退裸加载（保留原降级行为）
+    private fun hostForName(name: String): Class<*> {
+        val cl = hostClassLoader
+        return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
+    }
+
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         apiRef = api
+        hostClassLoader = classLoader
         // 全分辨率原图：hook e.a.c / e.a.a 强制 LayerCaptureArgs frameScale=1.0f（不依赖 c.s 解析，直接挂）
         mountFrameScaleHooks(api, classLoader)
         // 主锚点：BlurService.onBind（类名稳定），hookAfter 动态解析真实混淆类
@@ -818,7 +829,7 @@ object BlurCaptureHook {
      *  与 SystemUI 端 BlurDrawHook 的 receiver 同 action（两进程各自收）。 */
     private fun registerDumpReceiver() {
         try {
-            val ctx = Class.forName("android.app.ActivityThread")
+            val ctx = hostForName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: run {
                 Lg.w(TAG, "capture-dump: ActivityThread.currentApplication() null")
                 return

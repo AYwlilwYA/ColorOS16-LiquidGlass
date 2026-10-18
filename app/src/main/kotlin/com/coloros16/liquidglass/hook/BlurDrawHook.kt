@@ -1140,6 +1140,9 @@ object BlurDrawHook {
      *  （spec/102 §2.3 实测 85s 内 45 条 ctx-null）。改为**失败不缓存 + 限频重试**，见 [systemUiContext]。 */
     @Volatile
     private var systemUiContextCache: android.content.Context? = null
+    /** 宿主 ClassLoader（install 期保存）：hide/宿主类反射用它做 caller，模块类做 caller 会被 hidden API 名单拦成 CNFE */
+    @Volatile
+    private var hostClassLoader: ClassLoader? = null
     /** 最近一次 context 解析尝试时刻（0 = 待解析）；失败限频，避免每个调用点都跑一遍反射 */
     @Volatile
     private var systemUiContextAttemptAt = 0L
@@ -1168,6 +1171,23 @@ object BlurDrawHook {
         return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
     }
 
+    // hide/宿主类加载（带回退链）：宿主 context loader → 调用方传入 loader → 裸加载；CNFE 才走下一跳
+    private fun hostForName(name: String, fallbackLoader: ClassLoader?): Class<*> {
+        systemUiContext()?.classLoader?.let { cl ->
+            try {
+                return Class.forName(name, false, cl)
+            } catch (_: ClassNotFoundException) {
+            }
+        }
+        fallbackLoader?.let { cl ->
+            try {
+                return Class.forName(name, false, cl)
+            } catch (_: ClassNotFoundException) {
+            }
+        }
+        return Class.forName(name)
+    }
+
     /** [doc/spec/105 P0-3] 多源解析 SystemUI context（任一成功即用；全部失败返回 null → 下次限频重试）：
      *  ① 宿主 View context（registerHostView 捕获，最可靠）；② ActivityThread.currentApplication（原实现）；
      *  ③ ActivityThread.getSystemContext()（Application 未就绪时 system context 已存在）；
@@ -1180,13 +1200,13 @@ object BlurDrawHook {
             }
         }
         try {
-            val clazz = Class.forName("android.app.ActivityThread")
+            val clazz = hostForName("android.app.ActivityThread", hostClassLoader)
             val app = clazz.getMethod("currentApplication").invoke(null) as? android.app.Application
             app?.applicationContext?.let { return it }
         } catch (ignored: Throwable) {
         }
         try {
-            val clazz = Class.forName("android.app.ActivityThread")
+            val clazz = hostForName("android.app.ActivityThread", hostClassLoader)
             val thread = clazz.getMethod("currentActivityThread").invoke(null)
             if (thread != null) {
                 val ctx = clazz.getMethod("getSystemContext").invoke(thread)
@@ -1195,7 +1215,7 @@ object BlurDrawHook {
         } catch (ignored: Throwable) {
         }
         try {
-            val app = Class.forName("android.app.AppGlobals")
+            val app = hostForName("android.app.AppGlobals", hostClassLoader)
                 .getMethod("getInitialApplication").invoke(null) as? android.app.Application
             app?.applicationContext?.let { return it }
         } catch (ignored: Throwable) {
@@ -2186,6 +2206,7 @@ object BlurDrawHook {
 
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
+        hostClassLoader = classLoader
         GlassRegistry.attach { this.api?.let { a -> Prefs.read(a) } }
         // [2026-08-13 用户要求·关闭日志选项] install 时读取并缓存（热路径不每帧读 Prefs 防 binder 开销）
         moduleLogEnabled = try {
@@ -2734,7 +2755,7 @@ object BlurDrawHook {
         // NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius() line 35-36 读它做按钮圆角）。
         // 独立 try-catch：失败只影响侧滑按钮圆角（回退正方形玻璃），不影响映射。
         try {
-            val rDimen = Class.forName("com.android.systemui.R\$dimen", false, classLoader)
+            val rDimen = hostForName("com.android.systemui.R\$dimen", classLoader)
             mNotificationCornerRadiusDimenId = rDimen.getField("notification_corner_radius").getInt(null)
             Lg.i(TAG, "Hook B notification_corner_radius dimen id resolved: $mNotificationCornerRadiusDimenId")
         } catch (t: Throwable) {
@@ -13162,13 +13183,13 @@ object BlurDrawHook {
                 return ElementBackground(viaToken, region)
             }
 
-            val wmBinder = Class.forName("android.os.ServiceManager")
+            val wmBinder = hostForName("android.os.ServiceManager")
                 .getMethod("getService", String::class.java).invoke(null, "window")
             if (wmBinder == null) {
                 Lg.w(TAG, "bg-element: ServiceManager.getService(window) null")
                 null
             } else {
-                val wm = Class.forName("android.view.IWindowManager\$Stub")
+                val wm = hostForName("android.view.IWindowManager\$Stub")
                     .getMethod("asInterface", IBinder::class.java).invoke(null, wmBinder)
                 if (wm == null) {
                     Lg.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")

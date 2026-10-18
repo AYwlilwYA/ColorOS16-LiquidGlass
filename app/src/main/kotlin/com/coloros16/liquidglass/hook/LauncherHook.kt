@@ -300,6 +300,15 @@ object LauncherHook {
     /** CornerType.CONIC 兼容解析结果（旧 getField(CONIC) / 17.x values()[2]；当前渲染未消费，兼容链预留） */
     @Suppress("unused")
     private var mCornerTypeConic: Any? = null
+    /** CornerParams 类兼容解析结果（旧 FQCN / zn.c / dex 探测命中；兼容链预留） */
+    @Suppress("unused")
+    private var mCornerParamsClass: Class<*>? = null
+    /** 宿主 dex 类名枚举缓存（CornerType/CornerParams 探测共用，一次性；禁止热路径调用） */
+    @Volatile
+    private var hostDexNamesCache: List<String>? = null
+    /** 探测执行标志（各跑一次，miss 也不重扫） */
+    private var cornerTypeScanDone = false
+    private var cornerParamsScanDone = false
     /** 版本门控缓存：宿主 ≥17.3.12（-1/读失败按 false 处理，指纹路径不触发） */
     @Volatile
     private var launcherVer17Plus: Boolean? = null
@@ -343,7 +352,7 @@ object LauncherHook {
     /** [spec/85 补接] Launcher 进程 Application context（Launcher 是普通 app 进程，currentApplication 恒可用） */
     private val launcherAppContext: android.content.Context? by lazy {
         try {
-            Class.forName("android.app.ActivityThread")
+            hostForName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context
         } catch (t: Throwable) {
             null
@@ -449,8 +458,19 @@ object LauncherHook {
 
     // ------------------------------------------------------------ 入口
 
+    /** 宿主 ClassLoader（install 期保存）：hide/宿主类反射用它做 caller，模块类做 caller 会被 hidden API 名单拦成 CNFE */
+    @Volatile
+    private var hostClassLoader: ClassLoader? = null
+
+    // 宿主 ClassLoader 加载 hide/宿主类：宿主 loader miss 时回退裸加载（保留原降级行为）
+    private fun hostForName(name: String): Class<*> {
+        val cl = hostClassLoader
+        return if (cl != null) Class.forName(name, true, cl) else Class.forName(name)
+    }
+
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
+        hostClassLoader = classLoader
         GlassRegistry.attach { this.api?.let { a -> Prefs.read(a) } }
         // [2026-08-13 用户要求·关闭日志选项] install 时读取并缓存（热路径不每帧读 Prefs 防 binder 开销）
         moduleLogEnabled = try {
@@ -715,7 +735,8 @@ object LauncherHook {
         return fallback
     }
 
-    /** [spec/117 §4] CornerType/CornerParams 兼容链：旧 FQCN → 17.x params.CornerType / zn.c。 */
+    /** [spec/117 §4] CornerType/CornerParams 兼容链：旧 FQCN → 17.x params.CornerType / zn.c；
+     *  硬编码候选全 miss 时转一次性宿主 dex 探测（scanCornerTypeCompat / scanCornerParamsCompat）。 */
     private fun resolveCornerCompat(classLoader: ClassLoader) {
         // CornerType：旧 com.oplus.posteffect.CornerType#getField("CONIC")
         try {
@@ -747,18 +768,204 @@ object LauncherHook {
             Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerType old-name CONIC field failed", t)
         }
         // CornerParams 类：旧 FQCN → zn.c（仅确认类在，无 getter 可反射）
+        var paramsHit: Class<*>? = null
         try {
-            Class.forName("com.oplus.posteffect.CornerParams", false, classLoader)
+            paramsHit = Class.forName("com.oplus.posteffect.CornerParams", false, classLoader)
             Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ old-name")
         } catch (_: ClassNotFoundException) {
             try {
-                Class.forName(CLASS_CORNER_PARAMS_17, false, classLoader)
+                paramsHit = Class.forName(CLASS_CORNER_PARAMS_17, false, classLoader)
                 Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams @ $CLASS_CORNER_PARAMS_17 (17.3.12)")
             } catch (t: Throwable) {
                 Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerParams unresolved (old miss,17.x miss)", t)
             }
         } catch (t: Throwable) {
             Lg.w(TAG_FINGERPRINT, "launcher-glass: CornerParams old-name load error", t)
+        }
+        mCornerParamsClass = paramsHit
+        // 硬编码候选全 miss 才进 dex 探测（探测只在 resolve 期跑，各一次）
+        if (mCornerTypeConic == null) scanCornerTypeCompat(classLoader)
+        if (paramsHit == null) scanCornerParamsCompat(classLoader)
+    }
+
+    /** 枚举宿主 ClassLoader 全部 dex 内的类名（BaseDexClassLoader.pathList.dexElements[].dexFile.entries()）。
+     *  一次性执行、结果缓存；任一步异常返回 null（调用方按探测 miss 降级）。 */
+    private fun hostDexClassNames(classLoader: ClassLoader): List<String>? {
+        hostDexNamesCache?.let { return it }
+        return try {
+            val bdl = Class.forName("dalvik.system.BaseDexClassLoader", false, classLoader)
+            if (!bdl.isInstance(classLoader)) return null
+            val pathList = bdl.getDeclaredField("pathList").apply { isAccessible = true }.get(classLoader)
+            val elements = pathList.javaClass.getDeclaredField("dexElements")
+                .apply { isAccessible = true }.get(pathList) as? Array<*>
+                ?: return null
+            val names = ArrayList<String>()
+            for (el in elements) {
+                val df = el?.javaClass?.getDeclaredField("dexFile")
+                    ?.apply { isAccessible = true }?.get(el) ?: continue
+                @Suppress("UNCHECKED_CAST")
+                val entries = df.javaClass.getMethod("entries").invoke(df) as? java.util.Enumeration<String>
+                    ?: continue
+                while (entries.hasMoreElements()) {
+                    names.add(entries.nextElement())
+                }
+            }
+            hostDexNamesCache = names
+            names
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** 从候选类提取 CONIC 常量：CONIC 字段直取 → 4 常量枚举取 values()[2]（常量序 NONE,FULL,CONIC,G2）；都失败返回 null。 */
+    private fun conicFrom(clazz: Class<*>): Any? {
+        try {
+            return clazz.getField("CONIC").get(null)
+        } catch (_: Throwable) {
+        }
+        return try {
+            if (clazz.isEnum) clazz.enumConstants?.takeIf { it.size == 4 }?.get(2) else null
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** CornerType 运行时 dex 探测（硬编码候选全 miss 后执行，一次性）。
+     *  匹配依据：① 类名末段以 CornerType 结尾（构建未混淆该类名时命中，含 GradientStrokeCornerType 等同族）；
+     *  ② 构建把类名混淆掉时，筛 com.oplus.posteffect 包内「恰好 4 个常量的枚举」——CornerType 固有
+     *  NONE,FULL,CONIC,G2 四常量且顺序恒定，故唯一命中取 values()[2]；多候选项不唯一即放弃（保守降级）。 */
+    private fun scanCornerTypeCompat(classLoader: ClassLoader) {
+        if (cornerTypeScanDone) return
+        cornerTypeScanDone = true
+        var hitCls: Class<*>? = null
+        var conic: Any? = null
+        try {
+            val names = hostDexClassNames(classLoader)
+            if (names != null) {
+                val byName = names.filter { it.substringAfterLast('.').endsWith("CornerType") }
+                for (n in byName) {
+                    val clazz = try {
+                        Class.forName(n, false, classLoader)
+                    } catch (_: ClassNotFoundException) {
+                        continue
+                    }
+                    val v = conicFrom(clazz)
+                    if (v != null) {
+                        hitCls = clazz
+                        conic = v
+                        break
+                    }
+                }
+                if (hitCls == null) {
+                    val structural = ArrayList<String>()
+                    for (n in names) {
+                        if (!n.startsWith("com.oplus.posteffect.")) continue
+                        val clazz = try {
+                            Class.forName(n, false, classLoader)
+                        } catch (_: Throwable) {
+                            continue
+                        }
+                        val fourConstEnum = try {
+                            clazz.isEnum && clazz.enumConstants?.size == 4
+                        } catch (t: Throwable) {
+                            false
+                        }
+                        if (fourConstEnum) {
+                            structural.add(n)
+                            if (structural.size >= 2) break
+                        }
+                    }
+                    if (structural.size == 1) {
+                        val clazz = try {
+                            Class.forName(structural[0], false, classLoader)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                        val v = clazz?.enumConstants?.getOrNull(2)
+                        if (clazz != null && v != null) {
+                            hitCls = clazz
+                            conic = v
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            hitCls = null
+            conic = null
+        }
+        if (hitCls != null && conic != null) {
+            mCornerTypeConic = conic
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerType scanned hit=${hitCls.name}")
+        } else {
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerType scanned miss")
+        }
+    }
+
+    /** CornerParams 运行时 dex 探测（硬编码候选全 miss 后执行，一次性）。
+     *  匹配依据：① 类名末段以 CornerParams 结尾（含 GradientStrokeCornerParams 同族）；
+     *  ② 类名混淆时按结构筛 com.oplus.posteffect 包内「声明了名字含 radius 的 float/double 字段、
+     *  且有非合成构造器」的类——字段名被混淆的构建取不到该信号，命中数非 1（0 或多）一律放弃（保守降级）。 */
+    private fun scanCornerParamsCompat(classLoader: ClassLoader) {
+        if (cornerParamsScanDone) return
+        cornerParamsScanDone = true
+        var hitCls: Class<*>? = null
+        try {
+            val names = hostDexClassNames(classLoader)
+            if (names != null) {
+                for (n in names) {
+                    if (!n.substringAfterLast('.').endsWith("CornerParams")) continue
+                    hitCls = try {
+                        Class.forName(n, false, classLoader)
+                    } catch (_: ClassNotFoundException) {
+                        continue
+                    }
+                    break
+                }
+                if (hitCls == null) {
+                    val structural = ArrayList<String>()
+                    for (n in names) {
+                        if (!n.startsWith("com.oplus.posteffect.")) continue
+                        val clazz = try {
+                            Class.forName(n, false, classLoader)
+                        } catch (_: Throwable) {
+                            continue
+                        }
+                        val radiusField = try {
+                            clazz.declaredFields.any { f ->
+                                (f.type == Float::class.javaPrimitiveType ||
+                                    f.type == Double::class.javaPrimitiveType) &&
+                                    f.name.contains("radius", ignoreCase = true)
+                            }
+                        } catch (t: Throwable) {
+                            false
+                        }
+                        val ctor = try {
+                            clazz.declaredConstructors.isNotEmpty()
+                        } catch (t: Throwable) {
+                            false
+                        }
+                        if (radiusField && ctor) {
+                            structural.add(n)
+                            if (structural.size >= 2) break
+                        }
+                    }
+                    if (structural.size == 1) {
+                        hitCls = try {
+                            Class.forName(structural[0], false, classLoader)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            hitCls = null
+        }
+        if (hitCls != null) {
+            mCornerParamsClass = hitCls
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams scanned hit=${hitCls.name}")
+        } else {
+            Lg.i(TAG_FINGERPRINT, "launcher-glass: CornerParams scanned miss")
         }
     }
 
@@ -1985,21 +2192,21 @@ object LauncherHook {
             return null
         }
         return try {
-            val wmBinder = Class.forName("android.os.ServiceManager")
+            val wmBinder = hostForName("android.os.ServiceManager")
                 .getMethod("getService", String::class.java).invoke(null, "window")
             if (wmBinder == null) {
                 Lg.w(TAG, "bg-element: ServiceManager.getService(window) null")
                 null
             } else {
-                val wm = Class.forName("android.view.IWindowManager\$Stub")
+                val wm = hostForName("android.view.IWindowManager\$Stub")
                     .getMethod("asInterface", IBinder::class.java).invoke(null, wmBinder)
                 if (wm == null) {
                     Lg.w(TAG, "bg-element: IWindowManager.Stub.asInterface null")
                     null
                 } else {
-                    val captureCls = Class.forName("android.window.ScreenCapture")
-                    val argsCls = Class.forName("android.window.ScreenCapture\$CaptureArgs")
-                    val builderCls = Class.forName("android.window.ScreenCapture\$CaptureArgs\$Builder")
+                    val captureCls = hostForName("android.window.ScreenCapture")
+                    val argsCls = hostForName("android.window.ScreenCapture\$CaptureArgs")
+                    val builderCls = hostForName("android.window.ScreenCapture\$CaptureArgs\$Builder")
                     val builder = builderCls.getConstructor().newInstance()
                     val scale = bgCaptureScale()
                     builderCls.getMethod("setSourceCrop", Rect::class.java).invoke(builder, crop)
@@ -2043,7 +2250,7 @@ object LauncherHook {
                             Lg.w(TAG, "bg-element: createSyncCaptureListener() null")
                             null
                         } else {
-                            val listenerCls = Class.forName("android.window.ScreenCapture\$ScreenCaptureListener")
+                            val listenerCls = hostForName("android.window.ScreenCapture\$ScreenCaptureListener")
                             val m = wm.javaClass.getMethod(
                                 "captureDisplay",
                                 Int::class.javaPrimitiveType, argsCls, listenerCls
@@ -2136,7 +2343,7 @@ object LauncherHook {
      */
     private fun resolveWallpaperUid(): Long? {
         return try {
-            val app = Class.forName("android.app.ActivityThread")
+            val app = hostForName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context
                 ?: return null
             val pkg = try {
@@ -2341,7 +2548,7 @@ object LauncherHook {
     /** [spec/52] WallpaperManager 实例（ActivityThread.currentApplication 上下文，Launcher 进程内）。 */
     private fun wallpaperManager(): WallpaperManager? {
         return try {
-            val app = Class.forName("android.app.ActivityThread")
+            val app = hostForName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null) as? android.content.Context ?: return null
             WallpaperManager.getInstance(app)
         } catch (t: Throwable) {
