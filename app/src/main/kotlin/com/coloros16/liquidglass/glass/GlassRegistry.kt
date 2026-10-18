@@ -208,6 +208,35 @@ object GlassRegistry {
     /** 按元素 identityHashCode 取类全名；未登记 → null（渲染侧回落全局参数）。 */
     fun classOf(elementId: Int): String? = bound[elementId]?.name
 
+    /** 类全名 → 中文标签（语义来自各 hook mount 处的反编译确认）。 */
+    private val CLASS_LABELS = mapOf(
+        "com.oplus.posteffect.BlurDrawable" to "通用模糊背景（多卡共用）",
+        "com.oplus.posteffect.drawable.BaseDrawable" to "桌面玻璃基类",
+        "com.oplus.posteffect.drawable.MetaBallBlurDrawable" to "通知灯泡圆球",
+        "com.oplus.posteffect.drawable.ContinuousBlurDrawable" to "连续模糊层",
+        "com.oplusos.systemui.common.blurability.drawable.MaskDrawable" to "侧滑操作菜单",
+        "com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable" to "磁贴模糊背景",
+        "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable" to "系统模糊包装层",
+        "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable" to "快捷开关磁贴",
+        "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable" to "描边磁贴",
+        "com.oplus.systemui.statusbar.notification.row.NotificationBackgroundViewExtImp" to "通知卡片",
+        "com.oplus.systemui.statusbar.notification.stack.NotificationChildrenContainerExtImp\$NotificationHeaderMaskColorDrawable" to "折叠组通知头",
+        "com.oplus.systemui.statusbar.notification.customcard.OplusCustomRow" to "自定义通知卡行",
+        "com.oplus.systemui.notification.lockscreen.capsule.CapsuleBackgroundHelper" to "锁屏胶囊背景",
+        "com.oplus.systemui.notification.lockscreen.capsule.CapsuleEarView" to "锁屏胶囊耳朵",
+        "com.oplus.systemui.media.controls.ui.OplusMediaCarouselView" to "媒体控制横幅",
+        "com.android.launcher3.folder.OplusPreviewBackground" to "文件夹背景",
+        "com.android.launcher3.folder.FolderRoundImageView" to "文件夹图标",
+        "com.android.launcher3.OplusHotseat" to "Dock 底栏",
+    )
+
+    /** 清单/对话框展示用：有标签显示「标签（简单类名）」，无标签只显示简单类名。 */
+    fun classLabel(cls: String): String {
+        val simple = cls.substringAfterLast('.')
+        val label = CLASS_LABELS[cls] ?: return simple
+        return "$label（$simple）"
+    }
+
     private fun touch(name: String) {
         try {
             val now = SystemClock.uptimeMillis()

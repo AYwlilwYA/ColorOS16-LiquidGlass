@@ -900,7 +900,7 @@ class SettingsActivity : AppCompatActivity() {
                 val detail = if (preset.classes.isEmpty()) {
                     getString(R.string.glass_preset_none_applied)
                 } else {
-                    preset.classes.joinToString(", ")
+                    preset.classes.joinToString(", ") { GlassRegistry.classLabel(it) }
                 }
                 container.addView(glassPresetRow("${preset.name}: $detail") {
                     showPresetClassDialog(preset.id) { rebuild() }
@@ -939,7 +939,7 @@ class SettingsActivity : AppCompatActivity() {
         val pad = (8 * resources.displayMetrics.density).toInt()
         classes.forEach { cls ->
             val box = CheckBox(this)
-            box.text = cls
+            box.text = GlassRegistry.classLabel(cls)
             box.textSize = 13f
             box.setPadding(0, pad, 0, pad)
             if (occupied.contains(cls)) {
