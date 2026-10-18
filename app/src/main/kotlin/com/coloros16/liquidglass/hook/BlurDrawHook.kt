@@ -2946,6 +2946,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (screen-region map)")
+            GlassRegistry.registerClass(CLASS_AUTO_BLUR_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW", t)
         }
@@ -2985,6 +2986,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW(Canvas) (stroke-tile screen-region map)")
+            GlassRegistry.registerClass(CLASS_LIGHT_STYLE_STROKE_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW (stroke tiles keep system blur)", t)
         }
@@ -3015,6 +3017,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (swipe-menu screen-region map)")
+            GlassRegistry.registerClass(CLASS_MASK_BLUR_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW (swipe buttons keep system blur)", t)
         }
@@ -3057,6 +3060,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG(View, Canvas) (capsule map)")
+            GlassRegistry.registerClass(CLASS_CAPSULE_BACKGROUND_HELPER)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG (capsule keeps system blur)", t)
         }
@@ -3116,6 +3120,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW(Canvas) (capsule ear map)")
+            GlassRegistry.registerClass(CLASS_CAPSULE_EAR_VIEW)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW (capsule ear keeps system blur)", t)
         }
@@ -3162,6 +3167,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW(Canvas) (media banner map)")
+            GlassRegistry.registerClass(CLASS_MEDIA_CAROUSEL_VIEW)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW (media banner keeps system blur)", t)
         }
@@ -4075,6 +4081,7 @@ object BlurDrawHook {
                     if (!handled) chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW(Canvas) (tile map fallback + mask layer skip)")
+            GlassRegistry.registerClass(CLASS_MIX_COLOR_TILE_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW", t)
         }
@@ -4102,7 +4109,7 @@ object BlurDrawHook {
      * MixColorTileDrawable.draw（任务 3）取出内层 AutoBlurDrawable 后也走这里。
      * @param hostClip [doc/spec/99] 宿主 canvas clip（宿主 View 本地坐标）；null=调用方无 canvas → 不采集
      */
-    private fun registerAutoBlurScreenRegion(auto: Any, hostClip: Rect? = null): Boolean {
+    private fun registerAutoBlurScreenRegion(auto: Any, hostClip: Rect? = null, cardClass: String? = null): Boolean {
         val proxy = try {
             mAutoGetViewBlurProxy?.invoke(auto)
         } catch (t: Throwable) {
@@ -4123,7 +4130,7 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "map: getBounds(AutoBlurDrawable) failed", t); null
         }
-        return registerScreenRegionCore(proxy, hostView, defaultDrawable, autoBounds, "map", hostClip)
+        return registerScreenRegionCore(proxy, hostView, defaultDrawable, autoBounds, "map", hostClip, cardClass)
     }
 
     /**
@@ -4157,7 +4164,7 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "swipe: getView failed", t); return
         } ?: return
-        registerScreenRegionCore(proxy, hostView, null, null, "swipe")
+        registerScreenRegionCore(proxy, hostView, null, null, "swipe", cardClass = CLASS_MASK_BLUR_DRAWABLE)
     }
 
     /**
@@ -4187,7 +4194,7 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "tile: getDrawable failed", t); return
         } ?: return
-        registerAutoBlurScreenRegion(inner)
+        registerAutoBlurScreenRegion(inner, cardClass = CLASS_MIX_COLOR_TILE_DRAWABLE)
     }
 
     /**
@@ -4286,6 +4293,7 @@ object BlurDrawHook {
                     }
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)")
+            GlassRegistry.registerClass(CLASS_NOTIF_HEADER_MASK)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)", t)
         }
@@ -4342,6 +4350,7 @@ object BlurDrawHook {
                     null
                 }
             Lg.i(TAG, "Hook B mounted: MetaBallBlurDrawable#setMetaColor(int) (gradient overlay suppress)")
+            GlassRegistry.registerClass("com.oplus.posteffect.drawable.MetaBallBlurDrawable")
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: MetaBallBlurDrawable#setMetaColor (gradient layer keeps)", t)
         }
@@ -4365,6 +4374,8 @@ object BlurDrawHook {
         // [doc/spec/99 clip∩bounds] 宿主 canvas clip（宿主 View 本地坐标）；null=调用方无 canvas
         //（swipe / MixColorTile 内层本轮不传）→ 该元素不采集，几何维持现状。
         hostClip: Rect? = null,
+        // 卡片语义类（通知卡/磁贴等），随 bind 登记供预设按卡片命中；null=按绘制对象类
+        cardClass: String? = null,
     ): Boolean {
         // [任务 G] 顺手登记宿主 View：运动事件源（QS 翻页/面板展开）触发时 invalidate 它，
         // 强制重录 draw → 映射随新位置更新（WeakReference 防泄漏，去重见 registerHostView）
@@ -4405,7 +4416,7 @@ object BlurDrawHook {
             registerTargetCache[proxyKey] = RegisterTargetCache(resolved)
             target = resolved
         }
-        GlassRegistry.bind(System.identityHashCode(target), target)
+        GlassRegistry.bind(System.identityHashCode(target), target, cardClass)
         // [spec/38 修复 2026-08-13] ScrimView（面板背景 scrim，ScrimControllerExImp.refreshBehindDrawable 的
         // hostView）恒透明不渲染玻璃：**不写入 screenRegionMap**——否则全屏 region 令 isOverGlassRegion 对
         // 状态栏时钟等一切坐标判"玻璃区域" → 文字变色（mask 强制白 / 采样分支注入黑）。region 无渲染用途：
@@ -4795,6 +4806,7 @@ object BlurDrawHook {
                     suppressNotificationMaterialColor(chain)
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)")
+            GlassRegistry.registerClass(CLASS_NBV_EXT_IMP)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG", t)
         }
@@ -4908,6 +4920,7 @@ object BlurDrawHook {
                     suppressPlatformBlurMaskColor(chain)
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)")
+            GlassRegistry.registerClass(CLASS_PLATFORM_BLUR_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)", t)
         }
@@ -5059,6 +5072,7 @@ object BlurDrawHook {
         // 每帧重抓整屏 → 通知卡滚动 CPU 热点排序 #1 消除）
         if (previous == null) {
             screenRegionMap[key] = entry
+            GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
             Lg.i(
                 TAG,
                 "coord: notif-map id=$key view=NotificationBackgroundView bgView=${bgView.javaClass.simpleName} " +
@@ -5395,6 +5409,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION(float) (custom-row swipe -> re-record region)")
+            GlassRegistry.registerClass(CLASS_OPLUS_CUSTOM_ROW)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_OPLUS_CUSTOM_ROW#$METHOD_SET_TRANSLATION", t)
         }
@@ -9830,6 +9845,7 @@ object BlurDrawHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE() (BlurSceneRegistry)")
+            GlassRegistry.registerClass(CLASS_CONTINUOUS_BLUR_DRAWABLE)
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B mount FAILED: $CLASS_CONTINUOUS_BLUR_DRAWABLE#$METHOD_ADD_BLUR_DRAWABLE (registry disabled, system blur kept)", t)
         }

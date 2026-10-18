@@ -1036,6 +1036,7 @@ object LauncherHook {
                         chain.proceed()
                     }
                 Lg.i(TAG, "LauncherHook mounted: ${oldMethod.declaringClass.name}#$METHOD_DRAW_BLUR_SHADER(Canvas)")
+                GlassRegistry.registerClass(oldMethod.declaringClass.name)
             } catch (t: Throwable) {
                 Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
             }
@@ -1191,6 +1192,7 @@ object LauncherHook {
                         }
                     val sig = method.parameterTypes.joinToString(", ") { it.simpleName }
                     Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PREVIEW_BACKGROUND#$METHOD_DRAW_BACKGROUND($sig) (folder icon map)")
+                    GlassRegistry.registerClass(CLASS_OPLUS_PREVIEW_BACKGROUND)
                     mounted = true
                     // 16.x 双参命中即停；17.x 多签名只挂最靠前的一个（避免重复注册映射）
                     break
@@ -1236,6 +1238,7 @@ object LauncherHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "LauncherHook mounted: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW(Canvas) (folder icon map, normal state)")
+            GlassRegistry.registerClass(CLASS_FOLDER_ROUND_IMAGE_VIEW)
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_FOLDER_ROUND_IMAGE_VIEW#$METHOD_ON_DRAW", t)
         }
@@ -1316,6 +1319,7 @@ object LauncherHook {
                     chain.proceed()
                 }
             Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW(Canvas) (dock map)")
+            GlassRegistry.registerClass(CLASS_OPLUS_HOTSEAT)
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_HOTSEAT#$METHOD_ON_DRAW", t)
         }

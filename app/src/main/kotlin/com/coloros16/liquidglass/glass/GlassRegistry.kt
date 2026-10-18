@@ -138,13 +138,16 @@ object GlassRegistry {
 
     // ------------------------------------------------------------ 探测登记（hook 侧） ------------------------------------------------------------
 
-    private class Bound(val clazz: Class<*>, val name: String)
+    private class Bound(val clazz: Class<*>, val name: String, val cardClass: String?)
 
     /** 元素 identityHashCode → 类快照（热路径只查这张表，避免每帧取类名）。 */
     private val bound = ConcurrentHashMap<Int, Bound>()
 
     /** 类名 → 最近一次出现时间（ms，uptime）。 */
     private val seen = ConcurrentHashMap<String, Long>()
+
+    /** mount 期静态登记的类名（无实例触达，flush 时恒保留不按 24h 过期清理）。 */
+    private val staticNames = java.util.concurrent.CopyOnWriteArraySet<String>()
 
     @Volatile
     private var dirty = false
@@ -174,17 +177,31 @@ object GlassRegistry {
         prefsProvider = provider
     }
 
-    /** 登记当前绘制对象所属类为玻璃元素；类未变时只刷新最近出现时间。 */
-    fun bind(id: Int, target: Any) {
+    /** 登记当前绘制对象所属类为玻璃元素；类未变时只刷新最近出现时间。
+     *  [cardClass] = 该元素所属的卡片语义类（如通知卡/磁贴），null 表示不升级，
+     *  已有卡片类不会被后到的无卡片类登记抹掉。 */
+    fun bind(id: Int, target: Any, cardClass: String? = null) {
         val clazz = target.javaClass
         val cur = bound[id]
         if (cur != null && cur.clazz === clazz) {
+            if (cardClass != null && cardClass != cur.cardClass) {
+                bound[id] = Bound(clazz, cur.name, cardClass)
+                touch(cardClass)
+            }
             touch(cur.name)
             return
         }
         if (bound.size >= BIND_MAP_MAX) bound.clear()
         val name = clazz.name
-        bound[id] = Bound(clazz, name)
+        bound[id] = Bound(clazz, name, cardClass)
+        touch(name)
+        if (cardClass != null) touch(cardClass)
+    }
+
+    /** mount 期按类名静态登记（无实例）：进清单并恒驻（不受 24h 未出现清理）。 */
+    fun registerClass(name: String) {
+        if (name.isEmpty()) return
+        staticNames.add(name)
         touch(name)
     }
 
@@ -224,7 +241,7 @@ object GlassRegistry {
             val kept = ArrayList<DetectedClass>(merged.size)
             val keep = HashSet<String>()
             for ((cls, last) in merged) {
-                if (last >= cutoff || referenced.contains(cls)) {
+                if (last >= cutoff || referenced.contains(cls) || staticNames.contains(cls)) {
                     kept.add(DetectedClass(cls, last))
                     keep.add(cls)
                 }
@@ -261,10 +278,11 @@ object GlassRegistry {
      */
     fun overridesFor(elementId: Int): Map<String, Float>? {
         if (elementId == 0) return null
-        val cls = bound[elementId]?.name ?: return null
+        val b = bound[elementId] ?: return null
         val map = snapshotOverrides()
         if (map.isEmpty()) return null
-        return map[cls]
+        // 卡片类优先精确命中，未配则回落按绘制对象类命中
+        return map[b.cardClass ?: b.name] ?: map[b.name]
     }
 
     private fun snapshotOverrides(): Map<String, Map<String, Float>> {
