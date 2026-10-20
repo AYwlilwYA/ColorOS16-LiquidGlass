@@ -1953,11 +1953,13 @@ object LauncherHook {
         return out
     }
 
-    /** 渲染触发整屏快照请求：**异步**（不阻塞渲染线程；失败冷却期内不重抓）。快照缺失返回 null。 */
+    /** 渲染触发整屏快照请求：**异步**（不阻塞渲染线程；失败冷却期内不重抓）。快照缺失返回 null。
+     *  静态模式 → 不入队（零抓屏），返回最近快照。 */
     private fun requestScreenSnapshotAsync(): ElementBackground? {
         val snap = screenSnapshot
         val valid = snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0
         if (valid) return snap
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return snap
         val now = SystemClock.uptimeMillis()
         if (now < (elementCaptureQuitAt[SNAPSHOT_ID] ?: 0L)) return null
         if (!captureInFlightIds.contains(SNAPSHOT_ID) && pendingCaptureIds.add(SNAPSHOT_ID)) {
@@ -2106,8 +2108,9 @@ object LauncherHook {
     }
 
     /** 回退抓屏：解析 Launcher 根 surface → captureDisplay 整屏排除 Launcher 窗口（spec/42 setUid 壁纸层）。
-     *  sfc 解析失败返回 null（走失败重试/冷却，不静默丢弃）。 */
+     *  sfc 解析失败返回 null（走失败重试/冷却，不静默丢弃）。静态模式 → 不抓屏（壁纸文件解码不受影响）。 */
     private fun captureScreenSnapshotWithSfc(): ElementBackground? {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return null
         // [doc/spec/42] SystemUI 弹窗（USB 选择等，ownerUid=SystemUI=壁纸同 UID）setUid 无法
         // 排除；曾尝试反射 IWindowManager.getVisibleWindows() 检测弹窗跳过抓屏，实测 ColorOS 16
         // 该方法已移除（hidden API 限制），检测失效已移除。根治=跨进程 exclude（见 spec/42）。
@@ -2324,6 +2327,9 @@ object LauncherHook {
             Prefs.DEFAULT_BG_CAPTURE_SCALE
         }
     }
+
+    /** 抓屏模式：0=即时 / 1=变化 / 2=静态。桌面侧只按「静态=不抓屏」门控，其余维持现状。 */
+    private fun captureMode(): Int = Prefs.captureMode(api)
 
     /** [doc/spec/42] 抓屏 UID 过滤开关（Prefs KEY_BG_CAPTURE_UID_FILTER，默认 true）：
      *  true=CaptureArgs.setUid(壁纸层 UID) 只抓壁纸层；false=不过滤（整屏 exclude [launcherSfc]）。 */

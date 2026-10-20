@@ -978,27 +978,59 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    /** 背景与抓屏：背景档位 / 抓屏节流 / 空置抓屏 / 持续抓屏 / 降采样 / 重试 / UID 过滤。 */
+    /** 背景与抓屏：模式 / 即时抓屏速率 / 最大抓屏间隔 / 清晰度 / 失败重试 / 区域级抓屏。 */
     private fun bindBackground(view: View) {
-        // 抓屏节流：0~1000ms，步进 16（progress 0~62 → 0~992ms，默认 0=无节流立即抓）
+        // 模式：0=即时抓屏 1=变化抓屏 2=静态（默认 1；仅变化抓屏显示最大抓屏间隔）
+        val modeSpinner = view.findViewById<Spinner>(R.id.spinnerCaptureMode)
+        modeSpinner.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_item, listOf(
+                getString(R.string.settings_capture_mode_immediate),
+                getString(R.string.settings_capture_mode_on_change),
+                getString(R.string.settings_capture_mode_static),
+            )
+        ).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        val maxIntervalGroup = listOf<View>(
+            view.findViewById(R.id.periodicCaptureIntervalLabel),
+            view.findViewById(R.id.seekPeriodicCaptureInterval),
+            view.findViewById(R.id.periodicCaptureIntervalValue),
+            view.findViewById(R.id.periodicCaptureIntervalDesc),
+        )
+        fun applyModeUi(mode: Int) {
+            val visibility = if (mode == Prefs.BG_CAPTURE_MODE_ON_CHANGE) View.VISIBLE else View.GONE
+            maxIntervalGroup.forEach { it.visibility = visibility }
+        }
+        val currentMode = (frameworkPrefs()?.let { Prefs.readIntCompat(it, Prefs.KEY_BG_CAPTURE_MODE, Prefs.DEFAULT_BG_CAPTURE_MODE) }
+            ?: Prefs.readIntCompat(xmlPrefs, Prefs.KEY_BG_CAPTURE_MODE, Prefs.DEFAULT_BG_CAPTURE_MODE))
+            .coerceIn(Prefs.BG_CAPTURE_MODE_IMMEDIATE, Prefs.BG_CAPTURE_MODE_STATIC)
+        applyModeUi(currentMode)
+        modeSpinner.setSelection(currentMode)
+        modeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                selView: View?,
+                position: Int,
+                id: Long,
+            ) {
+                val mode = position.coerceIn(Prefs.BG_CAPTURE_MODE_IMMEDIATE, Prefs.BG_CAPTURE_MODE_STATIC)
+                writePrefInt(Prefs.KEY_BG_CAPTURE_MODE, mode)
+                applyModeUi(mode)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+            }
+        }
+
+        // 即时抓屏速率：30~120Hz（默认 60），瞬态场景在任何模式下都按它抓
         bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekCaptureMinInterval), valueText = view.findViewById(R.id.captureMinIntervalValue),
-            key = Prefs.KEY_BG_CAPTURE_MIN_INTERVAL_MS, default = Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS,
-            max = 62, step = 16, offset = 0,
-            format = { v -> getString(R.string.settings_capture_min_interval_value, v) },
+            seek = view.findViewById(R.id.seekPanelCaptureHz), valueText = view.findViewById(R.id.panelCaptureHzValue),
+            key = Prefs.KEY_PANEL_CAPTURE_HZ, default = Prefs.DEFAULT_PANEL_CAPTURE_HZ,
+            max = Prefs.PANEL_CAPTURE_HZ_MAX - Prefs.PANEL_CAPTURE_HZ_MIN, step = 1, offset = Prefs.PANEL_CAPTURE_HZ_MIN,
+            format = { v -> getString(R.string.settings_panel_capture_hz_value, v) },
         )
 
-        // 持续抓屏开关（默认开；SystemUI 侧读取，收起时周期兜底抓屏）
-        val switchPeriodic = view.findViewById<Switch>(R.id.switchPeriodicCapture)
-        val periodicListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, checked)
-        }
-        switchPeriodic.setOnCheckedChangeListener(periodicListener)
-        refreshBooleanSwitch(
-            switchPeriodic, periodicListener,
-            Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-        )
-        // 持续抓屏间隔：100~5000ms（默认 500；clamp 下限 100 防过度抓屏，上限 5000）
+        // 最大抓屏间隔（仅变化抓屏显示）：100~5000ms（默认 500）
         bindIntSeekBarStep(
             seek = view.findViewById(R.id.seekPeriodicCaptureInterval), valueText = view.findViewById(R.id.periodicCaptureIntervalValue),
             key = Prefs.KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS, default = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS,
@@ -1006,54 +1038,29 @@ class SettingsActivity : AppCompatActivity() {
             format = { ms -> getString(R.string.settings_periodic_capture_interval_value, ms) },
         )
 
-        // [2026-08-14 语义收窄] 通知横幅抓屏速率滑杆（KEY_PANEL_CAPTURE_HZ，30~240Hz，默认 120；
-        // 横幅/内容运动时满速、静止时减半 60Hz；下拉面板已改系统 onBlurReady 驱动不占此速率；
-        // 改动 ≤1s 生效，SystemUI 侧 IPC 节流缓存读）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekPanelCaptureHz), valueText = view.findViewById(R.id.panelCaptureHzValue),
-            key = Prefs.KEY_PANEL_CAPTURE_HZ, default = Prefs.DEFAULT_PANEL_CAPTURE_HZ,
-            max = 210, step = 1, offset = 30,
-            format = { v -> getString(R.string.settings_panel_capture_hz_value, v) },
-        )
-
         // 降采样档位 spinner（0.25/0.5/0.75/1.0，默认 0.5）
         bindScaleSpinner(view)
 
-        // 重试间隔：100~1000ms（默认 320）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekCaptureRetryMs), valueText = view.findViewById(R.id.captureRetryMsValue),
-            key = Prefs.KEY_BG_CAPTURE_RETRY_MS, default = Prefs.DEFAULT_BG_CAPTURE_RETRY_MS,
-            max = 900, step = 1, offset = 100,
-            format = { v -> getString(R.string.settings_capture_retry_ms_value, v) },
-        )
-        // 重试次数：1~5（默认 3）
-        bindIntSeekBarStep(
-            seek = view.findViewById(R.id.seekCaptureRetryLimit), valueText = view.findViewById(R.id.captureRetryLimitValue),
-            key = Prefs.KEY_BG_CAPTURE_RETRY_LIMIT, default = Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT,
-            max = 4, step = 1, offset = 1,
-            format = { v -> getString(R.string.settings_capture_retry_limit_value, v) },
+        // 失败重试总开关（默认开）
+        val switchRetry = view.findViewById<Switch>(R.id.switchCaptureRetryEnabled)
+        val retryListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_BG_CAPTURE_RETRY_ENABLED, checked)
+        }
+        switchRetry.setOnCheckedChangeListener(retryListener)
+        refreshBooleanSwitch(
+            switchRetry, retryListener,
+            Prefs.KEY_BG_CAPTURE_RETRY_ENABLED, Prefs.DEFAULT_BG_CAPTURE_RETRY_ENABLED
         )
 
-        // [spec/42] Launcher 文件夹背景只抓壁纸层（默认开；改动即时生效）
-        val switchUid = view.findViewById<Switch>(R.id.switchUidFilter)
-        val uidListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_BG_CAPTURE_UID_FILTER, checked)
+        // 区域级抓屏实验开关（默认关）
+        val switchRegion = view.findViewById<Switch>(R.id.switchRegionCaptureExperimental)
+        val regionListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_BG_REGION_CAPTURE_EXPERIMENTAL, checked)
         }
-        switchUid.setOnCheckedChangeListener(uidListener)
+        switchRegion.setOnCheckedChangeListener(regionListener)
         refreshBooleanSwitch(
-            switchUid, uidListener,
-            Prefs.KEY_BG_CAPTURE_UID_FILTER, Prefs.DEFAULT_BG_CAPTURE_UID_FILTER
-        )
-
-        // [spec/52] 壁纸文件解码背景源开关（LauncherHook 读）
-        val switchWallpaper = view.findViewById<Switch>(R.id.switchWallpaperFileSource)
-        val wallpaperListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_BG_WALLPAPER_FILE_SOURCE, checked)
-        }
-        switchWallpaper.setOnCheckedChangeListener(wallpaperListener)
-        refreshBooleanSwitch(
-            switchWallpaper, wallpaperListener,
-            Prefs.KEY_BG_WALLPAPER_FILE_SOURCE, Prefs.DEFAULT_BG_WALLPAPER_FILE_SOURCE
+            switchRegion, regionListener,
+            Prefs.KEY_BG_REGION_CAPTURE_EXPERIMENTAL, Prefs.DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL
         )
         // 壁纸解码最大边长（512~8192，步进 8）
         bindIntSeekBarStep(

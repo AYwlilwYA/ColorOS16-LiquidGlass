@@ -174,16 +174,28 @@ object Prefs {
      *  内容变了立即抓）+ pending 去重防重，不设固定时间窗） */
     const val DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS = 0
 
-    /** 通知横幅抓屏速率 Hz（**[2026-08-14 语义收窄]** 现仅服务于通知横幅 heads-up 的主动持续抓屏；
-     *  下拉面板展开的主动持续抓屏已移除、改由 onBlurReady 系统驱动，不再读本键。「内容变化事件」触发的
-     *  抓屏不受本键限制，仍立即抓）。默认 120Hz（间隔 ~8ms），背景永远最新。**[2026-08-14 运动节流] 运动
-     *  节流语义：横幅/内容运动（[isMotionActive] 运动标志）时**满速**，静止时**减半**（120×0.5=60Hz，
-     *  间隔 ~16ms）**——不再由 [KEY_BG_CAPTURE_MIN_INTERVAL_MS] 驱动（该键仅作用普通内容变化节流）。
-     *  间隔 = 1000/有效Hz ms，clamp 4~1000ms。改动 ≤1s 生效（hook 端 IPC 时间节流缓存）。 */
+    /** 抓屏模式：0=即时（固定速率连抓）1=变化（内容变化触发 + 周期兜底）2=静态（零抓屏，冻结现有快照）。
+     *  改动 ≤1s 生效（captureMode TTL 缓存）。 */
+    const val KEY_BG_CAPTURE_MODE = "bg_capture_mode"
+    /** 抓屏模式取值：即时 */
+    const val BG_CAPTURE_MODE_IMMEDIATE = 0
+    /** 抓屏模式取值：变化（默认） */
+    const val BG_CAPTURE_MODE_ON_CHANGE = 1
+    /** 抓屏模式取值：静态（零抓屏） */
+    const val BG_CAPTURE_MODE_STATIC = 2
+    /** 抓屏模式默认值（变化） */
+    const val DEFAULT_BG_CAPTURE_MODE = BG_CAPTURE_MODE_ON_CHANGE
+
+    /** 即时抓屏速率 Hz：瞬态场景（横幅/流体云/simple-banner）主动持续抓屏与「即时」模式周期抓屏共用。
+     *  clamp [PANEL_CAPTURE_HZ_MIN]~[PANEL_CAPTURE_HZ_MAX]，存量越界值读取时夹紧。运动满速/静止减半
+     *  由 [isMotionActive] 判定驱动；间隔 = 1000/有效Hz ms。改动 ≤1s 生效（hook 端 IPC 时间节流缓存）。 */
     const val KEY_PANEL_CAPTURE_HZ = "panel_capture_hz"
-    /** 主动持续抓屏速率默认 Hz（120Hz：间隔 ~8ms；captureDisplay 同步 Binder 自身 20-50ms 耗时叠加，
-     *  实际 ~14-20Hz 有效帧率，背景基本跟手） */
-    const val DEFAULT_PANEL_CAPTURE_HZ = 120
+    /** 即时抓屏速率下限 Hz */
+    const val PANEL_CAPTURE_HZ_MIN = 30
+    /** 即时抓屏速率上限 Hz */
+    const val PANEL_CAPTURE_HZ_MAX = 120
+    /** 即时抓屏速率默认 Hz */
+    const val DEFAULT_PANEL_CAPTURE_HZ = 60
 
     /** 抓屏降采样比例（0.25~1.0），档位 0.25/0.5/0.75/1.0。改动即时生效（captureElementBackground 每次读 Prefs）。 */
     const val KEY_BG_CAPTURE_SCALE = "bg_capture_scale"
@@ -232,6 +244,12 @@ object Prefs {
     /** 抓屏失败重试次数默认上限（3，现硬编码） */
     const val DEFAULT_BG_CAPTURE_RETRY_LIMIT = 3
 
+    /** 抓屏失败重试总开关：true=失败后按固定间隔（[DEFAULT_BG_CAPTURE_RETRY_MS]）重试
+     *  [DEFAULT_BG_CAPTURE_RETRY_LIMIT] 次；false=失败即放弃，等下次事件。改动 ≤1s 生效。 */
+    const val KEY_BG_CAPTURE_RETRY_ENABLED = "bg_capture_retry_enabled"
+    /** 抓屏失败重试总开关默认值（false = 失败即等下次事件，不重试） */
+    const val DEFAULT_BG_CAPTURE_RETRY_ENABLED = false
+
     // C. 追踪器（spec/16 状态机 + 降频）
     // [2026-09-17] 三个追踪器间隔键（tracker_min/idle_interval_frames、tracker_idle_after_frames）
     // 已随追踪器整体删除。
@@ -255,6 +273,12 @@ object Prefs {
     const val BG_PERIODIC_CAPTURE_INTERVAL_MIN_MS = 100
     /** 持续抓屏间隔上限毫秒（5000ms） */
     const val BG_PERIODIC_CAPTURE_INTERVAL_MAX_MS = 5000
+
+    /** 区域级抓屏（实验性）：true=瞬态场景（横幅/流体云/simple-banner）强制抓时只抓活跃瞬态区域并集，
+     *  存入独立缓冲供瞬态元素采样；false（默认）=恒整屏抓屏。shade 展开时不接管。改动 ≤1s 生效。 */
+    const val KEY_BG_REGION_CAPTURE_EXPERIMENTAL = "bg_region_capture_experimental"
+    /** 区域级抓屏默认值（false = 默认关闭） */
+    const val DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL = false
 
     // ---------- 模块日志（2026-08-13 用户要求「提供关闭日志的选项」） ----------
     /** 模块日志开关：true=打日志；false=热路径/渲染诊断日志静默（保留挂载一次性日志与 Log.e 错误日志）。
@@ -922,6 +946,110 @@ object Prefs {
         }
         val v = raw.coerceIn(0, 80)
         notifFlyScaleCache = v
+        return v
+    }
+
+    // ---------- 抓屏模式 / 重试开关 / 区域抓屏（hook 端读取，TTL 缓存） ----------
+
+    /** 抓屏参数热路径重读 TTL（ms）：同 [UNIFIED_CORNER_TTL_MS] 模式，TTL 内零 IPC。 */
+    private const val CAPTURE_PARAM_TTL_MS = 500L
+
+    @Volatile
+    private var captureModeCache: Int = DEFAULT_BG_CAPTURE_MODE
+
+    @Volatile
+    private var captureModeCacheAtMs = 0L
+
+    /**
+     * 抓屏模式：[BG_CAPTURE_MODE_IMMEDIATE] 即时 / [BG_CAPTURE_MODE_ON_CHANGE] 变化 / [BG_CAPTURE_MODE_STATIC] 静态。
+     * [TTL][CAPTURE_PARAM_TTL_MS] 节流缓存（hook 与 Launcher 进程各一份）。读失败 / 越界 → 回默认 1（变化）。
+     */
+    fun captureMode(api: XposedInterface?): Int {
+        if (api == null) return DEFAULT_BG_CAPTURE_MODE
+        val now = SystemClock.uptimeMillis()
+        if (now - captureModeCacheAtMs < CAPTURE_PARAM_TTL_MS) return captureModeCache
+        captureModeCacheAtMs = now
+        val raw = try {
+            readIntCompat(read(api), KEY_BG_CAPTURE_MODE, DEFAULT_BG_CAPTURE_MODE)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read bg_capture_mode failed, default $DEFAULT_BG_CAPTURE_MODE", t)
+            DEFAULT_BG_CAPTURE_MODE
+        }
+        val v = when (raw) {
+            BG_CAPTURE_MODE_IMMEDIATE, BG_CAPTURE_MODE_STATIC -> raw
+            else -> BG_CAPTURE_MODE_ON_CHANGE
+        }
+        captureModeCache = v
+        return v
+    }
+
+    @Volatile
+    private var captureRetryEnabledCache: Boolean = DEFAULT_BG_CAPTURE_RETRY_ENABLED
+
+    @Volatile
+    private var captureRetryEnabledCacheAtMs = 0L
+
+    /** 抓屏失败重试总开关（固定 320ms × 3 次，仅受本开关门控）。[TTL][CAPTURE_PARAM_TTL_MS] 缓存。 */
+    fun captureRetryEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_BG_CAPTURE_RETRY_ENABLED
+        val now = SystemClock.uptimeMillis()
+        if (now - captureRetryEnabledCacheAtMs < CAPTURE_PARAM_TTL_MS) return captureRetryEnabledCache
+        captureRetryEnabledCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_BG_CAPTURE_RETRY_ENABLED, DEFAULT_BG_CAPTURE_RETRY_ENABLED)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read bg_capture_retry_enabled failed, default $DEFAULT_BG_CAPTURE_RETRY_ENABLED", t)
+            DEFAULT_BG_CAPTURE_RETRY_ENABLED
+        }
+        captureRetryEnabledCache = v
+        return v
+    }
+
+    @Volatile
+    private var regionCaptureExperimentalCache: Boolean = DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL
+
+    @Volatile
+    private var regionCaptureExperimentalCacheAtMs = 0L
+
+    /** 区域级抓屏实验开关。[TTL][CAPTURE_PARAM_TTL_MS] 缓存。 */
+    fun regionCaptureExperimental(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL
+        val now = SystemClock.uptimeMillis()
+        if (now - regionCaptureExperimentalCacheAtMs < CAPTURE_PARAM_TTL_MS) return regionCaptureExperimentalCache
+        regionCaptureExperimentalCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_BG_REGION_CAPTURE_EXPERIMENTAL, DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read bg_region_capture_experimental failed, default $DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL", t)
+            DEFAULT_BG_REGION_CAPTURE_EXPERIMENTAL
+        }
+        regionCaptureExperimentalCache = v
+        return v
+    }
+
+    @Volatile
+    private var panelCaptureHzCache: Int = DEFAULT_PANEL_CAPTURE_HZ
+
+    @Volatile
+    private var panelCaptureHzCacheAtMs = 0L
+
+    /**
+     * 即时抓屏速率 Hz（clamp [PANEL_CAPTURE_HZ_MIN]~[PANEL_CAPTURE_HZ_MAX]，存量越界值读取时夹紧）。
+     * [TTL][CAPTURE_PARAM_TTL_MS] 缓存。
+     */
+    fun panelCaptureHz(api: XposedInterface?): Int {
+        if (api == null) return DEFAULT_PANEL_CAPTURE_HZ
+        val now = SystemClock.uptimeMillis()
+        if (now - panelCaptureHzCacheAtMs < CAPTURE_PARAM_TTL_MS) return panelCaptureHzCache
+        panelCaptureHzCacheAtMs = now
+        val raw = try {
+            readIntCompat(read(api), KEY_PANEL_CAPTURE_HZ, DEFAULT_PANEL_CAPTURE_HZ)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read panel_capture_hz failed, default $DEFAULT_PANEL_CAPTURE_HZ", t)
+            DEFAULT_PANEL_CAPTURE_HZ
+        }
+        val v = raw.coerceIn(PANEL_CAPTURE_HZ_MIN, PANEL_CAPTURE_HZ_MAX)
+        panelCaptureHzCache = v
         return v
     }
 

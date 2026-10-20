@@ -17,57 +17,66 @@
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
         <TextView
-            android:id="@+id/captureMinIntervalLabel"
+            android:id="@+id/captureModeLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="@string/settings_capture_min_interval"
+            android:text="@string/settings_capture_mode"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <Spinner
+            android:id="@+id/spinnerCaptureMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/captureModeDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_capture_mode_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 即时抓屏速率（瞬态场景与即时模式共用，任何模式下都显示） -->
+        <TextView
+            android:id="@+id/panelCaptureHzLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_panel_capture_hz"
             android:textAppearance="?attr/textAppearanceTitleSmall" />
 
         <SeekBar
-            android:id="@+id/seekCaptureMinInterval"
+            android:id="@+id/seekPanelCaptureHz"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:max="62"
-            android:progress="0" />
+            android:max="90"
+            android:progress="30" />
 
         <TextView
-            android:id="@+id/captureMinIntervalValue"
+            android:id="@+id/panelCaptureHzValue"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
         <TextView
-            android:id="@+id/captureMinIntervalDesc"
+            android:id="@+id/panelCaptureHzDesc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="@string/settings_capture_min_interval_desc"
+            android:text="@string/settings_panel_capture_hz_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
-        <Switch
-            android:id="@+id/switchPeriodicCapture"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_periodic_capture" />
-
-        <TextView
-            android:id="@+id/periodicCaptureDesc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_periodic_capture_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
+        <!-- 最大抓屏间隔（仅模式=变化抓屏时显示） -->
         <TextView
             android:id="@+id/periodicCaptureIntervalLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="16dp"
             android:text="@string/settings_periodic_capture_interval"
             android:textAppearance="?attr/textAppearanceTitleSmall" />
 
@@ -91,38 +100,6 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="@string/settings_periodic_capture_interval_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
-        <!-- [2026-08-14] 通知横幅抓屏速率滑杆（KEY_PANEL_CAPTURE_HZ，30~240Hz，默认 120；横幅运动满速/静止减半） -->
-        <TextView
-            android:id="@+id/panelCaptureHzLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_panel_capture_hz"
-            android:textAppearance="?attr/textAppearanceTitleSmall" />
-
-        <SeekBar
-            android:id="@+id/seekPanelCaptureHz"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:max="210"
-            android:progress="90" />
-
-        <TextView
-            android:id="@+id/panelCaptureHzValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <TextView
-            android:id="@+id/panelCaptureHzDesc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_panel_capture_hz_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
@@ -156,99 +133,35 @@
             android:text="@string/settings_section_capture_retry"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
-        <TextView
-            android:id="@+id/captureRetryMsLabel"
-            android:layout_width="wrap_content"
+        <Switch
+            android:id="@+id/switchCaptureRetryEnabled"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="@string/settings_capture_retry_ms"
-            android:textAppearance="?attr/textAppearanceTitleSmall" />
-
-        <SeekBar
-            android:id="@+id/seekCaptureRetryMs"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:max="900"
-            android:progress="220" />
+            android:text="@string/settings_capture_retry_enabled" />
 
         <TextView
-            android:id="@+id/captureRetryMsValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <TextView
-            android:id="@+id/captureRetryMsDesc"
+            android:id="@+id/captureRetryEnabledDesc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="@string/settings_capture_retry_ms_desc"
+            android:text="@string/settings_capture_retry_enabled_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
-        <TextView
-            android:id="@+id/captureRetryLimitLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_capture_retry_limit"
-            android:textAppearance="?attr/textAppearanceTitleSmall" />
-
-        <SeekBar
-            android:id="@+id/seekCaptureRetryLimit"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:max="4"
-            android:progress="2" />
-
-        <TextView
-            android:id="@+id/captureRetryLimitValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <TextView
-            android:id="@+id/captureRetryLimitDesc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_capture_retry_limit_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
-        <!-- [spec/42] Launcher 文件夹背景只抓壁纸层（新增接线，2026-08-13） -->
         <Switch
-            android:id="@+id/switchUidFilter"
+            android:id="@+id/switchRegionCaptureExperimental"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/settings_bg_uid_filter" />
+            android:text="@string/settings_bg_region_capture_experimental" />
 
         <TextView
-            android:id="@+id/uidFilterDesc"
+            android:id="@+id/regionCaptureExperimentalDesc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="@string/settings_bg_uid_filter_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
-        <!-- [spec/52] Launcher 文件夹背景源 = 壁纸文件解码（2026-08-23 补 UI） -->
-        <Switch
-            android:id="@+id/switchWallpaperFileSource"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_bg_wallpaper_file_source" />
-
-        <TextView
-            android:id="@+id/wallpaperFileSourceDesc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_bg_wallpaper_file_source_desc"
+            android:text="@string/settings_bg_region_capture_experimental_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
@@ -256,7 +169,7 @@
             android:id="@+id/wallpaperMaxDimLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="16dp"
             android:text="@string/settings_bg_wallpaper_max_dim"
             android:textAppearance="?attr/textAppearanceTitleSmall" />
 

@@ -226,13 +226,18 @@ object BlurDrawHook {
     /** [2026-08-14 CPU 修复] 持续抓屏「sfc 长期无效 → 停止」阈值：shade 不在渲染（sfc 拿不到 = 面板已收起）
      *  持续超过此值 → 停止持续抓屏（兜底 panelExpansionActive 卡 true 时 120Hz 空转耗电）。 */
     private const val CONTINUOUS_CAPTURE_STOP_SFC_STALE_MS = 500L
-    /** [doc/spec/49 2026-08-13] 周期抓屏空闲判定窗口毫秒：距上次内容变化信号（markContentChanged）超过
-     *  此值视为空闲 → periodicCaptureRunnable 跳过抓屏（保持旧帧不更新）。内容变化驱动为主，周期仅兜底。 */
-    private const val PERIODIC_CAPTURE_IDLE_SKIP_MS = 1000L
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 drawable identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
+    /** 区域级抓屏任务 id（瞬态元素并集 bbox 快照；与 SNAPSHOT_ID 共用同一 worker 队列串行消费） */
+    private const val REGION_SNAPSHOT_ID = Int.MIN_VALUE + 1
     /** 歧义 ABORTED 冷却毫秒（期间该 drawable 直接回退系统模糊，防折叠组展开等场景 GLASS/BLUR 高频切换闪磨砂） */
     private const val AMBIGUOUS_COOLDOWN_MS = 500L
+    /** 通知卡片 region 的 hostViewName（recordNotificationCardRegion 写入） */
+    private const val NOTIF_CARD_HOST_NAME = "NotificationBackgroundView"
+    /** 流体云卡 region 的 source 标签前缀（registerSeedlingCardRegion source="seedling-cardview"） */
+    private const val SEEDLING_CARDVIEW_TAG = "seedling-cardview:"
+    /** 简易横幅 region 的 source 标签前缀（registerSeedlingCardRegion source="simple-banner"） */
+    private const val SIMPLE_BANNER_TAG = "simple-banner:"
 
     // ---- [spec/51 2026-08-13] 通知（heads-up）首帧主线程抓屏 + 连抓 5~6 帧 + 持续期间不间断抓屏 ----
     /** heads-up 连抓总帧数（用户要求 5~6 帧）：[2026-08-13 回退主线程同步后] 全部帧由专用连抓 worker
@@ -778,6 +783,18 @@ object BlurDrawHook {
     @Volatile
     private var screenSnapshot: ElementBackground? = null
 
+    /** 区域级抓屏独立缓冲（瞬态元素并集 bbox 快照，@Volatile：worker 写、渲染线程读；null=未启用/已失效） */
+    @Volatile
+    private var regionSnapshot: ElementBackground? = null
+
+    /** 区域快照内容指纹（0=尚无；与整屏快照指纹各自独立比对） */
+    @Volatile
+    private var lastRegionSnapshotFingerprint = 0
+
+    /** 区域抓屏开启期间，整屏快照上一次按模式节奏刷新的时刻（0=未刷过） */
+    @Volatile
+    private var lastRegionFullCaptureAtMs = 0L
+
     /** 整屏快照抓屏失败重试计数（3 次/320ms） */
     private val elementCaptureRetries = ConcurrentHashMap<Int, Int>()
 
@@ -790,14 +807,8 @@ object BlurDrawHook {
     /** 整屏快照抓屏 3 次用尽后的冷却截止时间（下个内容变化/渲染兜底重试） */
     private val elementCaptureQuitAt = ConcurrentHashMap<Int, Long>()
 
-    /** [spec/17 配置接线] 上次内容变化抓屏入队时间（节流；KEY_BG_CAPTURE_MIN_INTERVAL_MS>0 时生效，
-     *  记录实际入队时刻；0=未抓过/无节流不记录） */
-    @Volatile
-    private var lastCaptureTime = 0L
-
     /** [doc/spec/49 2026-08-13] 上次内容变化信号时刻（[markContentChanged] 更新；触发点：新映射写入 /
-     *  onBlurReady 新帧 / setExpansionHeight / heads-up 卡同卡更新）。周期抓屏据此判空闲：距上次内容变化
-     *  超过 [PERIODIC_CAPTURE_IDLE_SKIP_MS] → 保持旧帧不抓（内容变化驱动为主）。0=尚未收到内容变化信号。
+     *  onBlurReady 新帧 / setExpansionHeight / heads-up 卡同卡更新）。0=尚未收到内容变化信号。
      *  @Volatile：主线程（内容变化触发点）写，主线程（periodicCaptureRunnable）读。 */
     @Volatile
     private var lastContentChangeTimeMs = 0L
@@ -1515,21 +1526,11 @@ object BlurDrawHook {
     private var cachedBgCaptureScale = Prefs.DEFAULT_BG_CAPTURE_SCALE
     @Volatile
     private var cachedBgCaptureScaleTimeMs = 0L
-    @Volatile
-    private var cachedBgCaptureMinIntervalMs = Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-    @Volatile
-    private var cachedBgCaptureMinIntervalMsTimeMs = 0L
     /** [2026-08-15 主动式持续抓屏] 持续抓屏速率 Hz 缓存（[panelCaptureHz]；热路径 IPC 节流缓存同上） */
     @Volatile
     private var cachedPanelCaptureHz = Prefs.DEFAULT_PANEL_CAPTURE_HZ
     @Volatile
     private var cachedPanelCaptureHzTimeMs = 0L
-    /** [spec/90 #1] 周期抓屏开关/间隔 Prefs TTL 缓存（周期 tick 每次裸读 = 瞬态场景 120Hz 下
-     *  125~250 IPC/s；加 1s TTL 后 ≤2 IPC/s。同 [CAPTURE_PREFS_CACHE_MS] 模式） */
-    @Volatile
-    private var cachedPeriodicCaptureEnabled = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-    @Volatile
-    private var cachedPeriodicCaptureEnabledTimeMs = 0L
     @Volatile
     private var cachedPeriodicCaptureIntervalMs = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
     @Volatile
@@ -7010,6 +7011,7 @@ object BlurDrawHook {
      * → 退出（零后台耗电）；锁屏期间不启动/退出。与 heads-up / simple-banner 持续源独立。
      */
     private fun startCardBackgroundContinuousCapture() {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (cardBackgroundContinuousRunning) return
         if (cardBackgroundActiveHost?.get() == null) return
         if (!isCardBackgroundHostActive()) return
@@ -7034,7 +7036,7 @@ object BlurDrawHook {
                             break
                         }
                         markContentChanged()
-                        scheduleElementCaptures(force = true)
+                        scheduleElementCaptures()
                         logThrottled("seedling-cardview-continuous", Log.INFO) {
                             "seedling-cardview: continuous tick queued (single-channel)"
                         }
@@ -7718,6 +7720,7 @@ object BlurDrawHook {
      *  锁屏期间不启动/退出（被动事件触发不受影响）。与 heads-up 持续源独立。
      */
     private fun startSimpleBannerContinuousCapture(force: Boolean = false) {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (simpleBannerContinuousRunning) {
             Lg.i(TAG, "simple-banner: start return, already running")
             return
@@ -7788,7 +7791,7 @@ object BlurDrawHook {
                                 break
                             }
                             markContentChanged()
-                            scheduleElementCaptures(force = true)
+                            scheduleElementCaptures()
                             logThrottled("simple-banner-continuous", Log.INFO) {
                                 "simple-banner: continuous tick queued (single-channel)"
                             }
@@ -9010,86 +9013,59 @@ object BlurDrawHook {
     // ---- [doc/spec/33 持续抓屏 2026-08-13] 活跃宿主期间周期性整屏快照（动态背景实时刷新） ----
 
     /**
-     * 周期抓屏 Runnable（主线程 Handler postDelayed 自调度循环）。
+     * 周期抓屏 Runnable（主线程 Handler postDelayed 自调度循环）。按抓屏模式分流：
+     * - 静态：[kickPeriodicCapture] 不起本 Runnable（零抓屏，快照冻结为现有值）。
+     * - 即时：取消 idle-skip，静止也按 [panelCaptureHz] 固定速率恒抓（内容变化触发照常入队，
+     *   pending 去重天然合并；指纹同帧跳过挡无效帧）。
+     * - 变化（默认）：内容变化信号立即入队；本周期仅作无信号兜底，到点恒抓一次（静止也抓，
+     *   指纹同帧跳过挡无效帧）。瞬态三场景（heads-up/流体云卡/simple-banner）强制抓恒按即时速率跑。
      *
-     * 背景：动态背景（壁纸滚动、动态壁纸、通知实时内容）不触发内容变化检测
-     * （registerScreenRegionCore / recordNotificationCardRegion 仅 previous==null 新映射才
-     * triggerBackgroundCapture）→ 玻璃背景冻结滞后。本调度每
-     * KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS（默认 500）触发一次 triggerBackgroundCapture 重抓整屏快照。
-     *
-     * [doc/spec/49 2026-08-13] **空闲不更新旧帧**：距上次内容变化信号（markContentChanged）超过
-     * PERIODIC_CAPTURE_IDLE_SKIP_MS（1000ms）→ 视为空闲，**跳过抓屏保持旧帧**（内容变化驱动为主，
-     * 周期仅作兜底）。权衡：动态壁纸滚动若系统无任何内容变化信号 → 背景滞后（spec/36 已记录，用户
-     * 明确要求「空闲不更新」，按此实现）。
-     *
-     * [2026-08-13 回退 spec/49 场景门控] **收起零抓屏由本 idle-skip 判定保证**：面板收起且无内容变化
-     * 信号 → 距上次内容变化 >IDLE_SKIP → 保持旧帧不抓（零 captureDisplay），不再用 isShadeExpanded/
-     * hasHeadsUpActiveHost 门控（误拦锁屏，见字段处取舍说明）。锁屏内容变化（onBlurReady/映射写入）仍
-     * 立即抓 + 周期兜底，锁屏不被拦。
-     *
-     * 与现有机制共存：内容变化立即抓（previous==null/事件源/onBlurReady/setExpansionHeight，[2026-08-13
-     * 回退 200ms 节流] 默认无节流）保留，周期性是补充（内容变化后 IDLE_SKIP 窗口内兜底刷新）。
-     *
-     * 功耗：默认 500ms 一次整屏快照（空闲跳过），captureDisplay 在 worker 线程（不阻塞主线程/渲染线程），
-     * pending 去重防重复入队；KEY_BG_PERIODIC_CAPTURE_ENABLE=false 恢复纯内容变化触发；**不每帧抓**。
-     *
-     * 停止条件：宿主全灭（registeredHostViews 无存活引用）→ 不续跑，周期抓屏自动停止
-     * （静止零抓屏保持）；功能关闭 → 同上。独立于运动追踪器（2026-09-17 已整体移除）。
+     * 内容变化立即抓（previous==null/事件源/onBlurReady/setExpansionHeight）保留，周期性是补充。
+     * captureDisplay 在 worker 线程（不阻塞主线程/渲染线程），pending 去重防重复入队。
+     * 停止条件：宿主全灭（registeredHostViews 无存活引用）→ 不续跑；模式=静态 → 同上。
      */
     private val periodicCaptureRunnable = Runnable {
         periodicCapturePosted = false
-        // [2026-09-17 用户要求·三种瞬态场景强制抓] 本 tick 是否处于「强制抓」场景（决定续跑间隔）
         var forceCaptureScene = false
         try {
             if (isPeriodicCaptureEnabled()) {
-                // [spec/62 锁屏耗电优化 2026-08-26] 锁屏跳过：锁屏且无 heads-up 通知、面板未展开 → 无玻璃元素
-                // 需要刷新，整屏抓屏无意义（锁屏时钟玻璃化未启用；未来启用时改为「锁屏但时钟玻璃开启才放行」）。
+                // 锁屏跳过：锁屏且无 heads-up 通知、面板未展开 → 无玻璃元素需要刷新，整屏抓屏无意义。
                 // 锁屏 heads-up 通知横幅仍放行（通知玻璃需要背景源）。
                 if (isKeyguardLockedNow() && !isHeadsUpHostActive() && !panelExpansionActive) {
                     logThrottled("lg-batt-periodic-lock-skip", Log.DEBUG) { "lg-batt: periodic lock-screen skip" }
                 } else {
-                    // [2026-09-17 三种瞬态场景强制抓] heads-up 横幅 / 流体云展开卡 / simple-banner
-                    // 活跃期间，**绕过 idle-skip 无条件抓屏**，并以高频（continuousCaptureIntervalMs =
-                    // panel_capture_hz）续跑本 Runnable。
-                    //
-                    // 为什么必须强制抓：这三种玻璃悬浮在内容之上、底层随时在变，而「内容变化信号」对它们
-                    // 不可靠（横幅不走 onBlurReady —— 反编译实证：heads-up 默认走 BackgroundBlurDrawable
-                    // 且被 excludeRules 拦，posteffect drawable 不注册）→ 静止期零抓屏 → 玻璃背景冻结。
-                    //
-                    // ⚠️ **[2026-09-17 需求变更·检查变化]** 抓屏照旧高频（保证底层一变就立刻跟上），
-                    // 但**下游更新改为「检查变化」**：captureSnapshotImmediate 里做内容指纹比对，
-                    // **内容没变则丢弃本帧、不更新快照、不 postInvalidateHosts** ——
-                    // 省掉 invalidate → 重录 → RenderThread 重绘整条链（火焰图实证 RenderThread 占 45%）。
-                    // 见 [snapshotContentFingerprint]。
-                    //
-                    // 非这三种场景仍走下方原 idle-skip（空闲不抓，spec/49 用户原要求，省电）。
+                    // 瞬态场景：heads-up 横幅 / 流体云展开卡 / simple-banner 活跃期间绕过兜底判定无条件抓屏，
+                    // 并以高频（continuousCaptureIntervalMs = panel_capture_hz）续跑本 Runnable。
+                    // 这三种玻璃悬浮在内容之上、底层随时在变，内容变化信号对它们不可靠（横幅不走
+                    // onBlurReady）→ 静止期零抓屏会冻结背景。抓屏照旧高频，下游由内容指纹比对挡无效帧。
                     forceCaptureScene = isHeadsUpHostActive() ||
                         isCardBackgroundHostActive() ||
                         isSimpleBannerHostActive()
                     if (forceCaptureScene) {
-                        // 面板自身在渲染时让路（面板有它自己的抓屏通道覆盖），其余一律强制抓
+                        // 面板自身在渲染时让路（面板有它自己的抓屏通道覆盖），其余一律强制抓；
+                        // 区域级抓屏开关开 → 只抓瞬态元素并集 bbox（存独立缓冲），否则整屏
                         if (!isShadeRenderingNow()) {
-                            triggerBackgroundCapture(contentChange = false)
-                        }
-                    } else {
-                        val now = SystemClock.uptimeMillis()
-                        val idleMs = now - lastContentChangeTimeMs
-                        // [spec/62 首次兜底] 内容变化信号从未到来（lastContentChangeTimeMs==0）且已运行超 IDLE_SKIP
-                        // → 放行一次抓屏（防「从未收到内容变化信号 → 周期兜底永不抓第一帧」回归）；置时间戳防后续
-                        // 重复放行（此后按正常 idle-skip 判定，内容变化会再次 re-arm）。
-                        if (lastContentChangeTimeMs == 0L && idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
-                            lastContentChangeTimeMs = now
-                            if (!isShadeRenderingNow()) {
+                            if (regionCaptureExperimentalEnabled()) {
+                                triggerRegionCapture()
+                                // 区域抓屏不接管整屏缓冲：整屏仍按模式节奏刷新（即时=每 tick，变化=兜底间隔）
+                                val nowMs = SystemClock.uptimeMillis()
+                                val fullDue = captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE ||
+                                    nowMs - lastRegionFullCaptureAtMs >= periodicCaptureIntervalMs()
+                                if (fullDue) {
+                                    lastRegionFullCaptureAtMs = nowMs
+                                    triggerBackgroundCapture(contentChange = false)
+                                }
+                            } else {
                                 triggerBackgroundCapture(contentChange = false)
                             }
-                        } else if (idleMs > PERIODIC_CAPTURE_IDLE_SKIP_MS) {
-                            // [doc/spec/49 2026-08-13] 空闲不更新旧帧（内容变化驱动为主，周期仅兜底）。
-                            // [spec/62] 距上次内容变化超过 PERIODIC_CAPTURE_IDLE_SKIP_MS → 跳过抓屏保持旧帧
-                            //（零 captureDisplay 成本）。
-                            logThrottled("lg-batt-periodic-idle-skip", Log.DEBUG) { "lg-batt: periodic idle-skip (idleMs=$idleMs)" }
-                        } else if (!isShadeRenderingNow()) {
-                            // [2026-08-14 用户要求·只用于收起] 展开时面板抓屏 120Hz 已实时覆盖 → 周期兜底只在收起
-                            // （shade 不在渲染）时按用户配置间隔抓一次（强兜底，sfc 拿不到强制全屏）。
+                        }
+                    } else {
+                        // 瞬态场景结束 → 清区域快照与指纹（渲染侧自动回退整屏）
+                        regionSnapshot = null
+                        lastRegionSnapshotFingerprint = 0
+                        // 变化/即时模式统一兜底：到点恒抓一次（静止也抓，指纹同帧跳过挡无效帧）。
+                        // 面板展开时让路（面板抓屏通道已实时覆盖）。
+                        if (!isShadeRenderingNow()) {
                             triggerBackgroundCapture(contentChange = false)
                         }
                     }
@@ -9098,16 +9074,13 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "periodic-capture: triggerBackgroundCapture error", t)
         }
-        // 续跑（kickPeriodicCapture 内部检查 enabled + 宿主存活；无场景门控）
-        // 强制抓场景 → 高频续跑（面板同款速率），保证背景实时跟手
+        // 续跑（kickPeriodicCapture 内部检查模式 + 宿主存活）。强制抓场景 → 高频续跑（面板同款速率）
         kickPeriodicCapture(forceCaptureScene)
     }
 
-    /** 启动/续跑周期性抓屏（主线程调用；宿主全灭 / 功能关闭 → 不续跑）。改动即时生效（每周期重读 Prefs）。
-     *  [2026-08-13 回退 spec/49 场景门控] 不再按面板展开/heads-up 停周期（误拦锁屏）；「收起零抓屏」由
-     *  periodicCaptureRunnable 的 idle-skip 空闲判定保证（内容没变不抓，Runnable 空转成本可忽略）。 */
+    /** 启动/续跑周期性抓屏（主线程调用；模式=静态 / 宿主全灭 → 不续跑）。改动 ≤1s 生效（每周期重读 Prefs）。 */
     private fun kickPeriodicCapture(highRate: Boolean = false) {
-        // [spec/85 省电模式] 省电开启 → 不启动周期抓屏（省电下玻璃已关，抓屏纯耗电）
+        // 省电开启 → 不启动周期抓屏（省电下玻璃已关，抓屏纯耗电）
         if (isPowerSaveGlassOff()) return
         if (!isPeriodicCaptureEnabled()) return
         if (periodicCapturePosted) return
@@ -9118,11 +9091,17 @@ object BlurDrawHook {
             }
         }
         if (!hasLive) return
-        // [2026-09-17 用户要求·三种瞬态场景强制抓] highRate=true（heads-up 横幅 / 流体云展开卡 /
-        // simple-banner 活跃）→ 用**面板同款速率**续跑（continuousCaptureIntervalMs，panel_capture_hz，
-        // 默认 120Hz），保证这三种悬浮玻璃的背景实时跟手；否则用普通周期间隔
-        // （periodic_capture_interval_ms，默认 500ms 兜底）。
-        val interval = if (highRate) continuousCaptureIntervalMs() else periodicCaptureIntervalMs().toLong()
+        // 续跑间隔：强制抓场景（瞬态三场景活跃）→ 面板同款速率（continuousCaptureIntervalMs）；
+        // 即时模式 → 固定 1000/panel_capture_hz（取消 idle-skip，静止也按速抓）；
+        // 变化模式 → 兜底间隔（bg_periodic_capture_interval_ms，默认 500ms）。
+        val interval = when {
+            highRate -> continuousCaptureIntervalMs()
+            captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE -> {
+                val hz = panelCaptureHz().coerceAtLeast(1)
+                (1000.0 / hz).toLong().coerceIn(4L, 1000L)
+            }
+            else -> periodicCaptureIntervalMs().toLong()
+        }
         if (interval <= 0L) return
         periodicCapturePosted = true
         try {
@@ -9135,40 +9114,23 @@ object BlurDrawHook {
 
     // [2026-09-17] 追踪器开关读取（isTrackHostMotionEnabled）随追踪器一并删除。
 
-    // ---- [spec/17 配置接线] 抓屏/空置/追踪参数读取（每处独立 try-catch 兜底默认值，改动即时生效；api 在 install 时缓存） ----
+    // ---- [spec/17 配置接线] 抓屏参数读取（api 在 install 时缓存） ----
 
-    /** 内容变化抓屏最小间隔毫秒（KEY_BG_CAPTURE_MIN_INTERVAL_MS，[2026-08-13 回退 spec/49] 默认
-     *  0=无节流立即抓；用户手动配置 >0 仍按最小间隔限频）
-     *  [2026-08-13 captureDisplay 开始延迟优化] 远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，
-     *  配置改动 ≤1s 生效；scheduleElementCaptures 每次入队原读一次 IPC） */
-    private fun bgCaptureMinIntervalMs(): Int {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedBgCaptureMinIntervalMsTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedBgCaptureMinIntervalMs
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-        val v = try {
-            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_MIN_INTERVAL_MS, Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS)
-                .coerceAtLeast(0)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_capture_min_interval_ms failed, default 0", t)
-            Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-        }
-        cachedBgCaptureMinIntervalMs = v
-        cachedBgCaptureMinIntervalMsTimeMs = now
-        return v
-    }
+    /** 抓屏模式：0=即时 / 1=变化 / 2=静态。≤1s TTL 缓存，读失败/越界回默认 1（变化）。 */
+    private fun captureMode(): Int = Prefs.captureMode(api)
 
-    /** [2026-08-15 主动式持续抓屏] 主动持续抓屏速率 Hz（KEY_PANEL_CAPTURE_HZ，默认 120，clamp 1~240）。
-     *  [2026-08-14 captureDisplay 开始延迟优化] 远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，
-     *  配置改动 ≤1s 生效；持续 worker 每 tick 调用，热路径零 IPC）。 */
+    /** 即时抓屏速率 Hz（KEY_PANEL_CAPTURE_HZ，默认 60，clamp 30~120）。
+     *  远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，配置改动 ≤1s 生效；
+     *  持续 worker 每 tick 调用，热路径零 IPC）。存量越界值读取时夹到 30~120。 */
     private fun panelCaptureHz(): Int {
         val now = SystemClock.uptimeMillis()
         if (now - cachedPanelCaptureHzTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedPanelCaptureHz
         val a = api ?: return Prefs.DEFAULT_PANEL_CAPTURE_HZ
         val v = try {
             Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_PANEL_CAPTURE_HZ, Prefs.DEFAULT_PANEL_CAPTURE_HZ)
-                .coerceIn(1, 240)
+                .coerceIn(Prefs.PANEL_CAPTURE_HZ_MIN, Prefs.PANEL_CAPTURE_HZ_MAX)
         } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read panel_capture_hz failed, default 120", t)
+            Lg.w(TAG, "prefs read panel_capture_hz failed, default ${Prefs.DEFAULT_PANEL_CAPTURE_HZ}", t)
             Prefs.DEFAULT_PANEL_CAPTURE_HZ
         }
         cachedPanelCaptureHz = v
@@ -9176,19 +9138,16 @@ object BlurDrawHook {
         return v
     }
 
-    /** [2026-08-15 主动式持续抓屏 + 2026-08-14 运动节流] 主动持续抓屏 tick 间隔毫秒：**运动时满速
-     *  [panelCaptureHz]（默认 120Hz → ~8ms），静止时减半（120×0.5=60Hz → ~16ms）**——用 [isMotionActive]
-     *  运动标志判定（[markMotion] 由面板动画 / 内容变化 / 元素移动（QS 翻页 / setExpansionHeight /
-     *  通知卡滑动）置位，复位延迟 300ms）。
-     *  间隔 = 1000/有效Hz ms，clamp 4~1000ms（防过快打爆 SF / 过慢背景滞后）。**下拉面板与通知横幅共用
-     *  同一套速率**（[startPanelContinuousCapture] / [startHeadsUpContinuousCapture]）。
-     *  [2026-08-14 节流语义替换] `KEY_BG_CAPTURE_MIN_INTERVAL_MS`>0 减半逻辑**已移除**（该键只作用于
-     *  [scheduleElementCaptures] 的普通内容变化节流，不再驱动持续抓屏速率）——改由运动状态判定。 */
+    /** 持续抓屏 tick 间隔毫秒：运动时满速 [panelCaptureHz]（默认 60Hz）、静止时减半（30Hz）
+     *  ——用 [isMotionActive] 运动标志判定（[markMotion] 由面板动画 / 内容变化 / 元素移动（QS 翻页 /
+     *  setExpansionHeight / 通知卡滑动）置位，复位延迟 300ms）。
+     *  间隔 = 1000/有效Hz ms，clamp 4~1000ms（防过快打爆 SF / 过慢背景滞后）。下拉面板与通知横幅共用
+     *  同一套速率（[startPanelContinuousCapture] / [startHeadsUpContinuousCapture]）。 */
     private fun continuousCaptureIntervalMs(): Long {
         val hz = panelCaptureHz()
-        // 运动时满速（panelCaptureHz 默认 120Hz）、静止时减半 60Hz——isMotionActive 为 @Volatile 运动标志
+        // 运动时满速（panelCaptureHz 默认 60Hz）、静止时减半 30Hz——isMotionActive 为 @Volatile 运动标志
         val effectiveHz = if (isMotionActive) hz else hz / 2
-        val clamped = effectiveHz.coerceIn(1, 240)
+        val clamped = effectiveHz.coerceIn(1, Prefs.PANEL_CAPTURE_HZ_MAX)
         return (1000.0 / clamped).toLong().coerceIn(4L, 1000L)
     }
 
@@ -9211,23 +9170,10 @@ object BlurDrawHook {
         return v
     }
 
-    /** [doc/spec/33] 持续抓屏开关（KEY_BG_PERIODIC_CAPTURE_ENABLE，默认 true=活跃宿主期间持续抓）。
-     *  [spec/90 #1] 1s TTL 缓存：周期 tick 每 tick 裸读 Prefs（跨进程 IPC）在瞬态 120Hz 下膨胀到
-     *  125~250 次/秒；缓存后 ≤1 次/秒，配置改动 ≤1s 生效。 */
-    private fun isPeriodicCaptureEnabled(): Boolean {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedPeriodicCaptureEnabledTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedPeriodicCaptureEnabled
-        val a = api ?: return Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-        val v = try {
-            Prefs.read(a).getBoolean(Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_periodic_capture_enable failed, default true", t)
-            Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-        }
-        cachedPeriodicCaptureEnabled = v
-        cachedPeriodicCaptureEnabledTimeMs = now
-        return v
-    }
+    /** 周期抓屏是否启用：旧键 KEY_BG_PERIODIC_CAPTURE_ENABLE 已停用，由抓屏模式决定
+     *  （静态=关，即时/变化=开）。 */
+    private fun isPeriodicCaptureEnabled(): Boolean =
+        captureMode() != Prefs.BG_CAPTURE_MODE_STATIC
 
     /** [doc/spec/33 + 2026-08-14 只用于收起] 周期兜底抓屏间隔（KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS，
      *  clamp 100~5000，默认 500）。仅收起时（shade 不在渲染）生效——展开由面板抓屏 120Hz 覆盖。
@@ -9250,28 +9196,81 @@ object BlurDrawHook {
         return v
     }
 
-    /** 抓屏失败重试间隔毫秒（KEY_BG_CAPTURE_RETRY_MS，默认 320） */
-    private fun bgCaptureRetryMs(): Int {
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
-        return try {
-            Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_BG_CAPTURE_RETRY_MS, Prefs.DEFAULT_BG_CAPTURE_RETRY_MS)
-                .coerceAtLeast(0)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_capture_retry_ms failed, default 320", t)
-            Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
+    /** 抓屏失败重试开关（KEY_BG_CAPTURE_RETRY_ENABLED，默认 true；固定 320ms × 3 次）。 */
+    private fun bgCaptureRetryEnabled(): Boolean = Prefs.captureRetryEnabled(api)
+
+    /** 区域级抓屏实验开关（KEY_BG_REGION_CAPTURE_EXPERIMENTAL，默认 false）。 */
+    private fun regionCaptureExperimentalEnabled(): Boolean = Prefs.regionCaptureExperimental(api)
+
+    /** 抓屏失败重试间隔毫秒（固定值，不再读 KEY_BG_CAPTURE_RETRY_MS）。 */
+    private fun bgCaptureRetryMs(): Int = Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
+
+    /** 抓屏失败重试次数上限（固定值，不再读 KEY_BG_CAPTURE_RETRY_LIMIT）。 */
+    private fun bgCaptureRetryLimit(): Int = Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
+
+    /** 收集活跃瞬态元素（heads-up / 流体云卡 / simple-banner）region 的并集 bbox（clamp 屏幕内）。
+     *  没有任何活跃瞬态元素 → null（调用方退回全屏抓屏路径）。 */
+    private fun transientRegionBBox(): RectF? {
+        val headsUp = isHeadsUpHostActive()
+        val card = isCardBackgroundHostActive()
+        val banner = isSimpleBannerHostActive()
+        if (!headsUp && !card && !banner) return null
+        var left = Float.MAX_VALUE
+        var top = Float.MAX_VALUE
+        var right = -Float.MAX_VALUE
+        var bottom = -Float.MAX_VALUE
+        var any = false
+        for (e in screenRegionMap.values) {
+            val name = e.hostViewName
+            val hit = (headsUp && name == NOTIF_CARD_HOST_NAME) ||
+                (card && name.startsWith(SEEDLING_CARDVIEW_TAG)) ||
+                (banner && name.startsWith(SIMPLE_BANNER_TAG))
+            if (!hit) continue
+            val r = e.region
+            if (r.width() <= 0f || r.height() <= 0f) continue
+            if (r.left < left) left = r.left
+            if (r.top < top) top = r.top
+            if (r.right > right) right = r.right
+            if (r.bottom > bottom) bottom = r.bottom
+            any = true
         }
+        if (!any) return null
+        val dm = android.content.res.Resources.getSystem().displayMetrics
+        val out = RectF(left, top, right, bottom)
+        val maxW = dm.widthPixels.coerceAtLeast(1).toFloat()
+        val maxH = dm.heightPixels.coerceAtLeast(1).toFloat()
+        if (!out.intersect(0f, 0f, maxW, maxH)) return null
+        return out
     }
 
-    /** 抓屏失败重试次数上限（KEY_BG_CAPTURE_RETRY_LIMIT，默认 3） */
-    private fun bgCaptureRetryLimit(): Int {
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
-        return try {
-            Prefs.readIntCompat(Prefs.read(a),Prefs.KEY_BG_CAPTURE_RETRY_LIMIT, Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT)
-                .coerceAtLeast(1)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_capture_retry_limit failed, default 3", t)
-            Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
+    /** 区域级抓屏入队（瞬态强制抓路径专用）：拿不到活跃瞬态 region → 退回全屏抓屏路径。 */
+    private fun triggerRegionCapture() {
+        if (isPowerSaveGlassOff()) return
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (transientRegionBBox() == null) {
+            triggerBackgroundCapture(contentChange = false)
+            return
         }
+        enqueueElementCapture(REGION_SNAPSHOT_ID)
+        kickElementCaptureWorker()
+    }
+
+    /** 渲染选源：区域快照可用于本元素（瞬态标签命中 + 与区域 bbox 相交 + shade 未展开）时返回它，
+     *  否则 null（调用方改走整屏快照）。 */
+    private fun regionRenderSourceSnapshot(id: Int, screenRegion: RectF): ElementBackground? {
+        if (!regionCaptureExperimentalEnabled()) return null
+        if (isShadeRenderingNow()) return null
+        val rs = regionSnapshot ?: return null
+        if (rs.bitmap.width <= 0 || rs.bitmap.height <= 0 || rs.region.width() <= 0f) return null
+        val name = screenRegionMap[id]?.hostViewName ?: return null
+        val active = when {
+            name == NOTIF_CARD_HOST_NAME -> isHeadsUpHostActive()
+            name.startsWith(SEEDLING_CARDVIEW_TAG) -> isCardBackgroundHostActive()
+            name.startsWith(SIMPLE_BANNER_TAG) -> isSimpleBannerHostActive()
+            else -> false
+        }
+        if (!active) return null
+        return if (RectF(rs.region).intersect(screenRegion)) rs else null
     }
 
     // [2026-09-17] 追踪器三个间隔读取（trackerMin/IdleIntervalFrames、trackerIdleAfterFrames）与
@@ -11194,9 +11193,10 @@ object BlurDrawHook {
      *   回退系统模糊，下帧主线程抓屏完成 postInvalidateHosts 后用快照，接受一帧延迟。
      */
     private fun resolveRenderSource(id: Int, screenRegion: RectF): RenderSource? {
-        val snap = requestScreenSnapshotAsync()
+        // 区域模式命中（瞬态元素 + 区域快照覆盖）→ 采样区域快照；否则整屏快照（srcRect 折算公式一致）
+        val snap = regionRenderSourceSnapshot(id, screenRegion) ?: requestScreenSnapshotAsync()
         if (snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0 && snap.region.width() > 0f) {
-            // srcRect = 元素当前区域折算到整屏快照坐标（0.5 降采样 → 坐标 × scale，坐标空间一致不错位）
+            // srcRect = 元素当前区域折算到快照坐标（按降采样比例缩放，坐标空间一致不错位）
             val scaleX = snap.bitmap.width.toFloat() / snap.region.width()
             val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
             val srcRect = RectF(
@@ -11220,11 +11220,13 @@ object BlurDrawHook {
      * 防竞争：失败冷却 [elementCaptureQuitAt] → 冷却期内不重抓；[captureInFlightIds] + [pendingCaptureIds]
      * 防重复入队（worker 抓屏中或队列已待抓不重复加）。 */
     private fun requestScreenSnapshotAsync(): ElementBackground? {
-        // [spec/85 省电模式] 省电开启 → 不入队抓屏、直接返回 null（渲染侧本就回退系统绘制）
+        // 省电开启 → 不入队抓屏、直接返回 null（渲染侧本就回退系统绘制）
         if (isPowerSaveGlassOff()) return null
         val snap = screenSnapshot
         val valid = snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0
         if (valid) return snap
+        // 静态模式 → 不入队（零抓屏）：返回最近快照（可为 null → 回退系统模糊）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return snap
         // 快照缺失 → 直接入队 worker 异步抓屏（不阻塞渲染线程）；失败冷却期内不重抓
         val now = SystemClock.uptimeMillis()
         // [2026-08-14 用户要求·去冷却] 移除失败冷却检查（不再设置冷却）
@@ -11891,9 +11893,8 @@ object BlurDrawHook {
     private var shadeRootViewCache: View? = null
 
     /**
-     * [2026-08-13 用户决定·协调者补充 + 2026-08-14 spec/56 + 2026-08-15 恢复 worker] 内容变化 → 触发**整屏
-     * 快照**重抓（**节流 KEY_BG_CAPTURE_MIN_INTERVAL_MS，默认 0=无节流立即抓**；[2026-08-13 回退 spec/49
-     * 固定 200ms]）。
+     * 内容变化 → 触发**整屏快照**重抓（**不节流**：内容变化一律立即入队，旧键
+     * KEY_BG_CAPTURE_MIN_INTERVAL_MS 已停用）。
      * - **内容变化立即抓（无节流）**：内容变化事件（面板开/关 mountPanelExpansion、onBlurReady 新帧
      *   captureOriginalFrame、映射写入 registerScreenRegionCore / recordNotificationCardRegion）到达**立即**
      *   触发抓屏。「屏幕内容变化」节流 = 内容没变不触发、内容变了立即抓（不设固定时间窗限频）。
@@ -11903,14 +11904,16 @@ object BlurDrawHook {
      *   [kickElementCaptureWorker]：captureDisplay 在 worker 线程同步执行，**主线程零阻塞**（spec/56 ANR
      *   取舍解除，下拉动画逐帧触发不再每帧主线程同步 captureDisplay）。
      * - **静止零抓屏**：无内容变化事件即不调用本方法（原逐帧追踪器触发已于 2026-09-17 移除），静止不抓。
-     * - **[doc/spec/49]** contentChange=true（默认）同时记录内容变化信号（[markContentChanged]），供周期抓屏
-     *   判断空闲/活动；周期抓屏自身调用时传 false（周期不是内容变化，不得污染时间戳）。
+     * - **[doc/spec/49]** contentChange=true（默认）同时记录内容变化信号（[markContentChanged]）；
+     *   周期抓屏自身调用时传 false（周期不是内容变化，不得污染时间戳）。
      * 主线程调用（registerScreenRegionCore / recordNotificationCardRegion / mountPanelExpansion /
      * captureOriginalFrame）。**不由元素移动触发**（移动只更新 srcRect 折算，不重抓背景）。
      */
     private fun triggerBackgroundCapture(contentChange: Boolean = true) {
-        // [spec/85 省电模式] 省电开启 → 不入队抓屏（玻璃已关，快照无消费者）
+        // 省电开启 → 不入队抓屏（玻璃已关，快照无消费者）
         if (isPowerSaveGlassOff()) return
+        // 静态模式 → 零抓屏（快照冻结为现有值）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [spec/55 诊断日志] 触发时间戳（t2）——「hook 触发 → 抓屏请求」延迟（hook 可靠否）；contentChange 附带调用来源
         diagCapLog("enqueue", if (contentChange) " contentChange=true" else " contentChange=false")
         if (contentChange) markContentChanged()
@@ -11935,8 +11938,10 @@ object BlurDrawHook {
      * 由 [runTextContrastScanAsync] 后台单飞完成（worker 抓屏时不内联做，防卡）。
      */
     private fun triggerBackgroundCaptureOnMainThread() {
-        // [spec/85 省电模式] 省电开启 → 首帧也不抓（玻璃已关）
+        // 省电开启 → 首帧也不抓（玻璃已关）
         if (isPowerSaveGlassOff()) return
+        // 静态模式 → 首帧同步也不抓（零抓屏）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [doc/spec/50 + spec/51 用户补充 + 2026-08-15 用户要求「下拉展开瞬间主线程立即截屏，什么都不等」]
         // 下拉首帧：**主线程同步**执行 [captureSnapshotImmediate]（同步 captureDisplay 20-50ms，首帧一次
         // 可接受，立即写 screenSnapshot + push shader 替换渲染缓冲区，不等后台 worker）+ 连抓 5~6 帧
@@ -11990,6 +11995,8 @@ object BlurDrawHook {
         pauseDuringPanelExpansion: Boolean,
         mainThreadSyncFirstFrame: Boolean = false,
     ) {
+        // 静态模式 → 首帧同步与连抓都不执行（零抓屏，快照冻结为现有值）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         markContentChanged()
         if (mainThreadSyncFirstFrame) {
             // [doc/spec/105 P1-4] 主线程同步首帧限频：**窗口内只同步抓一次**，其余触发点降级入队
@@ -12150,11 +12157,11 @@ object BlurDrawHook {
                         // [2026-08-15 恢复 worker] 连抓 tick 入队主 worker 队列（scheduleElementCaptures →
                         // enqueueElementCapture + kick；captureDisplay 由主 worker 串行执行，本线程零阻塞；
                         // pending 去重 = 与主线程触发/持续 tick 合并为单通道）。markContentChanged 维护
-                        // lastContentChangeTimeMs（周期抓屏 idle-skip 不误判）。
+                        // lastContentChangeTimeMs（内容变化时序留痕）。
                         // [2026-08-15 主动式持续抓屏] force=true：连抓高频补帧不被失败冷却/内容变化节流拦截
                         // （连抓覆盖入场动画窗口 ~300ms，必须每 tick 都尝试入队）。
                         markContentChanged()
-                        scheduleElementCaptures(force = true)
+                        scheduleElementCaptures()
                         logThrottled("$logTag-burst-tick", Log.INFO) {
                             "bg-element: $logTag burst tick ${HEADS_UP_BURST_TOTAL_FRAMES - n + 1}/$HEADS_UP_BURST_TOTAL_FRAMES queued to worker (single-channel)"
                         }
@@ -12187,6 +12194,7 @@ object BlurDrawHook {
      *  （防 spin；冷却已缩短至 300ms，不冻结旧帧）。
      *  通知消失（[isHeadsUpHostActive] false）→ 退出循环并清除活跃宿主（零后台耗电）。 */
     private fun startHeadsUpContinuousCapture() {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [2026-08-14 横幅主动源排障] 诊断：isHeadsUpHostActive 拆分量化（host/attach/rootView），
         // 定位主动源启动失败或中途停止根因（日志过滤 heads-up-capture）
         val host = headsUpActiveHost?.get()
@@ -12240,11 +12248,11 @@ object BlurDrawHook {
                         // [2026-08-15 恢复 worker] 持续 tick 入队主 worker 队列（scheduleElementCaptures →
                         // enqueueElementCapture + kick；captureDisplay 由主 worker 串行执行，本线程零阻塞；
                         // pending 去重 = 与连抓/主线程触发合并为单通道）。markContentChanged 维护
-                        // lastContentChangeTimeMs（周期抓屏 idle-skip 不误判空闲）。
+                        // lastContentChangeTimeMs（内容变化时序留痕）。
                         // [2026-08-15 主动式持续抓屏] force=true 绕过冷却/内容变化节流；速率可配
                         // [continuousCaptureIntervalMs]（运动满速 120Hz / 静止 60Hz，2026-08-14）。
                         markContentChanged()
-                        scheduleElementCaptures(force = true)
+                        scheduleElementCaptures()
                         logThrottled("heads-up-capture-tick", Log.INFO, 500) {
                             "heads-up-capture: tick ok (not paused), panelExpansionActive=$panelExpansionActive"
                         }
@@ -12279,6 +12287,7 @@ object BlurDrawHook {
      *  与首帧连抓（[scheduleHeadsUpBurstWorker]）/内容变化触发共存：pending 去重 + 单 worker 串行 = 同刻
      *  至多一路 captureDisplay。 */
     private fun startPanelContinuousCapture() {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (panelContinuousRunning) return
         if (!panelExpansionActive) return  // 面板未展开不启动
         // [2026-08-14 锁屏被动] 锁屏期间不启动主动持续抓屏——锁屏与解锁桌面一样只走被动事件触发
@@ -12313,7 +12322,7 @@ object BlurDrawHook {
                         }
                         // [2026-08-14 用户要求·去冷却] 移除失败冷却感知（不再设置冷却）
                         markContentChanged()
-                        scheduleElementCaptures(force = true)
+                        scheduleElementCaptures()
                         logThrottled("panel-continuous", Log.INFO) {
                             "bg-element: panel continuous tick queued to worker (single-channel)"
                         }
@@ -12332,41 +12341,21 @@ object BlurDrawHook {
         }
     }
 
-    /** [doc/spec/49 2026-08-13] 内容变化信号：记录当前时刻到 [lastContentChangeTimeMs]（周期抓屏据此判空闲）。
+    /** 内容变化信号：记录当前时刻到 [lastContentChangeTimeMs]（内容变化时序留痕）。
      *  所有内容变化触发点（新映射写入 / onBlurReady 新帧 / setExpansionHeight / heads-up 卡同卡更新）经
      *  [triggerBackgroundCapture]（contentChange=true）更新；周期抓屏自身不算内容变化（传 false 不更新）。 */
     private fun markContentChanged() {
         lastContentChangeTimeMs = SystemClock.uptimeMillis()
     }
 
-    /** 内容变化调度：**[2026-08-15 恢复 worker] 入队 → worker 消费**（[enqueueElementCapture] +
-     *  [kickElementCaptureWorker]，异步，主线程零阻塞；captureDisplay 在 worker 线程同步执行
-     *  [captureSnapshotImmediate]，失败走 [scheduleCaptureRetry] 快速重试）。
-     *  **spec/56 worker 停用（主线程直接抓屏）已回退**——根因 A（孤儿竞态）+ 根因 B（失败快速路径）已修复，
-     *  worker 队列恢复为「入队 → worker 消费」单通道（pending 去重 + 单 worker 串行 = 同刻至多一路
-     *  captureDisplay，连抓/持续 worker 入队也被吸收，恢复 spec/51 单通道收敛语义）。
-     *  仍保留 [spec/17] KEY_BG_CAPTURE_MIN_INTERVAL_MS 节流（默认 0=无节流立即抓）+ 失败冷却
-     *  [elementCaptureQuitAt]（冷却期跳过不抓）。
-     *
-     *  **[2026-08-15 主动式持续抓屏·移除失败冷却硬拦截]** `force=true`（主动持续抓屏 tick / 失败快速重试）：
-     *  绕过失败冷却 [elementCaptureQuitAt] 与内容变化节流 [KEY_BG_CAPTURE_MIN_INTERVAL_MS]——失败后 60ms
-     *  快速重试不冻结 1s，背景不冻结旧帧（持续抓屏速率由 worker 自身 [continuousCaptureIntervalMs] 控制，
-     *  不应被内容变化节流二次限频）。`force=false`（普通内容变化触发 [triggerBackgroundCapture] / 空置抓屏
-     *  [maybeIdleCapture]）：保留冷却/节流检查，但冷却已缩短至 [ELEMENT_CAPTURE_COOLDOWN_MS]=300ms 短暂
-     *  冷却（连续失败达 [bgCaptureRetryLimit] 才进入，防无限 spin 且不长时间冻结）。 */
-    private fun scheduleElementCaptures(force: Boolean = false) {
-        val now = SystemClock.uptimeMillis()
-        // [2026-08-14 用户要求·去冷却] 移除失败冷却检查——sfc 拿不到改为强制抓全屏（不进入失败路径），
-        // capture 失败静默放弃靠事件重试，无需 300ms 冷却等待。
-        // [spec/17 配置接线] 内容变化节流：距上次实际入队 < 最小间隔 → 跳过（[2026-08-13 回退 spec/49
-        // 固定 200ms] 默认 0=无节流立即抓；用户手动配置 >0 仍按最小间隔限频；force=true 绕过——持续抓屏
-        // 速率由 worker 自控）
-        val minInterval = bgCaptureMinIntervalMs()
-        if (!force && minInterval > 0) {
-            if (now - lastCaptureTime < minInterval) return
-            lastCaptureTime = now
-        }
-        // [2026-08-15 恢复 worker] 入队 → kick 起 worker 消费（异步，主线程零阻塞）。无论 enqueue 是否实际
+    /** 内容变化调度：入队 → worker 消费（[enqueueElementCapture] + [kickElementCaptureWorker]，
+     *  异步，主线程零阻塞；captureDisplay 在 worker 线程同步执行 [captureSnapshotImmediate]）。
+     *  单 worker 串行 + pending 去重 = 同刻至多一路 captureDisplay。
+     *  变化抓屏不再节流（旧键 KEY_BG_CAPTURE_MIN_INTERVAL_MS 停用，内容变化一律立即入队）。
+     *  静态模式不入队（零抓屏，快照冻结为现有值）。 */
+    private fun scheduleElementCaptures() {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        // 入队 → kick 起 worker 消费（异步，主线程零阻塞）。无论 enqueue 是否实际
         // 入队都 kick（pending 去重命中 = 队列已有任务待消费或 worker 正在抓，kick 内部 running>0 / 队列空
         // 早退无副作用；孤儿残留场景也能经 kick 的「队列非空 + running=0 → 重新起 worker」恢复）。
         enqueueElementCapture(SNAPSHOT_ID)
@@ -12418,13 +12407,25 @@ object BlurDrawHook {
      *  - **文字亮度/重采样**（updateQsBrightness 2.6MB 全图扫描）：同步做会卡 → 拆后台单飞
      *    [runTextContrastScanAsync]（不阻塞抓屏线程/主线程/渲染；拖动期 isMotionActive 跳过，spec/49 C 保留）。
      */
-    private fun captureSnapshotImmediate(source: String) {
+    private fun captureSnapshotImmediate(source: String, regionMode: Boolean = false) {
         // [spec/85 省电模式] 省电开启 → 真正的 captureDisplay 也不执行（省电下玻璃已关，零抓屏）
         if (isPowerSaveGlassOff()) {
             logThrottled("power-save-skip-capture", Log.INFO) {
                 "power-save: skip captureSnapshotImmediate ($source)"
             }
             return
+        }
+        // 区域模式：先算活跃瞬态 region 并集；拿不到就清区域快照并退出（整屏快照保持原样）
+        val regionBBox = if (regionMode) {
+            val bbox = transientRegionBBox()
+            if (bbox == null) {
+                regionSnapshot = null
+                lastRegionSnapshotFingerprint = 0
+                return
+            }
+            bbox
+        } else {
+            null
         }
         // [spec/58 追加 2026-08-15 诊断日志] 主线程同步首帧链路判定：source 以 `-main-thread` 结尾 =
         // 下拉/通知首帧主线程同步路径（worker 路径 source="worker" 不打 lg-first，防刷屏）
@@ -12444,8 +12445,30 @@ object BlurDrawHook {
         // [2026-08-14 用户要求·sfc 拿不到强制抓全屏] shade 可空传入 captureScreenSnapshot：有效 → exclude shade
         // 抓（防自采样）；null/invalid（shade 不在渲染）→ 无 exclude 强制抓全屏——快照天然不含 shade（干净），
         // 不再重试/冷却/静默放弃。shade 在渲染但 sfc 短暂 invalid 时轻微自采样，sfc 恢复后 exclude 抓屏覆盖。
-        val bg = captureScreenSnapshot(shade)
+        // 区域模式 → crop 换成活跃瞬态 region 并集 bbox，其余排除/降采样逻辑共用
+        val bg = if (regionBBox != null) {
+            captureElementBackground(shade, regionBBox)
+        } else {
+            captureScreenSnapshot(shade)
+        }
         if (bg != null) {
+            if (regionBBox != null) {
+                // 区域快照用独立指纹比对：内容未变丢弃本帧，不驱动重绘
+                val regionFp = snapshotContentFingerprint(bg.bitmap)
+                if (regionFp != 0 && regionFp == lastRegionSnapshotFingerprint) {
+                    logThrottled("region-snapshot-unchanged", Log.DEBUG) {
+                        "bg-element: region snapshot unchanged, frame dropped"
+                    }
+                    return
+                }
+                lastRegionSnapshotFingerprint = regionFp
+                regionSnapshot = bg
+                logThrottled("region-snapshot-captured", Log.INFO) {
+                    "bg-element: region snapshot captured ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()} (source=$source)"
+                }
+                postInvalidateHosts()
+                return
+            }
             sfcFailCount = 0
             elementCaptureRetries[SNAPSHOT_ID] = 0
             elementCaptureQuitAt.remove(SNAPSHOT_ID)
@@ -12477,9 +12500,16 @@ object BlurDrawHook {
             logThrottled("snapshot-captured", Log.INFO) { "bg-element: snapshot captured ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()} ($exclTag, source=$source)" }
             postInvalidateHosts()
         } else {
-            // [2026-08-14 用户要求·去冷却] capture 失败 → 静默放弃，不重试不冷却，靠后续事件触发重新发起
+            // capture 失败 → 「失败重试」开关决定：开=有界重试（320ms×3 后短暂冷却）；关=静默等下次事件。
+            // 区域模式保留上一帧区域快照，下一 tick 自然重试。
             if (mainThreadSync) diagFirstLog("fail-capture", " source=$source")
-            logThrottled("capture-fail-skip", Log.DEBUG) { "bg-element: capture failed, skip (no retry/cooldown, wait event)" }
+            if (regionBBox != null) {
+                logThrottled("region-capture-fail", Log.DEBUG) { "bg-element: region capture failed, keep previous region snapshot" }
+            } else if (bgCaptureRetryEnabled()) {
+                handleElementCaptureFailure(SNAPSHOT_ID, "capture")
+            } else {
+                logThrottled("capture-fail-skip", Log.DEBUG) { "bg-element: capture failed, skip (retry disabled, wait event)" }
+            }
         }
     }
 
@@ -12503,7 +12533,7 @@ object BlurDrawHook {
             try {
                 mainHandler().postDelayed({
                     captureRetryPosted = false
-                    scheduleElementCaptures(force = true)
+                    scheduleElementCaptures()
                 }, delayMs)
             } catch (t: Throwable) {
                 captureRetryPosted = false
@@ -12513,7 +12543,7 @@ object BlurDrawHook {
                 Thread.sleep(delayMs)
             } catch (ignored: InterruptedException) {
             }
-            scheduleElementCaptures(force = true)
+            scheduleElementCaptures()
         }
     }
 
@@ -12598,12 +12628,12 @@ object BlurDrawHook {
             while (true) {
                 val id = elementCaptureQueue.poll() ?: break
                 pendingCaptureIds.remove(id)  // 出队即移除：处理中/失败重试均可重新入队
-                if (id != SNAPSHOT_ID) continue  // 仅整屏快照任务（每元素 crop 任务已废弃）
+                if (id != SNAPSHOT_ID && id != REGION_SNAPSHOT_ID) continue  // 仅整屏/区域快照任务
                 // 抓屏中标记（poll 出队 → capture 完成期间）：渲染触发异步请求（requestScreenSnapshotAsync）
                 // 见此 SNAPSHOT_ID 即不重复入队（避免双路 captureDisplay）
                 captureInFlightIds.add(id)
                 try {
-                    captureSnapshotImmediate("worker")
+                    captureSnapshotImmediate("worker", regionMode = id == REGION_SNAPSHOT_ID)
                 } finally {
                     captureInFlightIds.remove(id)
                 }
@@ -12647,6 +12677,11 @@ object BlurDrawHook {
      *  重试经 [scheduleCaptureRetry]（主线程 postDelayed 不阻塞 / 后台线程就地 sleep 后）→
      *  [scheduleElementCaptures] 重新入队 worker（[2026-08-15 恢复 worker]）。 */
     private fun handleElementCaptureFailure(id: Int, reason: String) {
+        // 失败重试总开关关 → 静默放弃（不重试、不冷却，等下次事件）
+        if (!bgCaptureRetryEnabled()) {
+            Lg.w(TAG, "bg-element: snapshot $reason, retry disabled")
+            return
+        }
         val retryLimit = bgCaptureRetryLimit()
         val retryMs = bgCaptureRetryMs()
         val n = (elementCaptureRetries[id] ?: 0) + 1
