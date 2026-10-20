@@ -1532,6 +1532,16 @@ object BlurDrawHook {
     @Volatile
     private var cachedPanelCaptureHzTimeMs = 0L
     @Volatile
+    private var cachedBgCaptureMinIntervalMs = Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
+    @Volatile
+    private var cachedBgCaptureMinIntervalMsTimeMs = 0L
+    @Volatile
+    private var cachedLegacyPeriodicEnabled = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
+    @Volatile
+    private var cachedLegacyPeriodicEnabledTimeMs = 0L
+    @Volatile
+    private var lastCaptureTime = 0L
+    @Volatile
     private var cachedPeriodicCaptureIntervalMs = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
     @Volatile
     private var cachedPeriodicCaptureIntervalTimeMs = 0L
@@ -9170,10 +9180,48 @@ object BlurDrawHook {
         return v
     }
 
-    /** 周期抓屏是否启用：旧键 KEY_BG_PERIODIC_CAPTURE_ENABLE 已停用，由抓屏模式决定
-     *  （静态=关，即时/变化=开）。 */
-    private fun isPeriodicCaptureEnabled(): Boolean =
-        captureMode() != Prefs.BG_CAPTURE_MODE_STATIC
+    /** 周期抓屏是否启用：静态模式恒关；变化模式兼容存量「持续抓屏」开关（false=无周期兜底，
+     *  内容变化与各独立持续 worker 照常）；即时模式恒开。 */
+    private fun isPeriodicCaptureEnabled(): Boolean {
+        val mode = captureMode()
+        if (mode == Prefs.BG_CAPTURE_MODE_STATIC) return false
+        if (mode == Prefs.BG_CAPTURE_MODE_ON_CHANGE && !legacyPeriodicCaptureEnabled()) return false
+        return true
+    }
+
+    /** 存量「持续抓屏」开关（KEY_BG_PERIODIC_CAPTURE_ENABLE，默认 true）。 */
+    private fun legacyPeriodicCaptureEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedLegacyPeriodicEnabledTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedLegacyPeriodicEnabled
+        val a = api ?: return Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
+        val v = try {
+            Prefs.read(a).getBoolean(Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read bg_periodic_capture_enable failed, default true", t)
+            Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
+        }
+        cachedLegacyPeriodicEnabled = v
+        cachedLegacyPeriodicEnabledTimeMs = now
+        return v
+    }
+
+    /** 存量变化节流间隔 ms（KEY_BG_CAPTURE_MIN_INTERVAL_MS，默认 0=不节流）。 */
+    private fun bgCaptureMinIntervalMs(): Int {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedBgCaptureMinIntervalMsTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedBgCaptureMinIntervalMs
+        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
+        val v = try {
+            Prefs.readIntCompat(
+                Prefs.read(a), Prefs.KEY_BG_CAPTURE_MIN_INTERVAL_MS, Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
+            ).coerceAtLeast(0)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read bg_capture_min_interval_ms failed, default 0", t)
+            Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
+        }
+        cachedBgCaptureMinIntervalMs = v
+        cachedBgCaptureMinIntervalMsTimeMs = now
+        return v
+    }
 
     /** [doc/spec/33 + 2026-08-14 只用于收起] 周期兜底抓屏间隔（KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS，
      *  clamp 100~5000，默认 500）。仅收起时（shade 不在渲染）生效——展开由面板抓屏 120Hz 覆盖。
@@ -9196,17 +9244,33 @@ object BlurDrawHook {
         return v
     }
 
-    /** 抓屏失败重试开关（KEY_BG_CAPTURE_RETRY_ENABLED，默认 true；固定 320ms × 3 次）。 */
+    /** 抓屏失败重试开关（KEY_BG_CAPTURE_RETRY_ENABLED，默认 false=失败等下次事件）。 */
     private fun bgCaptureRetryEnabled(): Boolean = Prefs.captureRetryEnabled(api)
 
     /** 区域级抓屏实验开关（KEY_BG_REGION_CAPTURE_EXPERIMENTAL，默认 false）。 */
     private fun regionCaptureExperimentalEnabled(): Boolean = Prefs.regionCaptureExperimental(api)
 
-    /** 抓屏失败重试间隔毫秒（固定值，不再读 KEY_BG_CAPTURE_RETRY_MS）。 */
-    private fun bgCaptureRetryMs(): Int = Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
+    /** 存量重试间隔 ms（KEY_BG_CAPTURE_RETRY_MS，默认 320，clamp 100~1000）。 */
+    private fun bgCaptureRetryMs(): Int {
+        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
+        return try {
+            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_RETRY_MS, Prefs.DEFAULT_BG_CAPTURE_RETRY_MS)
+                .coerceIn(100, 1000)
+        } catch (t: Throwable) {
+            Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
+        }
+    }
 
-    /** 抓屏失败重试次数上限（固定值，不再读 KEY_BG_CAPTURE_RETRY_LIMIT）。 */
-    private fun bgCaptureRetryLimit(): Int = Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
+    /** 存量重试次数（KEY_BG_CAPTURE_RETRY_LIMIT，默认 3，clamp 1~5）。 */
+    private fun bgCaptureRetryLimit(): Int {
+        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
+        return try {
+            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_RETRY_LIMIT, Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT)
+                .coerceIn(1, 5)
+        } catch (t: Throwable) {
+            Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
+        }
+    }
 
     /** 收集活跃瞬态元素（heads-up / 流体云卡 / simple-banner）region 的并集 bbox（clamp 屏幕内）。
      *  没有任何活跃瞬态元素 → null（调用方退回全屏抓屏路径）。 */
@@ -11917,7 +11981,16 @@ object BlurDrawHook {
         // [spec/55 诊断日志] 触发时间戳（t2）——「hook 触发 → 抓屏请求」延迟（hook 可靠否）；contentChange 附带调用来源
         diagCapLog("enqueue", if (contentChange) " contentChange=true" else " contentChange=false")
         if (contentChange) markContentChanged()
-        // [2026-08-15 恢复 worker] 触发抓屏入队 → worker 消费（异步，主线程零阻塞；captureDisplay 由 worker
+        // 存量变化节流（KEY_BG_CAPTURE_MIN_INTERVAL_MS，0=不节流）：仅内容变化路径生效，周期/强制路径不过此门
+        if (contentChange) {
+            val minInterval = bgCaptureMinIntervalMs()
+            if (minInterval > 0) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastCaptureTime < minInterval) return
+                lastCaptureTime = now
+            }
+        }
+        // 触发抓屏入队 → worker 消费（异步，主线程零阻塞；captureDisplay 由 worker
         // 线程同步执行 [captureSnapshotImmediate]；失败重试重新入队）。
         scheduleElementCaptures()
     }
