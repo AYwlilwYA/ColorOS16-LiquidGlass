@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderNode
@@ -222,10 +223,18 @@ object LauncherHook {
          *  可能已被放大，位图内容已是缩放后的内容）；**壁纸文件裁剪源** = 1（文件永远未缩放）。
          *  折算只用相对变化 `wallpaperZoomScale / 本值`，避免「抓屏已含缩放 → 再折算一次」的双重缩放。 */
         val wallpaperZoomAtCapture: Float,
+        /** 快照覆盖的屏幕坐标参考（壁纸条带偏移后与 region 不同，供壁纸缩放折算用） */
+        val screenRect: RectF = region,
+        /** bitmap 为整条可滚动壁纸条带（offset 变化只平移 region，不重裁位图） */
+        val isWallpaperStrip: Boolean = false,
+        /** 条带 offset=0 时的区域（region = 此矩形按当前 offset 平移） */
+        val stripBaseRect: RectF? = null,
+        /** 条带满滚动范围（屏幕像素） */
+        val stripMaxScroll: PointF? = null,
     )
 
     /** [doc/spec/52] 壁纸文件解码源：整幅壁纸位图（inSampleSize 降采样）+ 逻辑原生尺寸 + 壁纸 id。
-     *  渲染背景 = 从 [bitmap] 按桌面滚动 offset 裁剪屏幕可见区域（见 buildVisibleCrop）。 */
+     *  渲染背景 = 从 [bitmap] 构建整条可滚动条带（见 buildVisibleCrop），offset 只平移 region。 */
     private class WallpaperSource(
         val bitmap: Bitmap,
         val logicalWidth: Int,
@@ -395,6 +404,18 @@ object LauncherHook {
     /** 待解码/已解码目标壁纸 id（壁纸变化时更新，worker 按最新 id 解码） */
     @Volatile
     private var wallpaperDecodeTargetId = -1
+
+    /** 高频路径日志去重表（同 key 1s 内只打一条，保留「出现了」的诊断价值） */
+    private val logOnceAtMs = ConcurrentHashMap<String, Long>()
+
+    private fun logOncePerSecond(key: String, block: () -> Unit) {
+        val now = SystemClock.uptimeMillis()
+        val last = logOnceAtMs[key] ?: 0L
+        if (now - last < 1000L) return
+        logOnceAtMs[key] = now
+        if (logOnceAtMs.size > 16) logOnceAtMs.clear()
+        block()
+    }
 
     // ---- [doc/spec/83] 壁纸缩放镜像（开/关/文件夹动画期间壁纸服务按中心 pivot 缩放） ----
     /** 当前壁纸服务缩放系数（1 = 原尺寸）；render 每帧读它反向折算 srcRect。 */
@@ -1457,9 +1478,9 @@ object LauncherHook {
      * WallpaperOffsetInterpolator L63 实证：mWM.setWallpaperOffsets(iBinder, mCurrentOffset, 0.5f)，
      * 在 WALLPAPER_TRANSACTION_EXECUTOR 线程调用，offset=[0,1]）。
      *
-     * 滚动壁纸背景源 = 壁纸文件按 offset 裁剪可见区域：offset 更新 → 入队 worker 重裁剪（异步，
-     * pending 去重，最新 offset 在 worker 处理时生效，单通道与抓屏共用）。静态/非滚动壁纸 offset
-     * 不影响裁剪（maxScroll=0）。失败只禁视差跟手（保留静态裁剪），不崩 Launcher。
+     * 滚动壁纸背景源 = 整条可滚动壁纸条带位图（壁纸 id 变/首次才构建一次）：offset 更新只平移
+     * 快照 region（零位图重裁、零 worker 入队）。静态/非滚动壁纸（maxScroll=0）region 恒等于
+     * 条带本身，offset 无影响。失败只禁视差跟手（保留静态条带），不崩 Launcher。
      */
     private fun mountWallpaperOffsets(api: XposedInterface, classLoader: ClassLoader) {
         try {
@@ -1478,8 +1499,7 @@ object LauncherHook {
                             val y = (args[2] as? Float) ?: 0f
                             wallpaperOffsetX = x
                             wallpaperOffsetY = y
-                            // 视差跟手：入队 worker 重裁剪（异步；offset 最新值 worker 处理时读取）
-                            enqueueSnapshotCapture()
+                            applyWallpaperParallaxShift()
                         }
                     } catch (t: Throwable) {
                         Lg.e(TAG, "launcher parallax: setWallpaperOffsets intercept error", t)
@@ -1490,6 +1510,23 @@ object LauncherHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_WALLPAPER_MANAGER#$METHOD_SET_WALLPAPER_OFFSETS", t)
         }
+    }
+
+    /** offset 变化 → 平移壁纸条带快照的 region（复用同一位图，零重裁、零入队）；region 未变则完全静默。 */
+    private fun applyWallpaperParallaxShift() {
+        val snap = screenSnapshot ?: return
+        if (!snap.isWallpaperStrip) return
+        val base = snap.stripBaseRect ?: return
+        val maxScroll = snap.stripMaxScroll ?: return
+        val cropX = wallpaperOffsetX.coerceIn(0f, 1f) * maxScroll.x
+        val cropY = wallpaperOffsetY.coerceIn(0f, 1f) * maxScroll.y
+        val region = RectF(base.left - cropX, base.top - cropY, base.right - cropX, base.bottom - cropY)
+        if (region == snap.region) return
+        screenSnapshot = ElementBackground(
+            snap.bitmap, region, snap.wallpaperZoomAtCapture, snap.screenRect,
+            isWallpaperStrip = true, stripBaseRect = base, stripMaxScroll = maxScroll,
+        )
+        postInvalidateRegistered()
     }
 
     /**
@@ -1910,7 +1947,7 @@ object LauncherHook {
             val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
             // [doc/spec/83] 开/关/文件夹动画期间壁纸服务按中心放大渲染 → 采样窗先反向折算；
             // 折算系数用相对变化（当前缩放 ÷ 位图烘焙时的缩放），抓屏源/壁纸文件源都正确
-            val region = zoomedRegionForWallpaper(screenRegion, snap.region, snap.wallpaperZoomAtCapture)
+            val region = zoomedRegionForWallpaper(screenRegion, snap.screenRect, snap.wallpaperZoomAtCapture)
             val srcRect = RectF(
                 (region.left - snap.region.left) * scaleX,
                 (region.top - snap.region.top) * scaleY,
@@ -2056,6 +2093,17 @@ object LauncherHook {
         }
     }
 
+    /** 两张位图逐像素比对（同 config 同尺寸才可比；异常按「不同」处理，宁多重绘不漏重绘）。 */
+    private fun sameBitmapContent(a: Bitmap, b: Bitmap): Boolean {
+        if (a === b) return true
+        if (a.width != b.width || a.height != b.height || a.config != b.config) return false
+        return try {
+            a.sameAs(b)
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     /** 抓屏 worker：消费队列（唯一任务 = SNAPSHOT_ID 整屏快照/壁纸解码）。 */
     private fun runElementCaptureWorker() {
         try {
@@ -2076,11 +2124,22 @@ object LauncherHook {
                     captureInFlightIds.remove(id)
                 }
                 if (bg != null) {
+                    val prev = screenSnapshot
+                    val unchanged = prev != null &&
+                        prev.region == bg.region &&
+                        prev.wallpaperZoomAtCapture == bg.wallpaperZoomAtCapture &&
+                        sameBitmapContent(prev.bitmap, bg.bitmap)
                     screenSnapshot = bg
                     elementCaptureRetries[id] = 0
                     elementCaptureQuitAt.remove(id)
-                    Lg.i(TAG, "bg-element: launcher background ready ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()}")
-                    postInvalidateRegistered()
+                    if (unchanged) {
+                        logOncePerSecond("bgUnchanged") {
+                            Lg.d(TAG, "bg-element: launcher background unchanged, skip invalidate")
+                        }
+                    } else {
+                        Lg.i(TAG, "bg-element: launcher background ready ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()}")
+                        postInvalidateRegistered()
+                    }
                 } else {
                     // 失败重试（3 次/320ms），用尽冷却
                     val n = (elementCaptureRetries[id] ?: 0) + 1
@@ -2239,7 +2298,9 @@ object LauncherHook {
                                     builderCls.getMethod("setUid", Int::class.javaPrimitiveType)
                                         .invoke(builder, uid.toInt())
                                 }
-                                Lg.i(TAG, "bg-element: setUid($uid) wallpaper-only capture applied")
+                                logOncePerSecond("setUidApplied") {
+                                    Lg.i(TAG, "bg-element: setUid($uid) wallpaper-only capture applied")
+                                }
                             } catch (t: Throwable) {
                                 Lg.w(TAG, "bg-element: setUid unavailable (${t.message}), keep full-display capture")
                             }
@@ -2288,7 +2349,9 @@ object LauncherHook {
                                                     Lg.w(TAG, "bg-element: copy null hw=${hb.width}x${hb.height}")
                                                     null
                                                 } else {
-                                                    Lg.i(TAG, "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl launcher)")
+                                                    logOncePerSecond("captureDisplayOk") {
+                                                        Lg.i(TAG, "bg-element: IWindowManager.captureDisplay ok hw=${hb.width}x${hb.height} crop=$crop (${scale}x, excl launcher)")
+                                                    }
                                                     ElementBackground(copy, region, wallpaperZoomScale)
                                                 }
                                             } finally {
@@ -2363,7 +2426,9 @@ object LauncherHook {
                 null
             } ?: "com.android.systemui"
             val uid = app.packageManager.getPackageUid(pkg, 0).toLong()
-            Lg.i(TAG, "bg-element: wallpaper uid resolved pkg=$pkg uid=$uid")
+            logOncePerSecond("wallpaperUidResolved") {
+                Lg.i(TAG, "bg-element: wallpaper uid resolved pkg=$pkg uid=$uid")
+            }
             uid
         } catch (t: Throwable) {
             Lg.w(TAG, "bg-element: resolve wallpaper uid failed", t)
@@ -2376,8 +2441,8 @@ object LauncherHook {
     /**
      * [doc/spec/52] worker 线程执行：刷新壁纸文件背景源。
      * - 首次 / 壁纸变化（wallpaperDecodePending 或源缺失）→ 解码整幅壁纸文件 → 缓存
-     *   [wallpaperSource] → 按当前 offset 裁剪屏幕可见区域返回。
-     * - 已解码 → 按最新 offset 重裁剪（滚动壁纸视差跟手）。
+     *   [wallpaperSource] → 构建整条可滚动条带返回。
+     * - 已解码 → 重建条带（罕见兜底路径；offset 跟手不再走这里，见 applyWallpaperParallaxShift）。
      * - 动态壁纸 / 解码失败 → null（调用方回退 captureDisplay 抓屏，保持向后兼容）。
      */
     private fun refreshWallpaperBackground(): ElementBackground? {
@@ -2415,7 +2480,9 @@ object LauncherHook {
                 null
             }
             if (info != null) {
-                Lg.w(TAG, "bg-wallpaper: live wallpaper, fallback to captureDisplay")
+                logOncePerSecond("liveWallpaperFallback") {
+                    Lg.w(TAG, "bg-wallpaper: live wallpaper, fallback to captureDisplay")
+                }
                 return null
             }
             val id = try {
@@ -2468,15 +2535,16 @@ object LauncherHook {
     }
 
     /**
-     * [doc/spec/52] 从整幅壁纸按当前桌面滚动 offset 裁剪**屏幕可见区域**，缩放到屏宽屏高 × 背景降采样比例。
+     * [doc/spec/52] 从整幅壁纸构建**整条可滚动条带**位图（贴屏缩放 × 背景降采样比例），只在壁纸
+     * id 变/首次跑一次；offset 变化由 [applyWallpaperParallaxShift] 平移 region，不再重裁位图。
      *
-     * 折算（Android 壁纸贴屏语义）：壁纸缩放 scale = max(scrW/wpW, scrH/wpH) 贴满屏幕 → 可见窗口
-     * （scrW×scrH）在壁纸文件坐标 = scrW/scale × scrH/scale，横向滚动量 = (wpW - cropW) × xOffset。
-     * 产出 ElementBackground(bitmap=可见裁剪, region=全屏)——region 全屏 + bitmap 屏尺寸 ⇒
-     * resolveRenderSource 的 scaleX/Y ≈ 1，srcRect ≈ 元素屏幕区域（与"整屏快照"数据流完全一致，
-     * 渲染侧零改动）。
+     * 折算（Android 壁纸贴屏语义）：壁纸缩放 scale = max(scrW/wpW, scrH/wpH) 贴满屏幕 → 条带 =
+     * 整幅壁纸 × scale（屏幕像素坐标，宽 stripScreenW = wpW×scale），region 按 offset 平移：
+     * region = (-cropX, -cropY, stripScreenW-cropX, stripScreenH-cropY)，cropX = xOffset × maxScroll。
+     * 产出 ElementBackground(bitmap=条带, region=平移后区域, screenRect=全屏)——条带宽 = region 宽
+     * ⇒ resolveRenderSource 的 scaleX/Y ≈ bgScale，srcRect = (元素屏位 + crop) × bgScale。
      *
-     * 静态/非滚动壁纸（wpW ≤ cropW）maxScroll=0 → 恒裁剪首屏，offset 无影响。
+     * 静态/非滚动壁纸（wpW×scale ≤ scrW）maxScroll=0 → region 恒为 (0,0,scrW,scrH)，与首屏裁剪等价。
      */
     private fun buildVisibleCrop(src: WallpaperSource): ElementBackground? {
         return try {
@@ -2489,39 +2557,32 @@ object LauncherHook {
             if (wpW <= 0 || wpH <= 0 || src.bitmap.width <= 0 || src.bitmap.height <= 0) return null
             val scale = maxOf(scrW.toFloat() / wpW, scrH.toFloat() / wpH)
             if (scale <= 0f) return null
-            // 可见窗口在壁纸文件坐标
-            val cropW = scrW / scale
-            val cropH = scrH / scale
-            val maxScrollX = (wpW - cropW).coerceAtLeast(0f)
-            val maxScrollY = (wpH - cropH).coerceAtLeast(0f)
-            val cropX = (wallpaperOffsetX.coerceIn(0f, 1f) * maxScrollX).coerceIn(0f, maxScrollX)
-            val cropY = (wallpaperOffsetY.coerceIn(0f, 1f) * maxScrollY).coerceIn(0f, maxScrollY)
-            // 折算到解码位图坐标
-            val sx = src.bitmap.width.toFloat() / wpW
-            val sy = src.bitmap.height.toFloat() / wpH
-            val bx = (cropX * sx).toInt()
-            val by = (cropY * sy).toInt()
-            val bw = (cropW * sx).toInt().coerceIn(1, src.bitmap.width - bx)
-            val bh = (cropH * sy).toInt().coerceIn(1, src.bitmap.height - by)
-            if (bx < 0 || by < 0 || bx + bw > src.bitmap.width || by + bh > src.bitmap.height) {
-                Lg.w(TAG, "bg-wallpaper: crop out of bounds bx=$bx by=$by bw=$bw bh=$bh bmp=${src.bitmap.width}x${src.bitmap.height}")
-                return null
-            }
-            val cropBmp = Bitmap.createBitmap(src.bitmap, bx, by, bw, bh)
             val bgScale = bgCaptureScale()
-            val tw = (scrW * bgScale).toInt().coerceAtLeast(1)
-            val th = (scrH * bgScale).toInt().coerceAtLeast(1)
-            val out = if (cropBmp.width == tw && cropBmp.height == th) {
-                cropBmp
+            // 条带 = 整幅壁纸按贴屏缩放 × 降采样比例（一次构建，offset 不再动像素）
+            val stripScreenW = wpW * scale
+            val stripScreenH = wpH * scale
+            val tw = (stripScreenW * bgScale).toInt().coerceAtLeast(1)
+            val th = (stripScreenH * bgScale).toInt().coerceAtLeast(1)
+            val stripBmp = if (src.bitmap.width == tw && src.bitmap.height == th) {
+                src.bitmap
             } else {
                 val scaled = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(scaled)
                 val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-                canvas.drawBitmap(cropBmp, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), paint)
+                canvas.drawBitmap(src.bitmap, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), paint)
                 scaled
             }
+            val maxScrollX = (stripScreenW - scrW).coerceAtLeast(0f)
+            val maxScrollY = (stripScreenH - scrH).coerceAtLeast(0f)
+            val base = RectF(0f, 0f, stripScreenW, stripScreenH)
+            val cropX = wallpaperOffsetX.coerceIn(0f, 1f) * maxScrollX
+            val cropY = wallpaperOffsetY.coerceIn(0f, 1f) * maxScrollY
+            val region = RectF(base.left - cropX, base.top - cropY, base.right - cropX, base.bottom - cropY)
             // 壁纸文件源：文件内容与壁纸服务的缩放无关 → 基准恒为 1（折算系数 = 当前缩放）
-            ElementBackground(out, RectF(0f, 0f, scrW.toFloat(), scrH.toFloat()), 1f)
+            ElementBackground(
+                stripBmp, region, 1f, RectF(0f, 0f, scrW.toFloat(), scrH.toFloat()),
+                isWallpaperStrip = true, stripBaseRect = base, stripMaxScroll = PointF(maxScrollX, maxScrollY),
+            )
         } catch (t: Throwable) {
             Lg.e(TAG, "bg-wallpaper: build visible crop failed", t)
             null
