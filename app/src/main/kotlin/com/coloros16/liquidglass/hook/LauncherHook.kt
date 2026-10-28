@@ -188,6 +188,29 @@ object LauncherHook {
     /** Dock 玻璃开关重读间隔（ms）：改动无需重启 Launcher（同 spec/64/65 的 TTL 模式）。 */
     private const val DOCK_GLASS_TTL_MS = 500L
 
+    // ---- [doc/spec/76] 桌面「问小布」入口液态玻璃化（借壳补映射） ----
+    /** 「问小布」宿主控件：页面小圆点与「问小布」胶囊共用的同一个 View（系统 setState 切 alpha）。 */
+    private const val CLASS_OPLUS_PAGE_INDICATOR = "com.android.launcher.pageindicators.OplusPageIndicator"
+    /** 每帧登记映射的 hook 点（public，其内部调 drawBackgroundIfNeeded）。 */
+    private const val METHOD_DISPATCH_DRAW = "dispatchDraw"
+    /** 取壳入口（public，无参）→ 系统自建的 LayerBlurDrawable；无系统模糊时返回 null。 */
+    private const val METHOD_GET_BLUR_DRAWABLE = "getBlurDrawable"
+    /** 系统自算圆角（public）= min(min(w,h)/2, mBackgroundRadius)；直接用全圆角 dimen 会画成方形。 */
+    private const val METHOD_GET_BACKGROUND_RADIUS = "getBackgroundRadius"
+    /** 问小布玻璃开关重读间隔（ms）。 */
+    private const val PAGE_INDICATOR_GLASS_TTL_MS = 500L
+
+    // ---- [doc/spec/78] 桌面卡片/小组件背景玻璃化（借壳补映射） ----
+    /** 卡片背景模糊管理器：卡片 / 分组卡片 / 小组件背景模糊的唯一产生点。 */
+    private const val CLASS_CARD_BACKGROUND_BLUR_MANAGER = "com.android.launcher3.card.CardBackgroundBlurManager"
+    /** 建卡片 blur 背景（private → getDeclaredMethod）；prepareBlur 在本方法内执行，
+     *  所以映射必须在 proceed() 之后读 targetView.background。 */
+    private const val METHOD_CREATE_BLUR_BACKGROUND = "createBlurBackground"
+    /** 卡片圆角 tag 名（系统在建 blur 背景后 setTag 该 id）。 */
+    private const val ID_KEY_BLUR_VIEW_RADIUS = "key_blur_view_radius"
+    /** 卡片玻璃开关重读间隔（ms）。 */
+    private const val CARD_GLASS_TTL_MS = 500L
+
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
     /** [doc/spec/42 2026-08-13] Launcher 抓屏「只抓壁纸层」UID 过滤：setUid 语义 = 只抓
@@ -338,6 +361,34 @@ object LauncherHook {
     private var cachedDockGlass = false
     @Volatile
     private var cachedDockGlassAtMs = 0L
+
+    // [doc/spec/76] 问小布借壳反射（解析失败只禁问小布玻璃，不影响其他功能）
+    private var mPageIndicatorGetBlurDrawable: Method? = null
+    private var mPageIndicatorGetBackgroundRadius: Method? = null
+    /** 问小布玻璃开关缓存（TTL 见 [PAGE_INDICATOR_GLASS_TTL_MS]，热路径不每帧读 Prefs） */
+    @Volatile
+    private var cachedPageIndicatorGlass = false
+    @Volatile
+    private var cachedPageIndicatorGlassAtMs = 0L
+    /** 问小布开关是否已打过首读值日志（只打一次，防刷屏） */
+    @Volatile
+    private var pageIndicatorSwitchLogged = false
+
+    // [doc/spec/78] 卡片借壳：圆角 tag id 解析缓存（0 = 尚未解析）
+    private var mCardBlurRadiusTagId = 0
+    /** [doc/spec/78] 卡片映射诊断日志计数（原因 → 已打条数，每原因最多 3 条） */
+    private val cardDiagCount = ConcurrentHashMap<String, Int>()
+    /** 卡片开关是否已打过首读值日志（只打一次，防刷屏） */
+    @Volatile
+    private var cardSwitchLogged = false
+    /** [doc/spec/78] 等待布局完成后补登记的卡片宿主（弱引用集合：防重复挂监听 + 防泄漏） */
+    private val pendingCardViews: MutableSet<View> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+    /** 卡片玻璃开关缓存（TTL 见 [CARD_GLASS_TTL_MS]，热路径不每帧读 Prefs） */
+    @Volatile
+    private var cachedCardGlass = false
+    @Volatile
+    private var cachedCardGlassAtMs = 0L
 
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
@@ -510,6 +561,10 @@ object LauncherHook {
         // [doc/spec/66] 桌面 Dock 栏液态玻璃化（借壳：解开系统门控让 Dock 拿到 LayerBlurDrawable，
         // 再补映射交给现有 drawBlurShader 替换链渲染玻璃）
         mountDockGlass(api, classLoader)
+        // [doc/spec/76] 桌面「问小布」入口液态玻璃化（借壳：系统已自建 LayerBlurDrawable，只需补映射）
+        mountPageIndicatorGlass(api, classLoader)
+        // [doc/spec/78] 桌面卡片/分组卡片/小组件背景玻璃化（Launcher 侧此前唯一未映射的模糊产生点）
+        mountCardBlurGlass(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
         // [doc/spec/83] 开/关/文件夹动画的壁纸缩放信号（镜像折算玻璃采样窗）
@@ -1408,6 +1463,257 @@ object LauncherHook {
     }
 
     /**
+     * [doc/spec/76] 桌面「问小布」入口液态玻璃化 —— 借壳，只需「补映射」一步。
+     *
+     * 与 Dock 的差异：Dock 在直板机上被系统门控挡死、系统从不给它配背景，要解门控 + 强建 drawable；
+     * 问小布系统自己已建好 `LayerBlurDrawable`，本模块只要把它的 region 登记进 screenRegionMap，
+     * drawBlurShader 就会把系统磨砂换成自研玻璃。
+     */
+    private fun mountPageIndicatorGlass(api: XposedInterface, classLoader: ClassLoader) {
+        try {
+            val clazz = hostForName(CLASS_OPLUS_PAGE_INDICATOR)
+            mPageIndicatorGetBlurDrawable = clazz.getMethod(METHOD_GET_BLUR_DRAWABLE)
+            mPageIndicatorGetBackgroundRadius = clazz.getMethod(METHOD_GET_BACKGROUND_RADIUS)
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher page-indicator: resolve $CLASS_OPLUS_PAGE_INDICATOR failed, glass disabled", t)
+            return
+        }
+        try {
+            val clazz = hostForName(CLASS_OPLUS_PAGE_INDICATOR)
+            val method = clazz.getMethod(METHOD_DISPATCH_DRAW, Canvas::class.java)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        if (pageIndicatorGlassEnabled()) registerPageIndicatorRegion(chain)
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "launcher page-indicator: dispatchDraw map failed", t)
+                    }
+                    chain.proceed()
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_OPLUS_PAGE_INDICATOR#$METHOD_DISPATCH_DRAW(Canvas) (ask-xiaobu map)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_OPLUS_PAGE_INDICATOR#$METHOD_DISPATCH_DRAW", t)
+        }
+    }
+
+    /** [doc/spec/76] 问小布映射登记：系统自建 LayerBlurDrawable → 内层 posteffect BlurDrawable
+     *  → screenRegionMap（键与 drawBlurShader 的 this 同 identityHashCode）。
+     *  getBlurDrawable() 返回 null 时静默回退（不登记 = 保持系统磨砂）。 */
+    private fun registerPageIndicatorRegion(chain: XposedInterface.Chain) {
+        val indicator = chain.getThisObject() as? View ?: return
+        val layer = try {
+            mPageIndicatorGetBlurDrawable?.invoke(indicator)
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher page-indicator: getBlurDrawable failed", t); null
+        } ?: return
+        if (mLayerCls?.isInstance(layer) != true) return
+        val inner = try {
+            mLayerBlurInnerField?.get(layer)
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher page-indicator: read LayerBlurDrawable.mBlurDrawable failed", t); null
+        } ?: return
+        val corner = try {
+            (mPageIndicatorGetBackgroundRadius?.invoke(indicator) as? Int)?.toFloat() ?: 0f
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher page-indicator: getBackgroundRadius failed, fallback min(w,h)/2", t)
+            0f
+        }
+        registerBlurRegion(
+            inner, indicator, corner,
+            hostName = "PageIndicator", cardClass = CLASS_OPLUS_PAGE_INDICATOR,
+        )
+    }
+
+    /** [doc/spec/76] 问小布玻璃开关（TTL [PAGE_INDICATOR_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
+    private fun pageIndicatorGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedPageIndicatorGlassAtMs > PAGE_INDICATOR_GLASS_TTL_MS) {
+            cachedPageIndicatorGlassAtMs = now
+            val before = cachedPageIndicatorGlass
+            cachedPageIndicatorGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_PAGE_INDICATOR_GLASS, Prefs.DEFAULT_PAGE_INDICATOR_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read page_indicator_glass_enable failed, default false", t)
+                false
+            }
+            val shouldLog = cachedPageIndicatorGlass != before || !pageIndicatorSwitchLogged
+            pageIndicatorSwitchLogged = true
+            if (shouldLog) {
+                Lg.i(TAG, "launcher page-indicator: switch ${Prefs.KEY_PAGE_INDICATOR_GLASS} = $cachedPageIndicatorGlass")
+            }
+        }
+        return cachedPageIndicatorGlass
+    }
+
+    /**
+     * [doc/spec/78] 桌面卡片 / 分组卡片 / 小组件背景玻璃化。
+     *
+     * 与文件夹映射同类：借壳 + 补映射。对 Launcher 全部 `OplusBlurProperties.prepareBlur()` 调用点
+     * 做过穷举，只有 5 处产生 LayerBlurDrawable，本类是其中此前唯一未映射的一处。
+     */
+    private fun mountCardBlurGlass(api: XposedInterface, classLoader: ClassLoader) {
+        if (mLayerBlurInnerField == null) {
+            Lg.w(TAG, "LauncherHook LayerBlurDrawable.mBlurDrawable unresolved, card blur map disabled")
+            return
+        }
+        try {
+            val clazz = hostForName(CLASS_CARD_BACKGROUND_BLUR_MANAGER)
+            val method = clazz.getDeclaredMethod(
+                METHOD_CREATE_BLUR_BACKGROUND,
+                View::class.java, Boolean::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+            ).apply { isAccessible = true }
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val target = try {
+                        chain.getArg(0) as? View
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "launcher card: read targetView failed", t); null
+                    }
+                    val result = chain.proceed()
+                    val cardEnabled = cardGlassEnabled()
+                    if (target != null && cardEnabled) {
+                        try {
+                            registerCardBlurRegion(target)
+                        } catch (t: Throwable) {
+                            Lg.e(TAG, "launcher card: createBlurBackground map failed", t)
+                        }
+                    } else if (target == null) {
+                        logCardDiag("no-target", "launcher card: createBlurBackground 取不到 targetView（arg0）")
+                    }
+                    result
+                }
+            Lg.i(
+                TAG,
+                "LauncherHook mounted: $CLASS_CARD_BACKGROUND_BLUR_MANAGER#$METHOD_CREATE_BLUR_BACKGROUND" +
+                    "(View, boolean, int) (card/group-card/widget map)",
+            )
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_CARD_BACKGROUND_BLUR_MANAGER#$METHOD_CREATE_BLUR_BACKGROUND", t)
+        }
+    }
+
+    /** [doc/spec/78] 卡片映射登记：背景在 proceed() 内由 prepareBlur 装上，尺寸未就绪时延迟到布局后。 */
+    private fun registerCardBlurRegion(target: View) {
+        val inner = resolveCardInner(target) ?: return
+        if (target.isAttachedToWindow && target.width > 0 && target.height > 0) {
+            registerBlurRegion(
+                inner, target, readCardCornerPx(target),
+                hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+            )
+            return
+        }
+        scheduleCardRegionAfterLayout(target)
+    }
+
+    /** [doc/spec/78] 解析卡片的内层 posteffect drawable；失败时打诊断并返回 null。 */
+    private fun resolveCardInner(target: View): Any? {
+        val drawable = try {
+            target.background
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher card: read background failed", t); null
+        }
+        if (drawable == null) {
+            logCardDiag("no-bg", "launcher card: ${target.javaClass.name} 无 background（未生成模糊底？）")
+            return null
+        }
+        if (mLayerCls?.isInstance(drawable) != true) {
+            logCardDiag(
+                "not-layer-" + drawable.javaClass.simpleName,
+                "launcher card: ${target.javaClass.name} 背景是 ${drawable.javaClass.name}，不是 LayerBlurDrawable",
+            )
+            return null
+        }
+        val inner = try {
+            mLayerBlurInnerField?.get(drawable)
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher card: read LayerBlurDrawable.mBlurDrawable failed", t); null
+        }
+        if (inner == null) {
+            logCardDiag("no-inner", "launcher card: LayerBlurDrawable.mBlurDrawable 为 null")
+            return null
+        }
+        return inner
+    }
+
+    /** [doc/spec/78] 卡片宿主布局未完成时，挂一次性 layout 监听，布局后补登记（弱引用去重防重复挂）。 */
+    private fun scheduleCardRegionAfterLayout(target: View) {
+        if (!pendingCardViews.add(target)) return
+        logCardDiag("defer", "launcher card: ${target.javaClass.name} 布局未完成，延迟到 layout 后登记")
+        target.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(
+                v: View, left: Int, top: Int, right: Int, bottom: Int,
+                oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+            ) {
+                v.removeOnLayoutChangeListener(this)
+                pendingCardViews.remove(v)
+                if (v.width <= 0 || v.height <= 0) return
+                try {
+                    val innerNow = resolveCardInner(v) ?: return
+                    registerBlurRegion(
+                        innerNow, v, readCardCornerPx(v),
+                        hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+                    )
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "launcher card: deferred map failed", t)
+                }
+            }
+        })
+    }
+
+    /** [doc/spec/78] 卡片映射诊断日志：每种原因最多打 3 条。 */
+    private fun logCardDiag(reason: String, msg: String) {
+        val n = cardDiagCount[reason] ?: 0
+        if (n >= 3) return
+        cardDiagCount[reason] = n + 1
+        Lg.i(TAG, msg)
+    }
+
+    /** [doc/spec/78] 卡片玻璃开关（TTL [CARD_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
+    private fun cardGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedCardGlassAtMs > CARD_GLASS_TTL_MS) {
+            cachedCardGlassAtMs = now
+            val before = cachedCardGlass
+            cachedCardGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_CARD_GLASS_ENABLE, Prefs.DEFAULT_CARD_GLASS_ENABLE)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read card_glass_enable failed, default false", t)
+                false
+            }
+            val shouldLog = cachedCardGlass != before || !cardSwitchLogged
+            cardSwitchLogged = true
+            if (shouldLog) {
+                Lg.i(TAG, "launcher card: switch ${Prefs.KEY_CARD_GLASS_ENABLE} = $cachedCardGlass")
+            }
+        }
+        return cachedCardGlass
+    }
+
+    /** [doc/spec/78] 卡片圆角 px：读系统建 blur 背景时 setTag 的圆角；读不到返回 0f →
+     *  registerBlurRegion 回退 min(w,h)/2。tag id 惰性解析并缓存（getIdentifier 不便宜）。 */
+    private fun readCardCornerPx(target: View): Float {
+        if (mCardBlurRadiusTagId == 0) {
+            mCardBlurRadiusTagId = try {
+                target.resources.getIdentifier(ID_KEY_BLUR_VIEW_RADIUS, "id", target.context.packageName)
+            } catch (t: Throwable) {
+                Lg.w(TAG, "launcher card: resolve $ID_KEY_BLUR_VIEW_RADIUS failed", t); 0
+            }
+        }
+        if (mCardBlurRadiusTagId == 0) return 0f
+        return try {
+            (target.getTag(mCardBlurRadiusTagId) as? Float) ?: 0f
+        } catch (t: Throwable) {
+            0f
+        }
+    }
+
+    /**
      * [doc/spec/36 抓屏跟随系统模糊活动 2026-08-13] hook Launcher 进程 BlurDrawableManager.onBlurReady
      * （单 drawable 重载，反编译 OplusLauncher BlurDrawableManager.java L1416）：文件夹背景被系统模糊
      * 刷新时触发（Binder onBlurReady(Bundle) → 分组重载 L976 → 逐 drawable 重载 L1416）。新帧 =
@@ -1698,9 +2004,20 @@ object LauncherHook {
         registerBlurRegion(inner, view, radius)
     }
 
-    /** 公共注册：内层 BlurDrawable → screenRegionMap（region = hostView 屏幕位置 + 尺寸，corner = 圆角）。 */
-    private fun registerBlurRegion(inner: Any, hostView: View, corner: Float) {
-        if (!hostView.isAttachedToWindow) return
+    /** 公共注册：内层 BlurDrawable → screenRegionMap（region = hostView 屏幕位置 + 尺寸，corner = 圆角）。
+     *  [hostName] 标识宿主来源，用于日志与 RegionEntry.hostViewName（默认 FolderIcon 保持既有调用点行为）。
+     *  [cardClass] 该元素所属的卡片语义类（问小布/桌面卡片），随 bind 登记供预设按组件命中。 */
+    private fun registerBlurRegion(
+        inner: Any,
+        hostView: View,
+        corner: Float,
+        hostName: String = "FolderIcon",
+        cardClass: String? = null,
+    ) {
+        if (!hostView.isAttachedToWindow) {
+            logCardDiag("$hostName-not-attached", "coord: $hostName 跳过 —— 宿主 ${hostView.javaClass.name} 未 attach")
+            return
+        }
         val loc = IntArray(2)
         try {
             hostView.getLocationOnScreen(loc)
@@ -1709,7 +2026,10 @@ object LauncherHook {
         }
         val bw = hostView.width
         val bh = hostView.height
-        if (bw <= 0 || bh <= 0) return
+        if (bw <= 0 || bh <= 0) {
+            logCardDiag("$hostName-zero-size", "coord: $hostName 跳过 —— 宿主尺寸 ${bw}x${bh}（通常= 布局尚未完成）")
+            return
+        }
         val region = RectF(
             loc[0].toFloat(),
             loc[1].toFloat(),
@@ -1717,17 +2037,17 @@ object LauncherHook {
             (loc[1] + bh).toFloat(),
         )
         val key = System.identityHashCode(inner)
-        GlassRegistry.bind(key, inner)
+        GlassRegistry.bind(key, inner, cardClass)
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
         registerHostView(hostView)
-        val entry = RegionEntry(region, Rect(0, 0, bw, bh), "FolderIcon", resolvedCorner)
+        val entry = RegionEntry(region, Rect(0, 0, bw, bh), hostName, resolvedCorner)
         val previous = screenRegionMap[key]
         if (previous == null) {
             screenRegionMap[key] = entry
             if (screenRegionMap.size > 512) screenRegionMap.clear()
             Lg.i(
                 TAG,
-                "coord: folder-icon id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
+                "coord: $hostName id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "size=${bw}x${bh} cornerRadius=$resolvedCorner"
             )
             // [doc/spec/07 + 2026-08-13] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
@@ -2663,6 +2983,7 @@ object LauncherHook {
         val highlight: Float,
         val highlightWidth: Float,
         val highlightFalloff: Float,
+        val highlightFloor: Float,
         val highlightInnerAtt: Float,
         val innerGlow: Float,
         val vibrancy: Float,
@@ -2691,7 +3012,7 @@ object LauncherHook {
         val fallback = CachedMaterialParams(
             Prefs.DEFAULT_BLUR_RADIUS,
             def.refractionAmount, def.depth, def.dispersion,
-            def.highlight, def.highlightWidth, Prefs.DEFAULT_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
+            def.highlight, def.highlightWidth, Prefs.DEFAULT_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FLOOR, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT,
             Prefs.DEFAULT_INNER_GLOW, Prefs.DEFAULT_VIBRANCY,
             def.lightAngleDegrees, def.parallaxX, def.parallaxY,
         )
@@ -2712,6 +3033,7 @@ object LauncherHook {
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT, def.highlight),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_WIDTH, def.highlightWidth),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_FALLOFF, Prefs.DEFAULT_HIGHLIGHT_FALLOFF),
+                    prefs.getFloat(Prefs.KEY_HIGHLIGHT_FLOOR, Prefs.DEFAULT_HIGHLIGHT_FLOOR),
                     prefs.getFloat(Prefs.KEY_HIGHLIGHT_INNER_ATT, Prefs.DEFAULT_HIGHLIGHT_INNER_ATT),
                     prefs.getFloat(Prefs.KEY_INNER_GLOW, Prefs.DEFAULT_INNER_GLOW).coerceIn(0f, 1f),
                     prefs.getFloat(Prefs.KEY_VIBRANCY, Prefs.DEFAULT_VIBRANCY).coerceIn(1.0f, 3.0f),
@@ -2753,17 +3075,20 @@ object LauncherHook {
                 // 相对模式 = 元素短边 × KEY_REFRACTION_HEIGHT_RATIO（默认 0.5 = 改动前的 min(w,h)/2f）；
                 // 绝对模式 = KEY_REFRACTION_HEIGHT_PX（固定像素，默认 64）。三参数各自 500ms TTL 缓存
                 // （热路径零 IPC）；变化经 AppliedKey.refractionHeight 早退比对触发全量 setUniforms。
-                refractionHeight = Prefs.refractionHeightPx(minOf(width, height), api),
+                refractionHeight = ov?.get(Prefs.KEY_REFRACTION_HEIGHT_PX)?.coerceIn(0f, 4096f)
+                    ?: ov?.get(Prefs.KEY_REFRACTION_HEIGHT_RATIO)?.let { (minOf(width, height) * it).coerceIn(0f, 4096f) }
+                    ?: Prefs.refractionHeightPx(minOf(width, height), api),
                 refractionAmount = pick(Prefs.KEY_REFRACTION_AMOUNT, m.refractionAmount),
                 depth = pick(Prefs.KEY_DEPTH, m.depth),
                 dispersion = pick(Prefs.KEY_DISPERSION, m.dispersion),
                 highlight = pick(Prefs.KEY_HIGHLIGHT, m.highlight),
-                highlightWidth = m.highlightWidth,
-                highlightFalloff = m.highlightFalloff,
-                highlightInnerAtt = m.highlightInnerAtt,
-                innerGlow = pick(Prefs.KEY_INNER_GLOW, m.innerGlow),
-                vibrancy = pick(Prefs.KEY_VIBRANCY, m.vibrancy),
-                lightAngleDegrees = m.lightAngleDegrees,
+                highlightWidth = pick(Prefs.KEY_HIGHLIGHT_WIDTH, m.highlightWidth),
+                highlightFalloff = pick(Prefs.KEY_HIGHLIGHT_FALLOFF, m.highlightFalloff),
+                highlightFloor = pick(Prefs.KEY_HIGHLIGHT_FLOOR, m.highlightFloor),
+                highlightInnerAtt = pick(Prefs.KEY_HIGHLIGHT_INNER_ATT, m.highlightInnerAtt),
+                innerGlow = pick(Prefs.KEY_INNER_GLOW, m.innerGlow).coerceIn(0f, 1f),
+                vibrancy = pick(Prefs.KEY_VIBRANCY, m.vibrancy).coerceIn(1.0f, 3.0f),
+                lightAngleDegrees = pick(Prefs.KEY_LIGHT_ANGLE, m.lightAngleDegrees),
                 parallaxX = pick(Prefs.KEY_PARALLAX_X, m.parallaxX),
                 parallaxY = pick(Prefs.KEY_PARALLAX_Y, m.parallaxY),
             )

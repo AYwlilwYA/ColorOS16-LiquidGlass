@@ -2,7 +2,6 @@ package com.coloros16.liquidglass
 
 import android.app.Application
 import com.coloros16.liquidglass.config.Prefs
-import com.coloros16.liquidglass.log.FileLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
@@ -27,12 +26,8 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
 
     override fun onCreate() {
         super.onCreate()
-        // 文件日志通道用本进程 Context，门控读「运行日志」开关
-        FileLog.setContext(this)
-        FileLog.installGateReader { readEnableLogs() }
-        FileLog.installDiagWriter { slug, hb, chunk ->
-            serviceRef?.let { Prefs.writeLogDiag(it, slug, hb, chunk) }
-        }
+        // logcat 详细度门控读「运行日志」开关（开=全量，关=仅 e 级）
+        Lg.installGateReader { readEnableLogs() }
         Lg.e("lg-boot", "app pid=${android.os.Process.myPid()}")
         // 官方约定：全进程只注册一次。
         XposedServiceHelper.registerListener(this)

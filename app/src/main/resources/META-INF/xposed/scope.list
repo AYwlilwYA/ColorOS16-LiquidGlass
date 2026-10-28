@@ -7,5 +7,12 @@
 #   真机实证**该注入会导致显示管线卡死**（屏幕 ON 但 SurfaceFlinger 合成全黑），已移除。
 #   **不要再加回来**，除非先证明卡死根因另有其因。详见 doc/spec/82 §九。
 # 注：com.oplus.blur 已于 2026-08-13 移除——玻璃背景完全走 SystemUI 端每元素抓屏，不再依赖 BlurService。
+# 第三方 App（组件登记 + 预设按组件命中；渲染腿未接通，见 AppGlassHook 头注）：
+# - com.coloros.gallery3d：相册（A 族视图背景 RenderEffect）
+# - com.coloros.calculator：计算器（B 族窗口背景模糊 drawable）
+# - com.coloros.smartsidebar：智能侧边栏（B 族窗口背景模糊 drawable）
 com.android.systemui
 com.android.launcher
+com.coloros.gallery3d
+com.coloros.calculator
+com.coloros.smartsidebar

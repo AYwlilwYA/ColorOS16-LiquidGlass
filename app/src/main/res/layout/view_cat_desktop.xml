@@ -26,5 +26,39 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 桌面「问小布」入口液态玻璃化（默认关；TTL 500ms 重读 Prefs，改动无需重启桌面） -->
+        <Switch
+            android:id="@+id/switchPageIndicatorGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_page_indicator_glass" />
+
+        <TextView
+            android:id="@+id/pageIndicatorGlassDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_page_indicator_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 桌面卡片 / 分组卡片 / 小组件液态玻璃化（默认关；TTL 500ms 重读，改动无需重启桌面） -->
+        <Switch
+            android:id="@+id/switchCardGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_card_glass" />
+
+        <TextView
+            android:id="@+id/cardGlassDesc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_card_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
     </LinearLayout>
 </ScrollView>

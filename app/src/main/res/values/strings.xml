@@ -153,19 +153,20 @@
 
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">运行日志</string>
-    <string name="settings_enable_logs_desc">关闭后只保留错误日志。修改后需重启系统界面。</string>
+    <string name="settings_enable_logs_desc">关闭后 logcat 只保留错误日志。修改后需重启系统界面。</string>
     <string name="settings_share_log">分享日志</string>
-    <string name="settings_share_log_empty">还没有日志可分享。先打开上面的「运行日志」，下拉一次通知栏，再回来分享。</string>
     <string name="settings_share_log_failed">分享失败：%1$s</string>
-    <string name="settings_log_diag">通道状态（点击刷新）</string>
-    <string name="settings_log_diag_busy">正在读取通道状态…</string>
-    <string name="settings_log_diag_noframe">框架服务未就绪，读不到通道状态。请重开本页。</string>
-    <string name="settings_log_diag_fmt">%1$s：最近写入 %2$s；通道失败 %3$d 次，日志丢弃 %4$d 条</string>
-    <string name="settings_log_diag_none">无心跳（进程未运行新版本，或心跳回传失败）</string>
-    <string name="settings_log_diag_never">从未</string>
-    <string name="settings_log_proc_systemui">系统界面</string>
-    <string name="settings_log_proc_launcher">桌面</string>
-    <string name="settings_log_proc_app">模块自身</string>
+    <string name="settings_capture_include_all">含全部日志（默认只抓模块标签）</string>
+    <string name="settings_capture_start">开始抓取</string>
+    <string name="settings_capture_stop">停止抓取</string>
+    <string name="settings_capture_idle">未在抓取</string>
+    <string name="settings_capture_running">正在抓取：%1$s</string>
+    <string name="settings_capture_probing">正在检测 root…</string>
+    <string name="settings_capture_no_root">未检测到 root（su 不可用），无法抓取。请先授予 root。</string>
+    <string name="settings_capture_failed">启动抓取失败。</string>
+    <string name="settings_capture_logs_off_hint">「运行日志」开关关闭，抓取内容仅错误级。需要完整日志请先打开它。</string>
+    <string name="settings_capture_empty">还没有抓取文件。点「开始抓取」→ 复现问题 → 点「停止抓取」，然后点文件分享。</string>
+    <string name="settings_capture_item">%1$s（%2$d KB）</string>
     <string name="settings_dump_original_note">原图 dump 诊断已改走触发文件机制（/data/local/tmp/lg_dump_trigger → lg_dump.png）。</string>
 
     <!-- 关于 -->
@@ -260,6 +261,55 @@
     <string name="cat_desktop_desc">桌面元素的液态玻璃</string>
     <string name="settings_dock_glass">Dock 栏液态玻璃</string>
     <string name="settings_dock_glass_desc">为桌面底部 Dock 栏添加液态玻璃背景。开启后立即生效，无需重启桌面。</string>
+
+    <!-- 桌面「问小布」入口与卡片/小组件液态玻璃 -->
+    <string name="settings_page_indicator_glass">问小布搜索栏液态玻璃</string>
+    <string name="settings_page_indicator_glass_desc">给桌面底部「问小布」入口加液态玻璃背景。它和页面小圆点是同一个控件的两种状态，系统已自备模糊底，开启后由模块接管渲染。开启后立即生效，无需重启桌面。</string>
+    <string name="settings_card_glass">卡片 / 小组件液态玻璃</string>
+    <string name="settings_card_glass_desc">给桌面上的卡片、分组卡片、小组件背景加液态玻璃。这些背景的模糊由系统统一产生，开启后由模块接管渲染。开启后立即生效，无需重启桌面。</string>
+
+    <!-- 组件玻璃化分类（音量条 / 第三方 App） -->
+    <string name="cat_components">其他组件</string>
+    <string name="cat_components_desc">音量条与相册、计算器、智能侧边栏的液态玻璃</string>
+    <string name="settings_volume_seekbar_glass">音量条液态玻璃</string>
+    <string name="settings_volume_seekbar_glass_desc">给调节音量时弹出的竖向音量条加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_gallery_glass">相册液态玻璃</string>
+    <string name="settings_gallery_glass_desc">把相册里的视图背景模糊接管成液态玻璃。该功能依赖相册自身的模糊实现，不同界面效果可能不一致。</string>
+    <string name="settings_calculator_glass">计算器液态玻璃</string>
+    <string name="settings_calculator_glass_desc">把计算器的对话框与弹出菜单背景模糊接管成液态玻璃。</string>
+    <string name="settings_smart_sidebar_glass">智能侧边栏液态玻璃</string>
+    <string name="settings_smart_sidebar_glass_desc">把智能侧边栏面板与卡片的背景模糊接管成液态玻璃。</string>
+
+    <!-- 组件位置描述（类清单/管理对话框里「在哪里的」一句话） -->
+    <string name="loc_blur_drawable">通知中心与控制中心的多类卡片共用背景</string>
+    <string name="loc_base_drawable">桌面玻璃绘制基类</string>
+    <string name="loc_metaball">通知到达时的灯泡圆球（流体云黏连）</string>
+    <string name="loc_continuous">连续模糊层（通知/卡片背景）</string>
+    <string name="loc_mask_drawable">通知左滑/右滑的侧滑操作菜单</string>
+    <string name="loc_auto_blur">控制中心磁贴与 QS 亮度条背景</string>
+    <string name="loc_mix_color_tile">控制中心快捷开关磁贴</string>
+    <string name="loc_light_stroke">控制中心带描边的磁贴</string>
+    <string name="loc_notif_card">通知中心的通知卡片</string>
+    <string name="loc_custom_row">锁屏流体云的自定义通知卡行</string>
+    <string name="loc_capsule_bg">锁屏流体云胶囊的背景</string>
+    <string name="loc_capsule_ear">锁屏流体云胶囊两侧的圆耳朵</string>
+    <string name="loc_media_carousel">控制中心的媒体控制横幅</string>
+    <string name="loc_folder_bg">桌面文件夹的背景（闭合图标与打开卡片）</string>
+    <string name="loc_folder_icon">桌面文件夹图标</string>
+    <string name="loc_hotseat">桌面底部 Dock 常驻图标条</string>
+    <string name="loc_page_indicator">桌面底部的问小布搜索栏入口</string>
+    <string name="loc_launcher_card">桌面上的卡片、分组卡片与小组件背景</string>
+    <string name="loc_volume_seekbar">调节音量时弹出的竖向音量条</string>
+    <string name="loc_qs_brightness">控制中心的竖向亮度与音量滑杆</string>
+    <string name="loc_toggle_seekbar">亮度弹窗里的横向滑条</string>
+    <string name="loc_device_card_square">控制中心设备中心里的方形设备卡片</string>
+    <string name="loc_device_card_rect">控制中心设备中心里的长条设备卡片</string>
+    <string name="loc_gallery_photo_bg">相册照片页的背景材质模糊</string>
+    <string name="loc_gallery_bg_view">相册内的通用背景模糊覆盖层</string>
+    <string name="loc_window_blur">对话框与侧边栏等窗口的背景模糊层</string>
+    <string name="loc_smart_sidebar">智能侧边栏的主面板</string>
+    <string name="loc_vertical_seekbar">竖向滑条（音量条等）</string>
+    <string name="loc_horizontal_seekbar">横向滑条</string>
 
     <!-- iOS 动态倾斜 / 透视（doc/spec/65，2026-09-16，实验性） -->
     <string name="cat_tilt">倾斜与透视</string>

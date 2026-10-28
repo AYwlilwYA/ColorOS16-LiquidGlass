@@ -2,7 +2,6 @@ package com.coloros16.liquidglass.hook
 
 import android.content.Context
 import android.os.Build
-import com.coloros16.liquidglass.log.FileLog
 import com.coloros16.liquidglass.log.Lg
 
 /** 宿主包 versionCode 读取公共工具（Launcher/SystemUI 通用；失败返回 -1 表示未知，按老版本路径处理）。 */
@@ -30,6 +29,6 @@ object HostVersion {
     /** Xposed 进程内便捷重载：自动取 Application context 后读 versionCode。 */
     fun hostVersionCode(pkg: String): Long = hostVersionCode(appContextOrNull(), pkg)
 
-    /** 取当前进程 Context：复用 [FileLog.processContext] 的三级兜底链（失败返回 null）。 */
-    private fun appContextOrNull(): Context? = FileLog.processContext()
+    /** 取当前进程 Context：复用 [Lg.processContext] 的三级兜底链（失败返回 null）。 */
+    private fun appContextOrNull(): Context? = Lg.processContext()
 }

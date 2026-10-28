@@ -23,7 +23,7 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- 日志通道要识别 SystemUI / 桌面这两个调用方（包可见性声明） -->
+    <!-- 包可见性声明（hook 安装分发与设置页读取宿主信息用） -->
     <queries>
         <package android:name="com.android.systemui" />
         <package android:name="com.android.launcher" />
@@ -50,13 +50,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 日志文件写入通道：hook 进程把日志写进模块数据目录（LogProvider 内部校验调用方） -->
-        <provider
-            android:name=".log.LogProvider"
-            android:authorities="${applicationId}.lgfile"
-            android:exported="true" />
-
-        <!-- 日志文件分享通道：设置页「分享日志」把 lg.log 变成可分享的 content uri -->
+        <!-- 日志文件分享通道：设置页分享抓取文件（captures/）走 content uri -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

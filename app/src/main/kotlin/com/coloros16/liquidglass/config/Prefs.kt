@@ -374,6 +374,49 @@ object Prefs {
     /** 桌面 Dock 栏玻璃默认值（false = 不干预，Dock 保持系统原样透明） */
     const val DEFAULT_DOCK_GLASS_ENABLE = false
 
+    // ---------- 桌面「问小布」入口液态玻璃化（doc/spec/76） ----------
+    /** 桌面底部「✨问小布」入口（= `OplusPageIndicator` 的 BREENO 态）液态玻璃背景。
+     *  默认 **false**（与模块「默认全关」原则一致）。该控件与页面小圆点是同一个 View 的两个互斥
+     *  state，系统已自建 LayerBlurDrawable，开启后由本模块接管渲染。改动即时生效
+     *  （hook 端 TTL 500ms 重读 Prefs，无需重启 Launcher）。 */
+    const val KEY_PAGE_INDICATOR_GLASS = "page_indicator_glass_enable"
+    /** 问小布入口玻璃默认值（false = 不干预，保持系统原样磨砂） */
+    const val DEFAULT_PAGE_INDICATOR_GLASS = false
+
+    // ---------- 桌面卡片/小组件液态玻璃化（doc/spec/78） ----------
+    /** 桌面卡片 / 分组卡片 / 小组件背景液态玻璃。默认 **false**。这些元素的背景模糊由
+     *  `CardBackgroundBlurManager.createBlurBackground()` 统一产生，开启后由本模块接管渲染。
+     *  改动即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启 Launcher）。 */
+    const val KEY_CARD_GLASS_ENABLE = "card_glass_enable"
+    /** 桌面卡片玻璃默认值（false = 不干预，保持系统原样磨砂） */
+    const val DEFAULT_CARD_GLASS_ENABLE = false
+
+    // ---------- 音量条液态玻璃化（doc/spec/09） ----------
+    /** 音量条（垂直滑条）液态玻璃。默认 **false**。音量条背景走 framework 窗口模糊
+     *  （BackgroundBlurDrawable，draw 空实现），现有 drawable 替换链打不中，需按 spec/09
+     *  的 hook 点在 `COUIVerticalSeekBar.draw` 上盖玻璃。改动即时生效（TTL 500ms 重读）。 */
+    const val KEY_VOLUME_SEEKBAR_GLASS = "volume_seekbar_glass_enable"
+    /** 音量条玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_VOLUME_SEEKBAR_GLASS = false
+
+    // ---------- 第三方 App 玻璃化（相册/计算器/智能侧边栏） ----------
+    /** 相册玻璃化：拦截 App 内的视图背景模糊（RenderEffect / 窗口模糊 drawable）改画液态玻璃。
+     *  默认 **false**；开启后需要进程内背景源（抓屏）通道可用，抓不到时保持系统原样模糊。
+     *  改动即时生效（TTL 500ms 重读）。 */
+    const val KEY_GALLERY_GLASS = "gallery_glass_enable"
+    /** 相册玻璃化默认值（false = 不干预） */
+    const val DEFAULT_GALLERY_GLASS = false
+
+    /** 计算器玻璃化（对话框/弹出菜单背景）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_CALCULATOR_GLASS = "calculator_glass_enable"
+    /** 计算器玻璃化默认值（false = 不干预） */
+    const val DEFAULT_CALCULATOR_GLASS = false
+
+    /** 智能侧边栏玻璃化（侧边栏卡片/面板背景）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_SMART_SIDEBAR_GLASS = "smart_sidebar_glass_enable"
+    /** 智能侧边栏玻璃化默认值（false = 不干预） */
+    const val DEFAULT_SMART_SIDEBAR_GLASS = false
+
     // ---------- 弹出通知（heads-up）文字跟随整体颜色（doc/spec/47，2026-08-13） ----------
     /** heads-up 通知文字跟随整体颜色独立开关：true=开启（默认）；false=不放开（heads-up 文字回退
      *  mask/系统原逻辑）。**与遮罩开关无关**：开启时无论遮罩开/关，heads-up 窗口内中性色文字都按系统
@@ -1065,32 +1108,4 @@ object Prefs {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun write(context: Context): SharedPreferences.Editor = read(context).edit()
-
-    // ---------- 日志通道诊断（心跳 + 失败尾部回传，供设置页仪表盘） ----------
-    const val KEY_LG_HB_PREFIX = "lg_hb_"
-    const val KEY_LG_CHUNK_PREFIX = "lg_chunk_"
-
-    /** hook 端回传日志通道心跳（写框架侧存储）。 */
-    fun writeLogDiag(api: XposedInterface, slug: String, hb: String, chunk: String) {
-        try {
-            read(api).edit()
-                .putString(KEY_LG_HB_PREFIX + slug, hb)
-                .putString(KEY_LG_CHUNK_PREFIX + slug, chunk)
-                .apply()
-        } catch (t: Throwable) {
-            android.util.Log.w("Prefs", "writeLogDiag failed: $t")
-        }
-    }
-
-    /** 模块 UI 进程回传（自身进程心跳，走框架服务通道）。 */
-    fun writeLogDiag(service: XposedService, slug: String, hb: String, chunk: String) {
-        try {
-            remote(service).edit()
-                .putString(KEY_LG_HB_PREFIX + slug, hb)
-                .putString(KEY_LG_CHUNK_PREFIX + slug, chunk)
-                .apply()
-        } catch (t: Throwable) {
-            android.util.Log.w("Prefs", "writeLogDiag failed: $t")
-        }
-    }
 }

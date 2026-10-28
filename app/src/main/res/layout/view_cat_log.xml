@@ -25,25 +25,49 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
-        <TextView
-            android:id="@+id/shareLogRow"
+        <Switch
+            android:id="@+id/switchCaptureAll"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:background="?attr/selectableItemBackground"
-            android:padding="12dp"
-            android:text="@string/settings_share_log"
-            android:textAppearance="?attr/textAppearanceBodyMedium" />
+            android:text="@string/settings_capture_include_all" />
 
         <TextView
-            android:id="@+id/logDiagRow"
+            android:id="@+id/captureStartRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:background="?attr/selectableItemBackground"
             android:padding="12dp"
-            android:text="@string/settings_log_diag"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
+            android:text="@string/settings_capture_start"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/captureStopRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="?attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="@string/settings_capture_stop"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/captureStatusRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:padding="12dp"
+            android:text="@string/settings_capture_idle"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <LinearLayout
+            android:id="@+id/captureList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical" />
 
         <TextView
             android:layout_width="match_parent"

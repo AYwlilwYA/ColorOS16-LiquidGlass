@@ -180,6 +180,12 @@ object GlassRegistry {
     /** 预设解析缓存 TTL（毫秒），渲染热路径按此周期才重读一次。 */
     private const val PRESET_TTL_MS = 500L
 
+    /** 已审计过预设查表的元素（每元素一条，定位绑定类/命中键） */
+    private val lookupAudit = ConcurrentHashMap.newKeySet<Int>()
+
+    /** 预设查表时未绑定的元素 id（每元素一条，抓注册 id 与渲染 id 错配） */
+    private val unboundAudit = ConcurrentHashMap.newKeySet<Int>()
+
     /** 注入框架侧存储读取器（hook 安装时调用一次）。 */
     fun attach(provider: () -> SharedPreferences?) {
         prefsProvider = provider
@@ -234,6 +240,52 @@ object GlassRegistry {
         "com.android.launcher3.folder.OplusPreviewBackground" to "文件夹背景",
         "com.android.launcher3.folder.FolderRoundImageView" to "文件夹图标",
         "com.android.launcher3.OplusHotseat" to "Dock 底栏",
+        "com.android.launcher.pageindicators.OplusPageIndicator" to "问小布搜索栏入口",
+        "com.android.launcher3.card.CardBackgroundBlurManager" to "桌面卡片 / 小组件背景",
+        "com.oplus.systemui.volume.OplusVolumeSeekBar" to "音量条",
+        "com.oplus.systemui.qs.base.seek.OplusQsVerticalSeekBar" to "控制中心亮度音量滑杆",
+        "com.oplus.systemui.qs.widget.OplusToggleSeekBar" to "横向亮度滑条",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareDeviceCardView" to "设备中心卡片（方形）",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleDeviceCardView" to "设备中心卡片（长条）",
+        "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "相册照片页背景",
+        "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "相册通用背景模糊层",
+        "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "窗口背景模糊层",
+        "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "智能侧边栏面板",
+        "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "垂直滑条基类",
+        "com.coui.appcompat.seekbar.COUISeekBar" to "横向滑条基类",
+    )
+
+    /** 类全名 → 位置描述的 strings.xml 资源名（「在哪里的」一句话；UI 侧经 [classLocationKey] 取用）。 */
+    private val CLASS_LOCATION_KEYS = mapOf(
+        "com.oplus.posteffect.BlurDrawable" to "loc_blur_drawable",
+        "com.oplus.posteffect.drawable.BaseDrawable" to "loc_base_drawable",
+        "com.oplus.posteffect.drawable.MetaBallBlurDrawable" to "loc_metaball",
+        "com.oplus.posteffect.drawable.ContinuousBlurDrawable" to "loc_continuous",
+        "com.oplusos.systemui.common.blurability.drawable.MaskDrawable" to "loc_mask_drawable",
+        "com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable" to "loc_auto_blur",
+        "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable" to "loc_mix_color_tile",
+        "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable" to "loc_light_stroke",
+        "com.oplus.systemui.statusbar.notification.row.NotificationBackgroundViewExtImp" to "loc_notif_card",
+        "com.oplus.systemui.statusbar.notification.customcard.OplusCustomRow" to "loc_custom_row",
+        "com.oplus.systemui.notification.lockscreen.capsule.CapsuleBackgroundHelper" to "loc_capsule_bg",
+        "com.oplus.systemui.notification.lockscreen.capsule.CapsuleEarView" to "loc_capsule_ear",
+        "com.oplus.systemui.media.controls.ui.OplusMediaCarouselView" to "loc_media_carousel",
+        "com.android.launcher3.folder.OplusPreviewBackground" to "loc_folder_bg",
+        "com.android.launcher3.folder.FolderRoundImageView" to "loc_folder_icon",
+        "com.android.launcher3.OplusHotseat" to "loc_hotseat",
+        "com.android.launcher.pageindicators.OplusPageIndicator" to "loc_page_indicator",
+        "com.android.launcher3.card.CardBackgroundBlurManager" to "loc_launcher_card",
+        "com.oplus.systemui.volume.OplusVolumeSeekBar" to "loc_volume_seekbar",
+        "com.oplus.systemui.qs.base.seek.OplusQsVerticalSeekBar" to "loc_qs_brightness",
+        "com.oplus.systemui.qs.widget.OplusToggleSeekBar" to "loc_toggle_seekbar",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareDeviceCardView" to "loc_device_card_square",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleDeviceCardView" to "loc_device_card_rect",
+        "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "loc_gallery_photo_bg",
+        "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "loc_gallery_bg_view",
+        "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "loc_window_blur",
+        "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "loc_smart_sidebar",
+        "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "loc_vertical_seekbar",
+        "com.coui.appcompat.seekbar.COUISeekBar" to "loc_horizontal_seekbar",
     )
 
     /** 清单/对话框展示用：有标签显示「标签（简单类名）」，无标签只显示简单类名。 */
@@ -242,6 +294,9 @@ object GlassRegistry {
         val label = CLASS_LABELS[cls] ?: return simple
         return "$label（$simple）"
     }
+
+    /** 清单/对话框展示用：该类的位置描述字符串资源名；未登记 → null。 */
+    fun classLocationKey(cls: String): String? = CLASS_LOCATION_KEYS[cls]
 
     private fun touch(name: String) {
         try {
@@ -313,8 +368,24 @@ object GlassRegistry {
      */
     fun overridesFor(elementId: Int): Map<String, Float>? {
         if (elementId == 0) return null
-        val b = bound[elementId] ?: return null
+        val b = bound[elementId] ?: run {
+            if (unboundAudit.size <= 128 && unboundAudit.add(elementId)) {
+                Lg.i(TAG, "preset-lookup: id=$elementId UNBOUND")
+            }
+            return null
+        }
         val map = snapshotOverrides()
+        if (lookupAudit.size <= 128 && lookupAudit.add(elementId)) {
+            val hit = when {
+                b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
+                map.containsKey(b.name) -> b.name
+                else -> null
+            }
+            Lg.i(
+                TAG, "preset-lookup: id=$elementId name=${b.name.substringAfterLast('.')} " +
+                    "card=${b.cardClass?.substringAfterLast('.')} hit=$hit presets=${map.size}"
+            )
+        }
         if (map.isEmpty()) return null
         // 卡片类优先精确命中，未配则回落按绘制对象类命中
         return map[b.cardClass ?: b.name] ?: map[b.name]

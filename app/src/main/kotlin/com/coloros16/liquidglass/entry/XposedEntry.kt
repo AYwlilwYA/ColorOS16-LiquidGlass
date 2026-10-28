@@ -2,6 +2,7 @@ package com.coloros16.liquidglass.entry
 
 import android.os.Build
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.hook.AppGlassHook
 import com.coloros16.liquidglass.hook.BlurDrawHook
 import com.coloros16.liquidglass.hook.HostVersion
 import com.coloros16.liquidglass.hook.LauncherAnimHook
@@ -9,7 +10,6 @@ import com.coloros16.liquidglass.hook.LauncherHook
 import com.coloros16.liquidglass.hook.LauncherTiltHook
 import com.coloros16.liquidglass.hook.LockScreenClockHook
 import com.coloros16.liquidglass.hook.SceneFilter
-import com.coloros16.liquidglass.log.FileLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
@@ -42,18 +42,15 @@ class XposedEntry : XposedModule() {
         Lg.i(TAG, "module loaded, process=${param.processName}, isSystemServer=${param.isSystemServer()}")
     }
 
-    /** 文件日志门控：读框架侧「运行日志」开关（读失败默认开，避免静默丢日志）；并装 C 通道心跳回传。 */
+    /** logcat 详细度门控：读框架侧「运行日志」开关（开=全量，关=仅 e 级；读失败默认开）。 */
     private fun installLogGate() {
         val module = this
-        FileLog.installGateReader {
+        Lg.installGateReader {
             try {
                 Prefs.read(module).getBoolean(Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
             } catch (t: Throwable) {
                 true
             }
-        }
-        FileLog.installDiagWriter { slug, hb, chunk ->
-            Prefs.writeLogDiag(module, slug, hb, chunk)
         }
     }
 
@@ -68,7 +65,10 @@ class XposedEntry : XposedModule() {
         // 进程不再注入，系统模糊管线完全原样，玻璃完全靠 SystemUI 端每元素背景源）。
         // [2026-08-13 spec/10] Launcher 进程（com.android.launcher）加入：桌面文件夹背景液态玻璃化，
         // 与 SystemUI 共用同一套 posteffect drawBlurShader hook（FQCN 相同，两份独立 hook 实例）。
-        if (param.packageName != PACKAGE_SYSTEMUI && param.packageName != PACKAGE_LAUNCHER) return
+        if (param.packageName != PACKAGE_SYSTEMUI && param.packageName != PACKAGE_LAUNCHER &&
+            param.packageName != PACKAGE_GALLERY && param.packageName != PACKAGE_CALCULATOR &&
+            param.packageName != PACKAGE_SMART_SIDEBAR
+        ) return
         val classLoader = param.getDefaultClassLoader() ?: return
         // [doc/spec/110] 存宿主 classLoader：同 ClassLoader 复用重载时 onHotReloaded 直接取用；
         // 新 ClassLoader 场景下新类静态为空，由 resolveClassLoader 的兜底链接管。
@@ -111,7 +111,9 @@ class XposedEntry : XposedModule() {
             Lg.e(TAG, "hot-reload: null processName, keep old hooks")
             return
         }
-        if (pkg != PACKAGE_SYSTEMUI && pkg != PACKAGE_LAUNCHER) {
+        if (pkg != PACKAGE_SYSTEMUI && pkg != PACKAGE_LAUNCHER &&
+            pkg != PACKAGE_GALLERY && pkg != PACKAGE_CALCULATOR && pkg != PACKAGE_SMART_SIDEBAR
+        ) {
             // 非目标进程：按框架语义卸掉旧 hook（这些进程本就不该有模块 hook）
             param.oldHookHandles.forEach { h ->
                 try {
@@ -183,6 +185,11 @@ class XposedEntry : XposedModule() {
                     LauncherTiltHook.install(this, classLoader)
                 }
             }
+            // 第三方 App（相册/计算器/智能侧边栏）：A/B 族模糊挂载点登记（组件清单 + 预设按组件命中）。
+            // 渲染腿尚未接通（进程内无抓屏权限拿不到背景源），背景仍由系统模糊渲染，见 AppGlassHook 头注。
+            PACKAGE_GALLERY, PACKAGE_CALCULATOR, PACKAGE_SMART_SIDEBAR -> {
+                AppGlassHook.install(this, classLoader, packageName)
+            }
         }
     }
 
@@ -235,21 +242,10 @@ class XposedEntry : XposedModule() {
     }
 
     private fun cacheClassLoader(pkg: String, cl: ClassLoader) {
-        synchronized(loaderLock) {
-            when (pkg) {
-                PACKAGE_SYSTEMUI -> cachedSystemUiLoader = cl
-                PACKAGE_LAUNCHER -> cachedLauncherLoader = cl
-            }
-        }
+        cachedLoaders[pkg] = cl
     }
 
-    private fun cachedClassLoader(pkg: String): ClassLoader? = synchronized(loaderLock) {
-        when (pkg) {
-            PACKAGE_SYSTEMUI -> cachedSystemUiLoader
-            PACKAGE_LAUNCHER -> cachedLauncherLoader
-            else -> null
-        }
-    }
+    private fun cachedClassLoader(pkg: String): ClassLoader? = cachedLoaders[pkg]
 
     companion object {
         /** SystemUI 进程（通知中心/控制中心）：Hook B 绘制替换 / Hook C 场景过滤。
@@ -258,10 +254,14 @@ class XposedEntry : XposedModule() {
         /** [spec/10] Launcher 进程（桌面）：文件夹背景液态玻璃化（OplusPreviewBackground 闭合图标 +
          *  Folder.dispatchDraw 打开卡片）。与 SystemUI 共用同一套 posteffect drawBlurShader hook。 */
         const val PACKAGE_LAUNCHER = "com.android.launcher"
+        /** 相册进程：照片页/按钮的视图背景模糊组件登记（AppGlassHook A 族）。 */
+        const val PACKAGE_GALLERY = "com.coloros.gallery3d"
+        /** 计算器进程：对话框/弹出菜单窗口模糊组件登记（AppGlassHook B 族）。 */
+        const val PACKAGE_CALCULATOR = "com.coloros.calculator"
+        /** 智能侧边栏进程：侧边栏面板窗口模糊组件登记（AppGlassHook B 族）。 */
+        const val PACKAGE_SMART_SIDEBAR = "com.coloros.smartsidebar"
         /** [doc/spec/110] 宿主 classLoader 缓存（onPackageLoaded 存 / onHotReloaded 读）。 */
-        private val loaderLock = Any()
-        private var cachedSystemUiLoader: ClassLoader? = null
-        private var cachedLauncherLoader: ClassLoader? = null
+        private val cachedLoaders = java.util.concurrent.ConcurrentHashMap<String, ClassLoader>()
         /** [doc/spec/110] 模块版本标记（热重载完成日志用，便于 daemon 侧对账 loaded version）。 */
         private const val MODULE_VERSION = "spec-113"
         /** [spec/116 P0] 桌面 17.3.12 versionCode：达到该版本后禁用 LauncherAnimHook（弹簧字段全灭）。 */
