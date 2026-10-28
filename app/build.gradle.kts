@@ -68,6 +68,8 @@ kotlin {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+
     // LibXposed API：仅编译期可见（compileOnly），打包时排除，避免与框架注入冲突。
     compileOnly(libs.libxposed.api)
 

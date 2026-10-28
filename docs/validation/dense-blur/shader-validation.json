@@ -1,0 +1,99 @@
+{
+  "baseCommit": "aa96e1aeb98f4e3777f4bced265a1b86bf3e10cd",
+  "actualAgslSha256": "84b342209a2ae85fb8a9b1c99f2ae197437987e7f5e199eed9b303d9bd0be35e",
+  "opticalMathUnchanged": true,
+  "productionBindingCallsites": 3,
+  "checks": [
+    {
+      "shape": "round",
+      "blur": 0,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "round",
+      "blur": 8,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "round",
+      "blur": 64,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "wide",
+      "blur": 0,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "wide",
+      "blur": 8,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "wide",
+      "blur": 64,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "slider",
+      "blur": 0,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "slider",
+      "blur": 8,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "slider",
+      "blur": 64,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "notification",
+      "blur": 0,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "notification",
+      "blur": 8,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    },
+    {
+      "shape": "notification",
+      "blur": 64,
+      "legacyMaxDelta": 0.0,
+      "coveragePreserved": true,
+      "baseFullEquivalent": true
+    }
+  ],
+  "aliasingFixture": {
+    "sparseStd": 0.4999999701976776,
+    "preparedStd": 0.0019607841968536377
+  },
+  "fixturePreblur": "Pillow fixed input, NOT production CPU proof",
+  "physicalDeviceTested": false,
+  "colorOs16HookTested": false
+}

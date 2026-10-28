@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.coloros16.liquidglass.blur.BackdropBlurTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-10-28T05:13:46.462Z" hostname="VOIDREAM" time="0.032">
+  <properties/>
+  <testcase name="subpixelBlurDoesNotSnapToAWholePixelKernel" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.015"/>
+  <testcase name="zeroBlurPreservesEveryPixelAndDoesNotMutateInput" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.001"/>
+  <testcase name="strongerBlurSuppressesHighFrequencyBackdropVariation" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.007"/>
+  <testcase name="blurStrengthDoesNotReduceCaptureDensity" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="floatingIntermediatesPreserveSmoothRampBrightness" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="gaussianApproximationTracksDenseReferenceWithoutGridGaps" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="transparentHiddenColorCannotBleedIntoVisibleBackdrop" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="materialSigmaKeepsPreviousVisualStrength" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="productionOutputRetainsFractionalChannelPrecision" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="flatBackdropAndClampedEdgesStayFlatForLargeRadii" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="impulseVarianceMatchesRequestedGaussianSigma" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.002"/>
+  <testcase name="weakBlurRetainsDetailWithinABoundedMemoryBudget" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="normalPhoneBackdropDoesNotCollapseTo198Pixels" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="cancelledComputationDoesNotMutateSnapshot" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.001"/>
+  <testcase name="radiusChangesAcrossOldRoundingBoundaryStayContinuous" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="floatChannelsRemainPremultipliedAndFinite" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.001"/>
+  <testcase name="translucentFlatColorDoesNotDarkenAcrossTenPasses" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.0"/>
+  <testcase name="blurSpreadsFineDetailWithoutFadingOpaqueCoverage" classname="com.coloros16.liquidglass.blur.BackdropBlurTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,3 +1,4 @@
+/* Dense snapshot preblur contributed by V0idream (DreamGlass), 2026-10-28; GPL-3.0. */
 package com.coloros16.liquidglass.liquidglass
 
 import android.graphics.Bitmap
@@ -55,6 +56,7 @@ object LiquidGlassShader {
         uniform float uCornerWeight;     // 本体 CONIC 角权重（系统 CornerParamsKt fMax=(8·w)/(3·w+3) 变换后值；uCornerIsConic=0 时忽略）
         uniform float uCornerConicBlend; // [2026-08-13] 本体角 CONIC↔圆弧平滑过渡权重（0=纯圆弧 sdRoundedRect，1=纯 CONIC sdBezierDistance；
                                          // 运动态=0 → 跳过贝塞尔省 CONIC 迭代；复位时 Kotlin 侧动画 0→1 平滑恢复，防角形状瞬间突变闪）
+        uniform float uSourcePreblurred; // Dense F16 input: never blur it again.
         uniform float uBlurRadius;       // 内部可选轻模糊半径 px（0=清晰透镜；>0 仅作用内部，不糊折射环带）
         uniform float uRefractionHeight; // 折射区高度 px（自边缘向内；= 元素短边 × refraction_height_ratio，默认 0.5=短边一半，见 doc/spec/95）
         uniform float uRefractionAmount; // 折射强度 px（边缘最大位移；正值，AGSL 侧向内侧采样）
@@ -475,6 +477,9 @@ object LiquidGlassShader {
         }
 
         float4 gaussianBlur(float2 coord, float spread) {
+            if (uSourcePreblurred > 0.5) {
+                return float4(uSource.eval(srcCoord(coord, uSourceRect)));
+            }
             // 采样 1/4 降采样图（uSourceLowRes）：其 BitmapShader 矩阵已把 viewport 折算到
             // 低分辨率 srcRect（等价于「在 1/4 图上取 coord/4 处采样」），tapStep 在低分辨率
             // 图内等效缩小 4 倍（视口 5px / 低分辨率图 1.25px），配合双线性插值——消除
@@ -838,6 +843,7 @@ object LiquidGlassShader {
         val cornerRadius: Float = 28f,   // SDF 圆角半径 px（uCornerRadius；几何/折射/高光用）
         val cornerIsConic: Boolean = false,  // 本体角 CONIC 开关（true=三次贝塞尔 + shader 内 1.5×半径；false=RBox 圆弧）
         val cornerWeight: Float = DEFAULT_MASK_WEIGHT, // 本体 CONIC 角权重（系统 CornerParamsKt (8·w)/(3·w+3) 变换后值；默认 1.3968）
+        val sourcePreblurred: Boolean = false, // Input has already been densely filtered.
         val blurRadius: Float = 0f,      // 内部可选轻模糊 px（uBlurRadius；0=清晰透镜=iOS 26 观感；>0 仅作用内部，不糊折射环带）
         /** 折射区高度 px（uRefractionHeight，自边缘向内）。[doc/spec/95] hook 端与预览端恒按
          *  「元素短边 × 短边比例」算（Prefs.KEY_REFRACTION_HEIGHT_RATIO，默认 0.5 = 短边一半）；
@@ -1025,6 +1031,9 @@ object LiquidGlassShader {
         shader.setFloatUniform("uCornerIsConic", if (params.cornerIsConic) 1f else 0f)
         shader.setFloatUniform("uCornerWeight", params.cornerWeight)
         shader.setFloatUniform("uCornerConicBlend", cornerConicBlend)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            shader.setFloatUniform("uSourcePreblurred", if (params.sourcePreblurred) 1f else 0f)
+        }
         shader.setFloatUniform("uBlurRadius", params.blurRadius)
         shader.setFloatUniform("uRefractionHeight", params.refractionHeight)
         shader.setFloatUniform("uRefractionAmount", params.refractionAmount)
@@ -1166,7 +1175,9 @@ object LiquidGlassShader {
      * 由 [setUniforms] 传入），此处仅提供 CLAMP 位图采样。
      */
     fun createSourceBitmapShader(bitmap: Bitmap): BitmapShader =
-        BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            if (android.os.Build.VERSION.SDK_INT >= 33) filterMode = BitmapShader.FILTER_MODE_LINEAR
+        }
 
     /**
      * 构造 uSourceLowRes 用的 BitmapShader：1/4 降采样原图 + 单位矩阵（不做 setRectToRect 映射）。
@@ -1176,5 +1187,7 @@ object LiquidGlassShader {
      * @param lowResBitmap 1/4 降采样原图（原图 `Bitmap.createScaledBitmap(w/4, h/4, true)`）。
      */
     fun createLowResSourceBitmapShader(lowResBitmap: Bitmap): BitmapShader =
-        BitmapShader(lowResBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        BitmapShader(lowResBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            if (android.os.Build.VERSION.SDK_INT >= 33) filterMode = BitmapShader.FILTER_MODE_LINEAR
+        }
 }

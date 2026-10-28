@@ -1,3 +1,4 @@
+/* Dense snapshot preblur contributed by V0idream (DreamGlass), 2026-10-28; GPL-3.0. */
 package com.coloros16.liquidglass.hook
 
 import android.graphics.Bitmap
@@ -775,9 +776,19 @@ object BlurDrawHook {
     private class RenderSource(
         val source: Bitmap,
         val srcRect: RectF,
+        val screenRect: RectF,
         /** true=整屏快照源（0.5 降采样）；false=全局 onBlurReady 原图（已移除，恒 true） */
-        val isElementSource: Boolean,
+        val isSnapshotSource: Boolean,
     )
+
+    // Shared across controls; filtering never runs in a draw hook or mutates the screenshot.
+    private val backdropWorker by lazy {
+        BackdropWorker(::postInvalidateHosts) { error ->
+            logThrottled("dense-backdrop-failed", Log.WARN) {
+                "dense preblur unavailable; keep compact fallback: ${error.javaClass.simpleName}"
+            }
+        }
+    }
 
     /** 整屏快照（@Volatile：worker 线程写入，渲染线程读取；内容变化时重抓，静止不抓） */
     @Volatile
@@ -6800,13 +6811,16 @@ object BlurDrawHook {
         val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
         val cornerRadius = entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
-        val params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
+        val rawParams = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
+        val binding = BackdropBinding.resolve(backdropWorker, source, renderSource.screenRect, srcRect,
+            renderSource.isSnapshotSource, rawParams)
+        val params = binding.params
         val shader = obtainShader(id, metaball = entry.metaBall != null)
-        val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(binding.bitmap)
         LiquidGlassShader.setUniforms(
             shader, params, sourceShader, sourceShader,
-            sourceRect = srcRect,
-            lowResSourceRect = srcRect,
+            sourceRect = binding.sourceRect,
+            lowResSourceRect = binding.sourceRect,
             debugCoord = 0f,
             maskRect = null,
             maskCornerRadius = 0f,
@@ -6816,8 +6830,9 @@ object BlurDrawHook {
             maskAlpha = 0f,  // 桌面流体云无 shade 遮罩（遮罩仅作用于 SystemUI 下拉）
         )
         appliedUniformsMap[id] = AppliedKey(
-            frame = 0L, sourceBitmapId = System.identityHashCode(source),
-            viewport = viewport, srcRect = srcRect, maskRect = null,
+            frame = 0L, sourceBitmapId = System.identityHashCode(binding.bitmap),
+            viewport = viewport, srcRect = binding.sourceRect, maskRect = null,
+            materialHash = params.hashCode(),
             cornerIsConic = entry.cornerIsConic, cornerWeight = entry.cornerWeight,
             cornerRadius = cornerRadius, cornerConicBlend = 1f, maskAlpha = 0f,
         )
@@ -10455,7 +10470,7 @@ object BlurDrawHook {
      * @param maskOffsetX / maskOffsetY MetaBall 固有扩张偏移（uMaskOffset，真实大小绘制）
      * @param cornerIsConic / cornerWeight / cornerRadius / cornerConicBlend 本体角 uniform 输入
      * @param params buildParams 材质参数结果（折射/反射/高光/色散/vibrancy 等 Prefs 派生，1s 节流缓存）
-     * @param isElementSource 渲染源类型（整屏快照恒 true；主线程低清分支判断用）
+     * @param isSnapshotSource 渲染源类型（整屏快照恒 true；主线程低清分支判断用）
      * @param hostViewName 宿主 view 名（仅 coord 诊断日志用）
      * @param realRegionOffset realRegion 相对宿主 loc 的形状（真实卡片区域，含 MetaBall 扩张内缩；
      *  主线程实时 loc + 此形状 = 绝对屏幕区域 → 容器变换 → srcRect 折算基准。不依赖 loc，后台算）
@@ -10473,7 +10488,7 @@ object BlurDrawHook {
         val cornerRadius: Float,
         val cornerConicBlend: Float,
         val params: LiquidGlassShader.Params,
-        val isElementSource: Boolean,
+        val isSnapshotSource: Boolean,
         val hostViewName: String,
         val realRegionOffset: RectF,
         /** [spec/35 黑遮罩 / spec/41 作用范围修正] 该元素应叠加的黑遮罩不透明度
@@ -10657,7 +10672,7 @@ object BlurDrawHook {
      * [doc/spec/31 并行化] 主线程应用后台计算结果：只做 **srcRect 实时折算（spec/32）** + changed 检测 +
      * setUniforms（RuntimeShader 必须渲染线程）。与原 refreshShaderUniforms 的 setUniforms 段行为完全一致
      * （轻量分支 srcRect-only / viewport+srcRect-only / 全量 setUniforms），仅几何/材质值改由 [cg]（后台
-     * computeGeometry 结果）提供，**srcRect 改由主线程实时算**（依赖 loc，必须主线程；见 [resolveLiveSrcRect]）。
+     * computeGeometry 结果）提供，**srcRect 改由主线程实时算**（依赖 loc，必须主线程；见 [resolveLiveSource]）。
      * 源位图换新（快照新实例）时主线程用【当前】快照重建 source shader 绑定（srcRect 折算比例恒定，数值仍有效）。
      *
      * @return true = shader 仍保持液态玻璃（失败也不破坏现有绘制，强兜底）。
@@ -10690,7 +10705,11 @@ object BlurDrawHook {
             if (cg.bodyRect != wantBody) {
                 submitGeometryCompute(id, bounds, force = true)
             }
-            val srcRect = resolveLiveSrcRect(id, entry, bounds, cg) ?: return true
+            val liveSource = resolveLiveSource(id, entry, bounds, cg) ?: return true
+            val binding = BackdropBinding.resolve(backdropWorker, liveSource.source, liveSource.screenRect,
+                liveSource.srcRect, cg.isSnapshotSource, cg.params)
+            val srcRect = binding.sourceRect
+            val renderParams = binding.params
             // [doc/spec/100 方案2] metaball uniform 输入（cg.bodyRect==null → null → shader 零变化）
             val mbNow = resolveMetaBalls(entry, cg.bodyRect, cg.viewport)
             val applied = appliedUniformsMap[id]
@@ -10699,8 +10718,8 @@ object BlurDrawHook {
             val tiltNow = notifTiltAngleFor(entry?.hostViewRef?.get())
             val frame = cg.frame
             // 源变化判断用主线程【当前】快照实例 id（后台计算后快照可能换新 → 立即重建绑定新图，玻璃内容不冻结）
-            val currentBitmap = screenSnapshot?.bitmap
-            val sourceBitmapId = if (currentBitmap != null) System.identityHashCode(currentBitmap) else 0
+            val currentBitmap = binding.bitmap
+            val sourceBitmapId = System.identityHashCode(currentBitmap)
             val viewport = cg.viewport
             // [2026-08-13 优化] srcRect 已从 sourceChanged 拆出：滑动时 srcRect 每帧变但源位图未变，
             // 只重设 uniform（无需重建 BitmapShader / setInputShader）。只有快照换新 Bitmap 才重建。
@@ -10725,7 +10744,7 @@ object BlurDrawHook {
             val maskOverlayChanged = applied == null || applied.maskAlpha != cg.maskAlpha
             // [2026-09-16 doc/spec/67] 材质参数指纹变化（任何材质滑杆改动）→ 必须走全量 setUniforms 重设。
             // 否则材质改动被 `if (!uniformsChanged) return true` 吃掉，直到几何变化才生效。
-            val materialChanged = applied == null || applied.materialHash != cg.params.hashCode()
+            val materialChanged = applied == null || applied.materialHash != renderParams.hashCode()
             // [doc/spec/100 方案2] metaball 球心/半尺寸/blendShape 逐帧随动画变 → data class equals
             // 命中差异 → 必须走全量 setUniforms 重设 uBall1/2/3（否则桥位置停在上一帧）。
             val metaBallChanged = applied != null && applied.metaBalls != mbNow
@@ -10743,7 +10762,7 @@ object BlurDrawHook {
 
             if (!uniformsChanged) return true
 
-            val sourceShader = if (sourceBitmapChanged && currentBitmap != null) {
+            val sourceShader = if (sourceBitmapChanged) {
                 LiquidGlassShader.createSourceBitmapShader(currentBitmap)
             } else {
                 null
@@ -10753,16 +10772,13 @@ object BlurDrawHook {
             val lowResShader: Shader?
             val lowResSrcRect: RectF
             if (sourceBitmapChanged) {
-                if (cg.isElementSource && currentBitmap != null) {
+                if (cg.isSnapshotSource) {
                     lowResShader = sourceShader
                     lowResSrcRect = srcRect
-                } else if (currentBitmap != null) {
+                } else {
                     val lowResResult = buildLowResShader(currentBitmap, srcRect)
                     lowResShader = lowResResult?.shader
                     lowResSrcRect = lowResResult?.lowResSrcRect ?: srcRect
-                } else {
-                    lowResShader = null
-                    lowResSrcRect = srcRect
                 }
             } else {
                 lowResShader = null
@@ -10813,7 +10829,7 @@ object BlurDrawHook {
 
             // 全量：材质参数（cg.params，后台 buildParams 结果）已在后台算好，主线程只传值 setUniforms
             LiquidGlassShader.setUniforms(
-                shader, cg.params, sourceShader, lowResShader,
+                shader, renderParams, sourceShader, lowResShader,
                 sourceRect = srcRect,
                 lowResSourceRect = lowResSrcRect,
                 debugCoord = 0f,
@@ -10837,7 +10853,7 @@ object BlurDrawHook {
                 cornerIsConic = cg.cornerIsConic, cornerWeight = cg.cornerWeight, cornerRadius = cg.cornerRadius,
                 cornerConicBlend = cg.cornerConicBlend,
                 maskAlpha = cg.maskAlpha,
-                materialHash = cg.params.hashCode(),
+                materialHash = renderParams.hashCode(),
                 // [doc/spec/100 方案2] metaball 状态（球动 → 下帧 metaBallChanged 触发全量重设）
                 metaBalls = mbNow,
                 // [doc/spec/112] 倾斜角（θ 变 → 下帧 tiltChanged 继续走全量；归零后回轻量路径）
@@ -10870,7 +10886,7 @@ object BlurDrawHook {
      * - 快照缺失 → 异步请求抓屏 + 返回 null（保持上次 uniform，下帧快照就绪自动恢复）。
      * 主线程/渲染线程调用（getLocationOnScreen 必须主线程）。
      */
-    private fun resolveLiveSrcRect(id: Int, entry: RegionEntry?, bounds: Rect, cg: ComputedGeometry): RectF? {
+    private fun resolveLiveSource(id: Int, entry: RegionEntry?, bounds: Rect, cg: ComputedGeometry): RenderSource? {
         val hostView = entry?.hostViewRef?.get()
         val renderRegion: RectF
         if (hostView != null) {
@@ -10889,33 +10905,13 @@ object BlurDrawHook {
             // hostView 弱引用已回收 → 回退注册 region + bounds delta 对齐（旧逻辑兜底，位置静止可接受）
             renderRegion = applyContainerTransform(reconcileRegion(entry, bounds), null)
         }
-        return resolveSrcRectFromRegion(renderRegion)
-    }
-
-    /**
-     * [doc/spec/32] region → 整屏快照坐标折算（复用 [resolveRenderSource] 的 srcRect 公式，主线程实时算）。
-     * 快照缺失 → 异步请求抓屏（不阻塞渲染线程）+ null（保持上次 uniform，下帧恢复）。
-     */
-    private fun resolveSrcRectFromRegion(renderRegion: RectF): RectF? {
-        val snap = screenSnapshot
-        if (snap == null || snap.bitmap.width <= 0 || snap.bitmap.height <= 0 || snap.region.width() <= 0f) {
-            requestScreenSnapshotAsync()
-            return null
-        }
-        val scaleX = snap.bitmap.width.toFloat() / snap.region.width()
-        val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
-        return RectF(
-            (renderRegion.left - snap.region.left) * scaleX,
-            (renderRegion.top - snap.region.top) * scaleY,
-            (renderRegion.right - snap.region.left) * scaleX,
-            (renderRegion.bottom - snap.region.top) * scaleY,
-        )
+        return resolveRenderSource(id, renderRegion)
     }
 
     /**
      * [doc/spec/31 并行化 + spec/32] 后台纯函数：计算单元素**不依赖 loc** 的 uniform 输入（几何 viewport/
      * mask/offset/corner + 材质 buildParams + realRegionOffset 形状），**不碰 RuntimeShader / paint /
-     * setUniforms**（那些必须渲染线程）。**srcRect 已移主线程实时折算**（[resolveLiveSrcRect]，依赖 loc
+     * setUniforms**（那些必须渲染线程）。**srcRect 已移主线程实时折算**（[resolveLiveSource]，依赖 loc
      * 不能后台，见 doc/spec/32）。输入 entry（ConcurrentHashMap）/ containerTransforms（ConcurrentHashMap）
      * 均并发安全读；内部全 try-catch，失败返回 null（主线程用上次/回退旧逻辑，后台异常绝不上抛破坏主线程）。
      *
@@ -10981,7 +10977,7 @@ object BlurDrawHook {
                 cornerRadius = cornerRadius,
                 cornerConicBlend = cornerConicBlend,
                 params = params,
-                isElementSource = true,  // 整屏快照源恒 true（doc/spec/07 + 2026-08-13 组合方案）
+                isSnapshotSource = true,  // 整屏快照源恒 true（doc/spec/07 + 2026-08-13 组合方案）
                 hostViewName = entry.hostViewName,
                 // [doc/spec/32] realRegion 相对 loc 的形状（含 MetaBall 扩张内缩）；srcRect 折算基准，
                 // 主线程 loc + 形状 = 绝对屏幕区域 → 容器变换 → srcRect 实时折算
@@ -11164,7 +11160,7 @@ object BlurDrawHook {
                     "coord: render drawable=${drawable.javaClass.simpleName} id=${region.id} " +
                         "view=${region.hostViewName} bounds=$bounds region=${region.screenRegion} " +
                         "srcRect=${region.srcRect} source=${source.width}x${source.height} " +
-                        "elementSource=${renderSource.isElementSource} viewport=$viewport"
+                        "elementSource=${renderSource.isSnapshotSource} viewport=$viewport"
                 )
             }
             // [任务 D/问题 10] 圆角半径来源只在变化/首次打（替代硬编码 28）
@@ -11173,15 +11169,19 @@ object BlurDrawHook {
                 Lg.i(TAG, "coord: cornerRadius=${region.cornerRadius} source=${region.cornerRadiusSource} (id=${region.id})")
             }
         }
-        val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
+        val rawParams = buildParams(viewport.width(), viewport.height(), region.cornerRadius,
+            effectiveCornerIsConic, region.cornerWeight, elementId = id)
+        val binding = BackdropBinding.resolve(backdropWorker, source, renderSource.screenRect, srcRect,
+            renderSource.isSnapshotSource, rawParams)
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(binding.bitmap)
         // uSourceLowRes：整屏快照（已 0.5 降采样）直接作 lowRes（uSourceLowResRect = uSourceRect = 元素区域折算
         // 坐标，二者一致）；全局 1/4 降采样分支已废弃（恒不走）。
         // 失败 → null，setUniforms 回退全分辨率源（等效旧行为），液态玻璃渲染不中断
         val lowResShader: Shader?
         val lowResSrcRect: RectF
-        if (renderSource.isElementSource) {
+        if (renderSource.isSnapshotSource) {
             lowResShader = sourceShader
-            lowResSrcRect = srcRect
+            lowResSrcRect = binding.sourceRect
         } else {
             val lowResShaderResult = buildLowResShader(source, srcRect)
             lowResShader = lowResShaderResult?.shader
@@ -11195,7 +11195,7 @@ object BlurDrawHook {
         // uViewport 必须与 shader coord 空间一致（main 里 halfSize=uViewport×0.5），用元素自身尺寸
         // [任务 D] uCornerRadius = RegionEntry 真实圆角（反射 BlurConfig / 启发式），替代硬编码 28；
         // [spec/18 修正] CONIC 本体（通知卡/custom 卡/seekbar）→ uCornerIsConic/uCornerWeight
-        val params = buildParams(viewport.width(), viewport.height(), region.cornerRadius, effectiveCornerIsConic, region.cornerWeight, elementId = id)
+        val params = binding.params
         // uDebugCoord 实验开关：coord 决定性实验用。0=玻璃正常渲染；1=直接输出红/绿周期调试网格（不走玻璃管线）。
         // 正常关闭，需复测 coord 空间时临时开 1f。uDebugCoord 分支保留在 LiquidGlassShader.kt 供后续实验。
         // [2026-10-14 诊断] 打印最终传入 setUniforms 的 maskRect
@@ -11206,7 +11206,7 @@ object BlurDrawHook {
         }
         LiquidGlassShader.setUniforms(
             shader, params, sourceShader, lowResShader,
-            sourceRect = region.srcRect,
+            sourceRect = binding.sourceRect,
             lowResSourceRect = lowResSrcRect,
             debugCoord = 0f,
             maskRect = region.maskRect,
@@ -11227,9 +11227,10 @@ object BlurDrawHook {
         // 记录已应用状态（R1：后续每帧 refresh 据此判断是否重设 uniform）
         appliedUniformsMap[region.id] = AppliedKey(
             frame = 0L,  // [2026-08-13] 无全局帧概念（BlurService 端全移除）；源变化靠 sourceBitmapId
-            sourceBitmapId = System.identityHashCode(source),
+            sourceBitmapId = System.identityHashCode(binding.bitmap),
             viewport = viewport,
-            srcRect = region.srcRect,
+            srcRect = binding.sourceRect,
+            materialHash = params.hashCode(),
             maskRect = region.maskRect,
             cornerIsConic = effectiveCornerIsConic, cornerWeight = region.cornerWeight, cornerRadius = region.cornerRadius,
             cornerConicBlend = cornerConicBlend,
@@ -11270,7 +11271,7 @@ object BlurDrawHook {
                 (screenRegion.bottom - snap.region.top) * scaleY,
             )
             // MetaBall 扩张/动画中 region 可能含屏外负偏移 → srcRect 可能越界；AGSL BitmapShader CLAMP 兜底
-            return RenderSource(snap.bitmap, srcRect, isElementSource = true)
+            return RenderSource(snap.bitmap, srcRect, RectF(snap.region), isSnapshotSource = true)
         }
         return null
     }

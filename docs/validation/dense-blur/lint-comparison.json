@@ -1,0 +1,29 @@
+{
+  "baseCommit": "aa96e1aeb98f4e3777f4bced265a1b86bf3e10cd",
+  "baselineErrors": 150,
+  "candidateErrors": 150,
+  "addedErrors": 0,
+  "baselineWarnings": 152,
+  "candidateWarnings": 156,
+  "addedWarnings": [
+    {
+      "id": "UseKtx",
+      "message": "Use the KTX extension function `Bitmap.scale` instead?",
+      "file": "app\\src\\main\\kotlin\\com\\coloros16\\liquidglass\\hook\\BackdropWorker.kt",
+      "count": 2
+    },
+    {
+      "id": "UseKtx",
+      "message": "Use the KTX function `createBitmap` instead?",
+      "file": "app\\src\\main\\kotlin\\com\\coloros16\\liquidglass\\hook\\BackdropWorker.kt",
+      "count": 1
+    },
+    {
+      "id": "UseTomlInstead",
+      "message": "Use version catalog instead",
+      "file": "app\\build.gradle.kts",
+      "count": 1
+    }
+  ],
+  "excluded": "PropertyEscape on ignored local.properties only; no tracked-source errors suppressed"
+}

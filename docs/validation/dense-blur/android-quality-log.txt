@@ -1,0 +1,2 @@
+--------- beginning of main
+10-28 05:14:40.281  1902  1902 I DenseBlurProbe: PASS F16 fractional/alpha; four worker styles; FULL/BASE AGSL; snapshot binding true/false/zero/pending/ready/crop

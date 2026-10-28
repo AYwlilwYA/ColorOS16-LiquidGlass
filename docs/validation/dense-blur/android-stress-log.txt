@@ -1,0 +1,2 @@
+--------- beginning of main
+10-28 05:15:04.739  1902  1957 I DenseBlurStressProbe: PASS callback+reporter exceptions contained; 120 frame/geometry churn; four styles recover; clear cancels; published bitmap retained; F16
