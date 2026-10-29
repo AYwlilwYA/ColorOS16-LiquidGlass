@@ -117,6 +117,7 @@ class SettingsActivity : AppCompatActivity() {
     private val categories = listOf(
         Category("master", R.string.cat_master, R.string.cat_master_desc, R.layout.view_cat_master),
         Category("material", R.string.cat_material, R.string.cat_material_desc, R.layout.view_cat_material),
+        Category("corner", R.string.cat_corner, R.string.cat_corner_desc, R.layout.view_cat_corner_radius),
         Category("background", R.string.cat_background, R.string.cat_background_desc, R.layout.view_cat_background),
         Category("text", R.string.cat_text, R.string.cat_text_desc, R.layout.view_cat_text),
         Category("mask", R.string.cat_mask, R.string.cat_mask_desc, R.layout.view_cat_mask),
@@ -422,6 +423,7 @@ class SettingsActivity : AppCompatActivity() {
         when (catId) {
             "master" -> bindMaster(view)
             "material" -> bindMaterial(view)
+            "corner" -> bindCornerRadius(view)
             "background" -> bindBackground(view)
             "text" -> bindText(view)
             "mask" -> bindMask(view)
@@ -992,6 +994,96 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    // ------------------------------------------------------------ 圆角独立（按类覆盖） ------------------------------------------------------------
+
+    /** 圆角覆盖滑杆 UI 上限（dp）；渲染侧另按元素短边一半封顶。 */
+    private val cornerOverrideMaxDp = 200
+
+    /** 读框架侧圆角覆盖表；框架未就绪 → 空表。 */
+    private fun readCornerOverrides(): Map<String, Float> =
+        GlassRegistry.parseCornerOverrides(frameworkPrefs()?.getString(Prefs.KEY_CORNER_OVERRIDES, null))
+
+    /** 写一个类的圆角覆盖（px）；0 = 移除覆盖（恢复跟随实测）。框架未就绪 → 提示并放弃。 */
+    private fun writeCornerOverride(cls: String, px: Float) {
+        val framework = frameworkPrefs()
+        if (framework == null) {
+            Toast.makeText(this, R.string.config_framework_not_ready, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val map = readCornerOverrides().toMutableMap()
+        if (px > 0f) map[cls] = px else map.remove(cls)
+        framework.edit().putString(Prefs.KEY_CORNER_OVERRIDES, GlassRegistry.encodeCornerOverrides(map)).apply()
+        Lg.i(TAG, "write glass_corner_overrides count=${map.size}")
+    }
+
+    /** 圆角独立页：探测到的类逐行展示（标签 + 位置 + 当前值），点行弹滑杆编辑。 */
+    private fun bindCornerRadius(view: View) {
+        val list = view.findViewById<LinearLayout>(R.id.cornerClassList)
+        list.removeAllViews()
+        val overrides = readCornerOverrides()
+        val classes = (detectedGlassClasses() + overrides.keys).distinct().sorted()
+        if (classes.isEmpty()) {
+            list.addView(glassPresetRow(getString(R.string.glass_preset_class_empty), null))
+            return
+        }
+        val density = resources.displayMetrics.density
+        classes.forEach { cls ->
+            val px = overrides[cls]?.takeIf { it > 0f }
+            val valueText = if (px == null) {
+                getString(R.string.corner_follow_measured)
+            } else {
+                getString(R.string.corner_custom_value, (px / density).roundToInt())
+            }
+            list.addView(glassPresetRow("${classDisplayText(cls)}\n$valueText") {
+                showCornerRadiusDialog(cls) { bindCurrentPage() }
+            })
+        }
+    }
+
+    /** 单类圆角编辑对话框：滑杆 0（跟随实测）~ 200dp，拖动结束即写；另附「恢复跟随实测」按钮。 */
+    private fun showCornerRadiusDialog(cls: String, onClosed: () -> Unit) {
+        val density = resources.displayMetrics.density
+        val currentPx = readCornerOverrides()[cls]?.takeIf { it > 0f } ?: 0f
+        val pad = (20 * density).toInt()
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val valueText = TextView(this).apply { textSize = 16f }
+        fun dpText(dp: Int): String =
+            if (dp <= 0) getString(R.string.corner_follow_measured)
+            else getString(R.string.corner_custom_value, dp)
+        var currentDp = (currentPx / density).roundToInt().coerceIn(0, cornerOverrideMaxDp)
+        valueText.text = dpText(currentDp)
+        val seek = SeekBar(this).apply {
+            max = cornerOverrideMaxDp
+            progress = currentDp
+        }
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                currentDp = progress
+                valueText.text = dpText(progress)
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar) {
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                writeCornerOverride(cls, currentDp * density)
+            }
+        })
+        column.addView(valueText)
+        column.addView(seek)
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(GlassRegistry.classLabel(cls))
+            .setView(column)
+            .setPositiveButton(R.string.glass_preset_close, null)
+            .setNeutralButton(R.string.corner_reset) { _, _ -> writeCornerOverride(cls, 0f) }
+            .create()
+        dialog.setOnDismissListener { onClosed() }
+        dialog.show()
+    }
+
     /** 背景与抓屏：模式 / 即时抓屏速率 / 最大抓屏间隔 / 清晰度 / 失败重试 / 区域级抓屏。 */
     private fun bindBackground(view: View) {
         // 模式：0=即时抓屏 1=变化抓屏 2=静态（默认 1；仅变化抓屏显示最大抓屏间隔）
@@ -1252,9 +1344,12 @@ class SettingsActivity : AppCompatActivity() {
     /** 其他组件：音量条 + 相册 / 计算器 / 智能侧边栏的组件级玻璃开关。 */
     private fun bindComponents(view: View) {
         bindGlassSwitch(view, R.id.switchVolumeSeekBarGlass, Prefs.KEY_VOLUME_SEEKBAR_GLASS, Prefs.DEFAULT_VOLUME_SEEKBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchVolumePanelClean, Prefs.KEY_VOLUME_PANEL_CLEAN, Prefs.DEFAULT_VOLUME_PANEL_CLEAN)
+        bindGlassSwitch(view, R.id.switchVolumePanelBackdrop, Prefs.KEY_VOLUME_PANEL_BACKDROP, Prefs.DEFAULT_VOLUME_PANEL_BACKDROP)
         bindGlassSwitch(view, R.id.switchGalleryGlass, Prefs.KEY_GALLERY_GLASS, Prefs.DEFAULT_GALLERY_GLASS)
         bindGlassSwitch(view, R.id.switchCalculatorGlass, Prefs.KEY_CALCULATOR_GLASS, Prefs.DEFAULT_CALCULATOR_GLASS)
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
     }
 
     /** 组件级玻璃开关绑定（写 Prefs + 按权威值刷新；hook 端 TTL 500ms 重读，改动即时生效）。 */

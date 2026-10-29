@@ -1695,21 +1695,73 @@ object LauncherHook {
         return cachedCardGlass
     }
 
-    /** [doc/spec/78] 卡片圆角 px：读系统建 blur 背景时 setTag 的圆角；读不到返回 0f →
-     *  registerBlurRegion 回退 min(w,h)/2。tag id 惰性解析并缓存（getIdentifier 不便宜）。 */
+    /** [doc/spec/78] 卡片圆角 px：优先读系统建 blur 背景时 setTag 的圆角；tag 缺失（轮播/堆叠
+     *  背景层从不打 tag，系统可见圆角走 view outline clip）时读 outline provider 圆角半径；
+     *  都读不到返回 0f → registerBlurRegion 回退 min(w,h)/2。tag id 惰性解析并缓存。 */
     private fun readCardCornerPx(target: View): Float {
         if (mCardBlurRadiusTagId == 0) {
-            mCardBlurRadiusTagId = try {
-                target.resources.getIdentifier(ID_KEY_BLUR_VIEW_RADIUS, "id", target.context.packageName)
+            mCardBlurRadiusTagId = resolveCardBlurRadiusTagId(target)
+        }
+        var corner = 0f
+        if (mCardBlurRadiusTagId != 0) {
+            corner = try {
+                (target.getTag(mCardBlurRadiusTagId) as? Float) ?: 0f
             } catch (t: Throwable) {
-                Lg.w(TAG, "launcher card: resolve $ID_KEY_BLUR_VIEW_RADIUS failed", t); 0
+                0f
             }
         }
-        if (mCardBlurRadiusTagId == 0) return 0f
+        if (corner <= 0f) {
+            corner = readOutlineClipCornerPx(target)
+        }
+        if (corner <= 0f) {
+            logCardDiag(
+                "no-corner-tag",
+                "launcher card: ${target.javaClass.name} 无 $ID_KEY_BLUR_VIEW_RADIUS tag 且 outline 无圆角，圆角走 min/2 兜底",
+            )
+        }
+        return corner
+    }
+
+    /** CarouselBlurBackgroundView（轮播/堆叠背景层）不打 radius tag，系统靠 outline clip 出圆角：
+     *  ClipSmoothOutlineProvider 首个 float 字段 = 圆角半径（px），另一 float 是角权重（无量纲
+     *  <1，取 max 不会误选）。clipToOutline 未开或读不到返回 0f。 */
+    private fun readOutlineClipCornerPx(target: View): Float {
+        if (!target.clipToOutline) return 0f
+        val provider = try {
+            target.outlineProvider
+        } catch (t: Throwable) {
+            null
+        } ?: return 0f
         return try {
-            (target.getTag(mCardBlurRadiusTagId) as? Float) ?: 0f
+            var radius = 0f
+            for (f in provider.javaClass.declaredFields) {
+                if (f.type == Float::class.javaPrimitiveType) {
+                    f.isAccessible = true
+                    val v = f.getFloat(provider)
+                    if (v > radius) radius = v
+                }
+            }
+            radius
         } catch (t: Throwable) {
             0f
+        }
+    }
+
+    /** tag id 属桌面 APK 资源；小组件子 View 的 context 是小组件 app 的，
+     *  用它 getIdentifier 恒 0（资源里没有该 id）→ 圆角误走 min/2。优先用进程内桌面 Application 解析。 */
+    private fun resolveCardBlurRadiusTagId(target: View): Int {
+        val appTagId = try {
+            val app = hostForName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null) as? android.content.Context
+            app?.resources?.getIdentifier(ID_KEY_BLUR_VIEW_RADIUS, "id", app.packageName) ?: 0
+        } catch (t: Throwable) {
+            0
+        }
+        if (appTagId != 0) return appTagId
+        return try {
+            target.resources.getIdentifier(ID_KEY_BLUR_VIEW_RADIUS, "id", target.context.packageName)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher card: resolve $ID_KEY_BLUR_VIEW_RADIUS failed", t); 0
         }
     }
 
@@ -3061,10 +3113,13 @@ object LauncherHook {
             // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
             val ov = GlassRegistry.overridesFor(elementId)
             fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
+            // 按类圆角覆盖：命中 → 覆盖实测值（短边一半封顶），未命中原样透传
+            val corner = GlassRegistry.cornerOverrideFor(elementId)?.coerceAtMost(minOf(width, height) / 2f)
+                ?: cornerRadius
             LiquidGlassShader.Params(
                 viewportWidth = width,
                 viewportHeight = height,
-                cornerRadius = cornerRadius,
+                cornerRadius = corner,
                 // 文件夹玻璃本体角：RBox 圆弧（非 CONIC；Launcher 无 CornerParams CONIC 语义）
                 cornerIsConic = false,
                 cornerWeight = DEFAULT_CORNER_WEIGHT,

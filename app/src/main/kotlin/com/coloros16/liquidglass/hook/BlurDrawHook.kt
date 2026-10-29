@@ -558,6 +558,37 @@ object BlurDrawHook {
     /** 音量条背景圆角 dimen（11dp）；资源读不到时按 dp 兜底折算。 */
     private const val DIMEN_VOLUME_ROW_RADIUS = "volume_vertical_row_radius"
     private const val VOLUME_CORNER_DP_FALLBACK = 11f
+    /** 音量面板去白底：展开面板背景类（mDialogView 宿主；expandPanel hook 用）。 */
+    private const val CLASS_VOLUME_DIALOG_VIEW = "com.oplus.systemui.volume.view.OplusVolumeDialogView"
+    private const val METHOD_EXPAND_PANEL = "expandPanel"
+    /** 纯模糊替换失败时的面板圆角 dp 兜底。 */
+    private const val VOLUME_PANEL_CORNER_DP_FALLBACK = 24f
+    /** 面板纯模糊替换的模糊半径（px，对齐系统 getVolumePanelBackground 的 800）。 */
+    private const val VOLUME_PANEL_BLUR_RADIUS_PX = 800
+    /** 音量条「出现」判定间隔（ms）：距上次绘制超过此值的首绘视为弹窗出现，触发即时抓屏。 */
+    private const val VOLUME_APPEAR_GAP_MS = 600L
+    /** 音量弹窗窗口根作为抓屏排除对象的活跃窗口（ms）：只在刚绘制过的时间窗内生效。 */
+    private const val VOLUME_HOST_ACTIVE_MS = 1_500L
+    /** 亮白填充开启时的进度填充色：白 80%（近不透明亮磨砂），盖住玻璃扭曲、边界清晰。 */
+    private val VOLUME_FROSTED_PROGRESS_COLOR = 0xCCFFFFFF.toInt()
+    /** 进度顶边高光：白 70%，高度 2.5dp。 */
+    private val VOLUME_HIGHLIGHT_COLOR = 0xB3FFFFFF.toInt()
+    private const val VOLUME_HIGHLIGHT_HEIGHT_DP = 2.5f
+    /** framework 纯模糊 drawable（已是纯模糊时不去重复替换）。 */
+    private const val CLASS_FRAMEWORK_BLUR_DRAWABLE = "com.android.internal.graphics.drawable.BackgroundBlurDrawable"
+    /** 面板去白底开关 TTL（ms）重读间隔。 */
+    private const val VOLUME_PANEL_BACKDROP_TTL_MS = 500L
+    /** 音量元素（音量条 / ···按钮）玻璃折射强度衰减系数：小面积元素强折射在快照上放大成扭曲倒影。 */
+    private const val VOLUME_REFRACTION_DAMP = 0.25f
+    /** 音量元素色散衰减系数（0 = 关闭彩虹边）。 */
+    private const val VOLUME_DISPERSION_DAMP = 0f
+    /** ···按钮容器布局 id / 白底 drawable 名（attach 时按名解析，装玻璃背景）。 */
+    private const val RES_MORE_ROW_STREAM_LL = "more_row_stream_ll"
+    private const val RES_APP_ADJUST_BG = "systemui_icon_volume_app_adjust_bg"
+    /** 音量图标尺寸 dimen（图标垫底定位用）与图标距底固定边距（vertical_volume_row.xml 硬编码 20dp）。 */
+    private const val DIMEN_VOLUME_ICON_WIDTH = "volume_row_icon_width"
+    private const val DIMEN_VOLUME_ICON_HEIGHT = "volume_row_icon_height"
+    private const val VOLUME_ICON_BOTTOM_MARGIN_DP = 20f
 
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记（方形/长条设备卡背景绑定卡片语义类） ----
     /** 设备中心卡片 View 类名后缀（`com.oplus.deviceplugin.sdk` 的方形/长条设备卡）。 */
@@ -2025,6 +2056,72 @@ object BlurDrawHook {
     /** 音量条映射诊断日志节流（原因 → 上次打印时间） */
     private val volumeDiagAtMs = ConcurrentHashMap<String, Long>()
 
+    // ---- 音量面板去白底 + 音量弹窗错界面修复状态 ----
+    /** expandPanel hook 是否已挂（install 幂等） */
+    private var volumePanelCleanMounted = false
+    /** 音量面板去白底开关缓存（TTL [VOLUME_SEEKBAR_GLASS_TTL_MS] 重读） */
+    @Volatile
+    private var cachedVolumePanelClean = false
+    @Volatile
+    private var cachedVolumePanelCleanAtMs = 0L
+    /** 去白底开关是否已打过首读值日志（只打一次） */
+    @Volatile
+    private var volumeCleanSwitchLogged = false
+    /** 活跃音量弹窗宿主（isGlassOwnWindowRoot 身份判据；draw 命中时刷新） */
+    private var volumeGlassHost: WeakReference<View>? = null
+    @Volatile
+    private var volumeGlassHostAtMs = 0L
+    /** 各实例最近绘制时间（identityHashCode → 上次绘制时刻；出现判定用） */
+    private val volumeLastDrawAtMs = ConcurrentHashMap<Int, Long>()
+    /** COUIVerticalSeekBar.mProgressColor 字段缓存（null = 宿主无此字段，去白底进度着色降级跳过） */
+    @Volatile
+    private var volumeProgressColorField: Field? = null
+    @Volatile
+    private var volumeProgressColorResolved = false
+    /** COUIVerticalSeekBar.mProgressRect 字段缓存（进度顶边高光定位用） */
+    @Volatile
+    private var volumeProgressRectField: Field? = null
+    @Volatile
+    private var volumeProgressRectResolved = false
+    /** drawActiveTrack(Canvas) 方法缓存（玻璃覆盖进度后重绘用） */
+    @Volatile
+    private var volumeDrawActiveTrackMethod: Method? = null
+    @Volatile
+    private var volumeDrawActiveTrackResolved = false
+    /** OplusVolumeDialogView.mDialogView 字段缓存（expandPanel 后取面板容器） */
+    @Volatile
+    private var volumeDialogViewField: Field? = null
+    @Volatile
+    private var volumeDialogViewFieldResolved = false
+    /** 进度顶边高光画笔（一次初始化） */
+    @Volatile
+    private var volumeHighlightPaint: Paint? = null
+
+    // ---- [doc/spec/134 第二轮] 面板去白底（独立开关）+ ···按钮玻璃 + 图标垫底状态 ----
+    /** 面板去白底开关缓存（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读） */
+    @Volatile
+    private var cachedVolumePanelBackdrop = false
+    @Volatile
+    private var cachedVolumePanelBackdropAtMs = 0L
+    @Volatile
+    private var volumeBackdropSwitchLogged = false
+    /** View.onAttachedToWindow hook 是否已挂（···按钮背景安装用，install 幂等） */
+    private var volumeMoreBtnMounted = false
+    /** more_row_stream_ll 资源 id（一次解析；0 = 未解析/解析失败） */
+    @Volatile
+    private var volumeMoreBtnLlId = 0
+    /** 已装玻璃背景的 ···按钮容器（seekbar 路径顺带 invalidate，开关切换即时可见） */
+    @Volatile
+    private var volumeMoreBtnHost: WeakReference<View>? = null
+    /** 音量图标尺寸 px（dimen 一次解析缓存；0 = 未解析） */
+    @Volatile
+    private var volumeIconWidthPx = 0
+    @Volatile
+    private var volumeIconHeightPx = 0
+    /** 图标垫底画笔（一次初始化；半透明暗底） */
+    @Volatile
+    private var volumeIconBackingPaint: Paint? = null
+
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记状态 ----
     /** 设备卡 View.onAttachedToWindow hook 是否已挂（install 幂等） */
     private var deviceCardMounted = false
@@ -2481,6 +2578,10 @@ object BlurDrawHook {
         mountQsSeekBarActiveDrawable(api, classLoader)
         // [doc/spec/09] 音量条液态玻璃化（hook COUIVerticalSeekBar.draw 盖玻璃，默认关）
         mountVolumeSeekBarGlass(api, classLoader)
+        // [doc/spec/134] 音量面板去白底（expandPanel 后面板背景换纯模糊，独立开关，默认关）
+        mountVolumePanelBackdropBackground(api, classLoader)
+        // [doc/spec/134 第二轮] ···展开按钮玻璃（attach 时白底容器换玻璃 drawable，默认关）
+        mountVolumeMoreButtonGlass(api, classLoader)
         // [doc/spec/78 补齐] 设备中心卡片组件登记（卡片语义类进组件清单，供预设按组件命中）
         mountDeviceCardLabel(api, classLoader)
         // [spec/21 文字反转取色 + spec/35 黑遮罩白字 + spec/63 统一通道] hook 挂载条件：
@@ -3566,20 +3667,31 @@ object BlurDrawHook {
      * - 药丸滑杆（自身角 = 半高）→ 同理保持药丸；
      * - 小元素（统一半径 > 短边一半）→ 被 min(w,h)/2 封顶，不越几何上限。
      *
-     * **开关关 / 不在作用域 → 原样返回 ownRadius**（= 改动前行为，逐像素零变化）。
+     * **开关关 / 不在作用域 → 原样返回基准圆角**（= 改动前行为，逐像素零变化）。
      * CONIC 标志与权重不在本函数处理：白名单内通知卡是 CONIC，统一只改 r、保留 CONIC 标志
      * （shader 侧仍按 1.5×r + sdBezierDistance 画 CONIC 角）。
      *
+     * 基准圆角先取按类覆盖（[GlassRegistry.cornerOverrideFor]，raw 半径语义与实测值一致，
+     * 不重复乘 CONIC 系数），未覆盖类回落 [ownRadius]；覆盖值按 min(w,h)/2 封顶防越几何上限。
+     *
      * @param ownRadius 元素自身已解析圆角（RegionEntry.cornerRadius；0 = 反射失败方角）
+     * @param elementId 元素 identityHashCode（查按类圆角覆盖表）
      * @param w / @param h 元素 viewport 宽高 px（>0，调用方保证）
      */
-    private fun resolveUnifiedCornerRadius(entry: RegionEntry, ownRadius: Float, w: Float, h: Float): Float {
-        if (!entry.unifiedScope) return ownRadius
-        if (!Prefs.unifiedCornerEnabled(api)) return ownRadius
+    private fun resolveUnifiedCornerRadius(
+        entry: RegionEntry,
+        ownRadius: Float,
+        elementId: Int,
+        w: Float,
+        h: Float,
+    ): Float {
+        val base = GlassRegistry.cornerOverrideFor(elementId)?.coerceAtMost(minOf(w, h) / 2f) ?: ownRadius
+        if (!entry.unifiedScope) return base
+        if (!Prefs.unifiedCornerEnabled(api)) return base
         // [doc/spec/106] 锁屏态不统一，与写侧门控同口径：写侧已停写系统参数，渲染侧若仍统一
         // 会出现「我们画 U、系统画原值」的角部错位。放在开关判断之后 → 默认关路径逐位不变。
-        if (isKeyguardLockedNow()) return ownRadius
-        return Prefs.unifiedCornerRadius(Prefs.unifiedCornerPx(api), ownRadius, w, h)
+        if (isKeyguardLockedNow()) return base
+        return Prefs.unifiedCornerRadius(Prefs.unifiedCornerPx(api), base, w, h)
     }
 
     // ------------------------------------------------------------ [doc/spec/106 方案 A] 统一圆角写穿 ------------------------------------------------------------
@@ -6915,13 +7027,16 @@ object BlurDrawHook {
     // ------------------------------------------------------------ [doc/spec/09] 音量条玻璃化 ------------------------------------------------------------
 
     /**
-     * [doc/spec/09] 音量条液态玻璃化 —— hook `COUIVerticalSeekBar.draw(Canvas)` 在系统绘制轨道/进度
-     * **之前**盖一层玻璃（玻璃在下、轨道半透明底与进度在上，进度不被遮）。
+     * [doc/spec/09 + doc/spec/134] 音量条液态玻璃化 —— hook `COUIVerticalSeekBar.draw(Canvas)`。
      *
-     * 为什么不走 drawable 替换链：音量条默认档背景是 framework `BackgroundBlurDrawable`
-     * （surface 模糊，`draw()` 空实现），drawBlurShader 漏斗打不中它（spec/09 结论）。
+     * 现象与画序（16.99.12 反编译实证）：`draw()` 里 `super.draw` → View.draw（背景 drawable，音量条
+     * 默认是 `BackgroundBlurDrawable` 空实现）→ `onDraw` 自绘深色轨道（mBackgroundPaint /
+     * mInactiveTrackDrawable）→ `drawActiveTrack` 白色进度填充。玻璃若画在 proceed **之前**会被
+     * 自绘轨道整体盖掉（compact 小条无玻璃的根因）——因此玻璃改画在 proceed **之后**盖住轨道；
+     * 玻璃采样的是真实背景、不含量进度信息，随后重绘 `drawActiveTrack` 把进度（与 thumb）放回玻璃之上，
+     * 进度始终可读；[Prefs.KEY_VOLUME_PANEL_CLEAN] 开启时进度改半透明亮磨砂填充并加顶边高光。
      *
-     * 开关 [KEY_VOLUME_SEEKBAR_GLASS] 默认 false，TTL 500ms 重读；关闭时零开销（只查 volatile）。
+     * 开关 [KEY_VOLUME_SEEKBAR_GLASS] 默认 false，TTL 500ms 重读；两开关都关时零额外开销（只查 volatile）。
      */
     private fun mountVolumeSeekBarGlass(api: XposedInterface, classLoader: ClassLoader) {
         if (volumeSeekBarMounted) return
@@ -6931,32 +7046,367 @@ object BlurDrawHook {
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
-                    try {
-                        val v = chain.getThisObject() as? View
-                        if (v != null && isVolumeSeekBarView(v)) {
-                            if (volumeSeekBarGlassEnabled()) {
-                                val canvas = try {
-                                    chain.getArg(0) as? Canvas
-                                } catch (t: Throwable) {
-                                    null
-                                }
-                                if (canvas != null) renderVolumeSeekBarGlass(canvas, v)
-                            } else {
-                                logVolumeDiag(
-                                    "switch-off",
-                                    "volume-seekbar: 命中音量条但开关 ${Prefs.KEY_VOLUME_SEEKBAR_GLASS} = false",
-                                )
-                            }
-                        }
+                    val v = chain.getThisObject() as? View
+                    if (v == null || !isVolumeSeekBarView(v)) return@intercept chain.proceed()
+                    val canvas = try {
+                        chain.getArg(0) as? Canvas
                     } catch (t: Throwable) {
-                        Lg.e(TAG, "volume-seekbar: draw intercept error", t)
+                        null
                     }
-                    chain.proceed()
+                    val glass = volumeSeekBarGlassEnabled()
+                    val clean = volumePanelCleanEnabled()
+                    if (!glass && !clean) {
+                        logVolumeDiag(
+                            "switch-off",
+                            "volume-seekbar: 命中音量条但开关 ${Prefs.KEY_VOLUME_SEEKBAR_GLASS} = false",
+                        )
+                        return@intercept chain.proceed()
+                    }
+                    // T2b：proceed 前临时改进度色（drawActiveTrack 每帧读 mProgressColor），
+                    // 系统绘制的进度即亮磨砂；玻璃开关开时该进度会被玻璃盖掉、由重绘路径放回
+                    var savedColor: Int? = null
+                    try {
+                        if (clean) savedColor = applyFrostedProgressTint(v)
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "volume-seekbar: tint apply error", t)
+                    }
+                    val result = chain.proceed()
+                    if (canvas != null) {
+                        try {
+                            if (glass) {
+                                noteVolumeAppearance(v)
+                                renderVolumeSeekBarGlass(canvas, v)
+                                redrawActiveTrack(canvas, v)
+                                drawVolumeIconBacking(canvas, v)
+                            }
+                            if (clean) drawProgressHighlight(canvas, v)
+                        } catch (t: Throwable) {
+                            Lg.e(TAG, "volume-seekbar: post-draw error", t)
+                        }
+                    }
+                    if (savedColor != null) restoreProgressTint(v, savedColor)
+                    result
                 }
             volumeSeekBarMounted = true
             Lg.i(TAG, "Volume seekbar glass mounted: $CLASS_VERTICAL_SEEKBAR#$METHOD_DRAW(Canvas)")
         } catch (t: Throwable) {
             Lg.e(TAG, "Volume seekbar glass mount FAILED: $CLASS_VERTICAL_SEEKBAR#$METHOD_DRAW", t)
+        }
+    }
+
+    // ------------------------------------------------------------ [doc/spec/134] 音量面板去白底 ------------------------------------------------------------
+
+    /**
+     * 音量面板去白底 —— hook `OplusVolumeDialogView.expandPanel()` after：展开面板背景
+     * （AutoBlurDrawable，「后面那层模糊」= 白/调色底 + 模糊）替换为纯跨窗口模糊 drawable
+     * （ViewRootManager 同款机制，无调色层）→ 发白底色消失、模糊保留。每次 expandPanel 都重放
+     * （关→开切换后下一次展开系统自动恢复原背景，expandPanel 内无条件 setBackground）。
+     * 独立开关 [KEY_VOLUME_PANEL_BACKDROP]；反射失败兜底 = 置空背景（不崩优先）。
+     */
+    private fun mountVolumePanelBackdropBackground(api: XposedInterface, classLoader: ClassLoader) {
+        if (volumePanelCleanMounted) return
+        try {
+            val clazz = hostForName(CLASS_VOLUME_DIALOG_VIEW, classLoader)
+            val method = clazz.getMethod(METHOD_EXPAND_PANEL)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        if (volumePanelBackdropEnabled()) {
+                            applyVolumePanelClean(chain.getThisObject())
+                        }
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "volume-panel-backdrop: apply error", t)
+                    }
+                    result
+                }
+            volumePanelCleanMounted = true
+            Lg.i(TAG, "Volume panel backdrop mounted: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL()")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "Volume panel backdrop mount FAILED: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL", t)
+        }
+    }
+
+    /** 进度条亮白填充开关（TTL [VOLUME_SEEKBAR_GLASS_TTL_MS] 重读，改动无需重启 SystemUI）。 */
+    private fun volumePanelCleanEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedVolumePanelCleanAtMs > VOLUME_SEEKBAR_GLASS_TTL_MS) {
+            cachedVolumePanelCleanAtMs = now
+            val before = cachedVolumePanelClean
+            cachedVolumePanelClean = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(
+                        Prefs.KEY_VOLUME_PANEL_CLEAN,
+                        Prefs.DEFAULT_VOLUME_PANEL_CLEAN,
+                    )
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read volume_panel_clean_enable failed, default false", t)
+                false
+            }
+            val shouldLog = cachedVolumePanelClean != before || !volumeCleanSwitchLogged
+            volumeCleanSwitchLogged = true
+            if (shouldLog) {
+                Lg.i(TAG, "volume-progress-fill: switch ${Prefs.KEY_VOLUME_PANEL_CLEAN} = $cachedVolumePanelClean")
+            }
+        }
+        return cachedVolumePanelClean
+    }
+
+    /** 面板去白底开关（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读，改动无需重启 SystemUI）。 */
+    private fun volumePanelBackdropEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedVolumePanelBackdropAtMs > VOLUME_PANEL_BACKDROP_TTL_MS) {
+            cachedVolumePanelBackdropAtMs = now
+            val before = cachedVolumePanelBackdrop
+            cachedVolumePanelBackdrop = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(
+                        Prefs.KEY_VOLUME_PANEL_BACKDROP,
+                        Prefs.DEFAULT_VOLUME_PANEL_BACKDROP,
+                    )
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read volume_panel_backdrop_enable failed, default false", t)
+                false
+            }
+            val shouldLog = cachedVolumePanelBackdrop != before || !volumeBackdropSwitchLogged
+            volumeBackdropSwitchLogged = true
+            if (shouldLog) {
+                Lg.i(TAG, "volume-panel-backdrop: switch ${Prefs.KEY_VOLUME_PANEL_BACKDROP} = $cachedVolumePanelBackdrop")
+            }
+        }
+        return cachedVolumePanelBackdrop
+    }
+
+    /** 展开面板背景替换为纯模糊：mDialogView → ViewRootManager 纯 blur drawable；失败置空兜底。 */
+    private fun applyVolumePanelClean(dialogViewObj: Any?) {
+        val dv = dialogViewObj as? View ?: return
+        val dialogViewGroup = try {
+            val f = volumeDialogViewField(dv.javaClass) ?: return
+            f.get(dv) as? android.view.ViewGroup
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        val current = try {
+            dialogViewGroup.background
+        } catch (t: Throwable) {
+            null
+        }
+        if (current == null || current.javaClass.name == CLASS_FRAMEWORK_BLUR_DRAWABLE) return
+        val corner = resolveVolumePanelCornerPx(dv)
+        val replacement = createPureBlurDrawable(dialogViewGroup, corner)
+        if (replacement != null) {
+            dialogViewGroup.background = replacement
+            logVolumeDiag(
+                "panel-clean-ok",
+                "volume-panel-backdrop: 面板背景已替换为纯模糊 corner=$corner from=${current.javaClass.simpleName}",
+            )
+        } else {
+            dialogViewGroup.background = null
+            logVolumeDiag(
+                "panel-clean-fallback",
+                "volume-panel-backdrop: 纯模糊创建失败，面板背景置空（白底与模糊均消失）",
+            )
+        }
+    }
+
+    /** 面板圆角 px：反射 OplusVolumeDialogView.getCornerRadius()，失败按 24dp 折算。 */
+    private fun resolveVolumePanelCornerPx(dialogView: View): Float {
+        return try {
+            val m = dialogView.javaClass.getMethod("getCornerRadius")
+            (m.invoke(dialogView) as? Float)?.takeIf { it > 0f }
+                ?: VOLUME_PANEL_CORNER_DP_FALLBACK * dialogView.resources.displayMetrics.density
+        } catch (t: Throwable) {
+            VOLUME_PANEL_CORNER_DP_FALLBACK * dialogView.resources.displayMetrics.density
+        }
+    }
+
+    /** 纯跨窗口模糊 drawable：ViewRootManager（与系统音量条背景同机制）只设半径+圆角、零调色层。 */
+    private fun createPureBlurDrawable(blurView: View, cornerRadius: Float): Drawable? {
+        return try {
+            val cls = hostForName("com.oplus.view.ViewRootManager", blurView.context.classLoader)
+            val rm = cls.getConstructor(View::class.java).newInstance(blurView)
+            cls.getMethod("setBlurRadius", Int::class.javaPrimitiveType)
+                .invoke(rm, VOLUME_PANEL_BLUR_RADIUS_PX)
+            cls.getMethod("setCornerRadius", Float::class.javaPrimitiveType)
+                .invoke(rm, cornerRadius)
+            cls.getMethod("getBackgroundBlurDrawable").invoke(rm) as? Drawable
+        } catch (t: Throwable) {
+            Lg.w(TAG, "volume-panel-clean: createPureBlurDrawable failed", t)
+            null
+        }
+    }
+
+    /** OplusVolumeDialogView.mDialogView 字段缓存（private，walk 声明链）。 */
+    private fun volumeDialogViewField(cls: Class<*>): Field? {
+        if (!volumeDialogViewFieldResolved) {
+            synchronized(this) {
+                if (!volumeDialogViewFieldResolved) {
+                    var c: Class<*>? = cls
+                    while (c != null) {
+                        try {
+                            volumeDialogViewField = c.getDeclaredField("mDialogView").apply {
+                                isAccessible = true
+                            }
+                            break
+                        } catch (ignored: NoSuchFieldException) {
+                            c = c.superclass
+                        }
+                    }
+                    volumeDialogViewFieldResolved = true
+                }
+            }
+        }
+        return volumeDialogViewField
+    }
+
+    // ------------------------------------------------------------ [doc/spec/134] 音量条绘制辅助 ------------------------------------------------------------
+
+    /** 进度色临时改亮磨砂：写 public 字段 mProgressColor，返回原色（null = 宿主无此字段）。 */
+    private fun applyFrostedProgressTint(seekbar: View): Int? {
+        val f = progressColorField(seekbar.javaClass) ?: return null
+        return try {
+            val orig = f.getInt(seekbar)
+            f.setInt(seekbar, VOLUME_FROSTED_PROGRESS_COLOR)
+            orig
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** 还原进度色（finally 里调用；失败仅丢诊断，不影响绘制）。 */
+    private fun restoreProgressTint(seekbar: View, savedColor: Int) {
+        val f = progressColorField(seekbar.javaClass) ?: return
+        try {
+            f.setInt(seekbar, savedColor)
+        } catch (t: Throwable) {
+            logVolumeDiag("tint-restore-fail", "volume-seekbar: 进度色还原失败 ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** COUIVerticalSeekBar.mProgressColor 字段解析（public，宿主类；一次解析缓存）。 */
+    private fun progressColorField(cls: Class<*>): Field? {
+        if (!volumeProgressColorResolved) {
+            synchronized(this) {
+                if (!volumeProgressColorResolved) {
+                    volumeProgressColorField = try {
+                        cls.getField("mProgressColor")
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    volumeProgressColorResolved = true
+                }
+            }
+        }
+        return volumeProgressColorField
+    }
+
+    /** 玻璃盖掉系统进度后重绘 drawActiveTrack（进度 + thumb 放回玻璃之上，进度保持可读）。 */
+    private fun redrawActiveTrack(canvas: Canvas, seekbar: View) {
+        val m = drawActiveTrackMethod(seekbar.javaClass) ?: return
+        try {
+            m.invoke(seekbar, canvas)
+        } catch (t: Throwable) {
+            logVolumeDiag("redraw-fail", "volume-seekbar: drawActiveTrack 重绘失败 ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** drawActiveTrack(Canvas) 方法解析（public，一次解析缓存）。 */
+    private fun drawActiveTrackMethod(cls: Class<*>): Method? {
+        if (!volumeDrawActiveTrackResolved) {
+            synchronized(this) {
+                if (!volumeDrawActiveTrackResolved) {
+                    volumeDrawActiveTrackMethod = try {
+                        cls.getMethod("drawActiveTrack", Canvas::class.java)
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    volumeDrawActiveTrackResolved = true
+                }
+            }
+        }
+        return volumeDrawActiveTrackMethod
+    }
+
+    /** 进度顶边高光：mProgressRect 顶部 2.5dp 白亮条，clip 到圆角进度形内（胶囊角不外溢）。 */
+    private fun drawProgressHighlight(canvas: Canvas, seekbar: View) {
+        val rect = try {
+            val f = progressRectField(seekbar.javaClass) ?: return
+            f.get(seekbar) as? Rect ?: return
+        } catch (t: Throwable) {
+            return
+        }
+        if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) return
+        val paint = volumeHighlightPaint(seekbar.resources.displayMetrics.density)
+        val r = resolveVolumeCornerPx(seekbar)
+            .coerceAtMost(minOf(rect.width(), rect.height()) / 2f)
+        val path = android.graphics.Path().apply {
+            addRoundRect(RectF(rect), r, r, android.graphics.Path.Direction.CW)
+        }
+        canvas.save()
+        try {
+            canvas.clipPath(path)
+            canvas.drawRect(
+                rect.left.toFloat(), rect.top.toFloat(),
+                rect.right.toFloat(), rect.top + paint.strokeWidth, paint,
+            )
+        } finally {
+            canvas.restore()
+        }
+    }
+
+    /** COUIVerticalSeekBar.mProgressRect 字段解析（public Rect，一次解析缓存）。 */
+    private fun progressRectField(cls: Class<*>): Field? {
+        if (!volumeProgressRectResolved) {
+            synchronized(this) {
+                if (!volumeProgressRectResolved) {
+                    volumeProgressRectField = try {
+                        cls.getField("mProgressRect")
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    volumeProgressRectResolved = true
+                }
+            }
+        }
+        return volumeProgressRectField
+    }
+
+    /** 高光画笔（一次初始化；strokeWidth = 2.5dp）。 */
+    private fun volumeHighlightPaint(density: Float): Paint {
+        volumeHighlightPaint?.let { return it }
+        return Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = VOLUME_HIGHLIGHT_COLOR
+            strokeWidth = VOLUME_HIGHLIGHT_HEIGHT_DP * density
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }.also { volumeHighlightPaint = it }
+    }
+
+    /**
+     * 弹窗出现判定 + 宿主登记：距上次绘制 > [VOLUME_APPEAR_GAP_MS] 的首绘视为音量弹窗出现，
+     * **当帧主线程同步抓首帧**（[triggerFirstFrameCaptureWithBurst] mainThreadSyncFirstFrame=true，
+     * 快照立即替换渲染缓冲，修「弹窗出现黑→玻璃」；一次性 20-80ms 可接受）；同步失败时该函数内部
+     * 走 worker 快速重试回退，本帧用旧快照（不黑屏）。先登记宿主再抓屏：同帧抓屏即可把弹窗自身
+     * 窗口根排除（isGlassOwnWindowRoot 身份判据），防玻璃采样到弹窗自己。
+     */
+    private fun noteVolumeAppearance(seekbar: View) {
+        val now = SystemClock.uptimeMillis()
+        val id = System.identityHashCode(seekbar)
+        val last = volumeLastDrawAtMs.put(id, now) ?: 0L
+        if (volumeLastDrawAtMs.size > 32) volumeLastDrawAtMs.clear()
+        volumeGlassHost = WeakReference(seekbar)
+        volumeGlassHostAtMs = now
+        if (now - last > VOLUME_APPEAR_GAP_MS) {
+            triggerFirstFrameCaptureWithBurst(
+                burstStop = { false },
+                logTag = "volume-appear",
+                pauseDuringPanelExpansion = false,
+                mainThreadSyncFirstFrame = true,
+            )
+            Lg.i(TAG, "volume-seekbar: appearance (gap ${now - last}ms) -> sync first-frame capture id=$id")
         }
     }
 
@@ -7004,6 +7454,15 @@ object BlurDrawHook {
             logVolumeDiag("zero-size", "volume-seekbar: 跳过 —— 宿主尺寸 ${w}x${h}（布局未完成）")
             return
         }
+        // 可见性/透明度守卫：多实例同坐标堆叠时，收起动画期 alpha→0 或不可见的实例不再画玻璃
+        if (seekbar.alpha <= 0.01f) {
+            logVolumeDiag("alpha", "volume-seekbar: 跳过 —— alpha=${seekbar.alpha}（收起动画/隐藏实例）")
+            return
+        }
+        if (!seekbar.isShown) {
+            logVolumeDiag("not-shown", "volume-seekbar: 跳过 —— isShown=false（不可见实例）")
+            return
+        }
         val loc = IntArray(2)
         try {
             seekbar.getLocationOnScreen(loc)
@@ -7020,6 +7479,11 @@ object BlurDrawHook {
             source = "volume-seekbar", cornerRadiusOverride = resolveVolumeCornerPx(seekbar),
         )
         drawSeedlingGlassOnCanvas(canvas, seekbar, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
+        // 顺带失效 ···按钮：玻璃/填充开关切换后按钮视图随音量条每帧重绘即时生效
+        try {
+            volumeMoreBtnHost?.get()?.takeIf { it.isAttachedToWindow }?.invalidate()
+        } catch (t: Throwable) {
+        }
     }
 
     /** 音量条圆角 px：dimen `volume_vertical_row_radius`（11dp）一次解析缓存，失败按 11dp 折算。 */
@@ -7043,6 +7507,146 @@ object BlurDrawHook {
         if (now - prev < DEVICE_CARD_DIAG_TTL_MS) return
         volumeDiagAtMs[reason] = now
         Lg.i(TAG, msg)
+    }
+
+    // ------------------------------------------------------------ [doc/spec/134 第二轮] ···展开按钮玻璃 + 图标垫底 ------------------------------------------------------------
+
+    /**
+     * ···展开按钮去白上玻璃 —— 按钮本体是 `AlphaOptimizedImageButton`（R.id.more_row_stream，
+     * 独立 ImageButton，非 OplusVolumeSeekBar 家族，反编译 oplus_volume_dialog.xml:110-134 实锤）；
+     * 白色圆角底在**外层容器** `more_row_stream_ll`（LinearLayout，background =
+     * `systemui_icon_volume_app_adjust_bg`，白 #ffffff + 11dp 圆角 shape）。
+     * 方案：View.onAttachedToWindow 全局 hook 快路径按 id 命中容器 → 把背景换成玻璃 drawable
+     * （开关开画玻璃、关画原白底 shape，无需动系统布局）；子 ImageButton 的三点图标在背景之后
+     * 绘制，天然盖在玻璃之上不被遮。
+     */
+    private fun mountVolumeMoreButtonGlass(api: XposedInterface, classLoader: ClassLoader) {
+        if (volumeMoreBtnMounted) return
+        try {
+            val method = View::class.java.getDeclaredMethod(METHOD_ON_ATTACHED_TO_WINDOW).apply { isAccessible = true }
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        val v = chain.getThisObject() as? View
+                        if (v != null) {
+                            var rid = volumeMoreBtnLlId
+                            if (rid == 0) {
+                                rid = try {
+                                    v.resources.getIdentifier(RES_MORE_ROW_STREAM_LL, "id", v.context.packageName)
+                                } catch (t: Throwable) {
+                                    0
+                                }
+                                volumeMoreBtnLlId = rid
+                            }
+                            if (rid != 0 && v.id == rid && v.background !is VolumeMoreButtonDrawable) {
+                                v.background = VolumeMoreButtonDrawable(v)
+                                volumeMoreBtnHost = WeakReference(v)
+                                Lg.i(TAG, "volume-more-btn: glass background installed on ${v.javaClass.simpleName}")
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "volume-more-btn: attach hook error", t)
+                    }
+                    chain.proceed()
+                }
+            volumeMoreBtnMounted = true
+            Lg.i(TAG, "Volume more-button glass mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "Volume more-button glass mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
+        }
+    }
+
+    /** ···按钮容器背景 drawable：玻璃开关开 → 画液态玻璃；关 → 画原白底 shape（系统原样）。 */
+    private class VolumeMoreButtonDrawable(private val host: View) : Drawable() {
+        private val orig: Drawable? = try {
+            val resId = host.resources.getIdentifier(
+                BlurDrawHook.RES_APP_ADJUST_BG, "drawable", host.context.packageName,
+            )
+            if (resId != 0) host.resources.getDrawable(resId, host.context.theme) else null
+        } catch (t: Throwable) {
+            null
+        }
+
+        override fun draw(canvas: Canvas) {
+            if (BlurDrawHook.volumeSeekBarGlassEnabled()) {
+                try {
+                    BlurDrawHook.renderVolumeMoreButtonGlass(canvas, host)
+                    return
+                } catch (t: Throwable) {
+                    Lg.e(BlurDrawHook.TAG, "volume-more-btn: glass draw failed", t)
+                }
+            }
+            orig?.let {
+                it.setBounds(bounds)
+                it.draw(canvas)
+            }
+        }
+
+        override fun setAlpha(alpha: Int) {}
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+        @Deprecated("Deprecated in java")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+    }
+
+    /** ···按钮玻璃绘制：容器 bounds 登记 + 画玻璃（drawable.draw 的 canvas 原点 = 容器左上角）。 */
+    private fun renderVolumeMoreButtonGlass(canvas: Canvas, host: View) {
+        val w = host.width
+        val h = host.height
+        if (w <= 0 || h <= 0) return
+        if (host.alpha <= 0.01f || !host.isShown) return
+        val loc = IntArray(2)
+        try {
+            host.getLocationOnScreen(loc)
+        } catch (t: Throwable) {
+            return
+        }
+        val screenRegion = RectF(
+            loc[0].toFloat(), loc[1].toFloat(),
+            (loc[0] + w).toFloat(), (loc[1] + h).toFloat(),
+        )
+        val id = System.identityHashCode(host)
+        registerSeedlingCardRegion(
+            id, screenRegion, Rect(0, 0, w, h), host,
+            source = "volume-more-btn", cornerRadiusOverride = resolveVolumeCornerPx(host),
+        )
+        drawSeedlingGlassOnCanvas(canvas, host, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
+    }
+
+    /**
+     * 图标垫底：玻璃/亮白进度之上、音量图标（后续兄弟 View 绘制）之下，画小圆角半透明暗底，
+     * 保证图标在亮白磨砂进度上依旧可读。图标位姿按布局推算：水平居中、距底 20dp + 图标高一半
+     * （vertical_volume_row.xml volume_row_icon 硬编码 margin）。
+     */
+    private fun drawVolumeIconBacking(canvas: Canvas, seekbar: View) {
+        val density = seekbar.resources.displayMetrics.density
+        if (volumeIconWidthPx <= 0 || volumeIconHeightPx <= 0) {
+            try {
+                val res = seekbar.resources
+                val pkg = seekbar.context.packageName
+                val wId = res.getIdentifier(DIMEN_VOLUME_ICON_WIDTH, "dimen", pkg)
+                val hId = res.getIdentifier(DIMEN_VOLUME_ICON_HEIGHT, "dimen", pkg)
+                if (wId > 0) volumeIconWidthPx = res.getDimensionPixelSize(wId)
+                if (hId > 0) volumeIconHeightPx = res.getDimensionPixelSize(hId)
+            } catch (t: Throwable) {
+            }
+            if (volumeIconWidthPx <= 0 || volumeIconHeightPx <= 0) return
+        }
+        val w = seekbar.width.toFloat()
+        val h = seekbar.height.toFloat()
+        val pad = 4f * density
+        val cx = w / 2f
+        val cy = h - VOLUME_ICON_BOTTOM_MARGIN_DP * density - volumeIconHeightPx / 2f
+        val halfW = volumeIconWidthPx / 2f + pad
+        val halfH = volumeIconHeightPx / 2f + pad
+        val paint = volumeIconBackingPaint ?: Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x40000000
+            style = Paint.Style.FILL
+        }.also { volumeIconBackingPaint = it }
+        val r = minOf(halfW, halfH)
+        canvas.drawRoundRect(
+            RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH), r, r, paint,
+        )
     }
 
     // ------------------------------------------------------------ [doc/spec/78 补齐] 设备中心卡片组件登记 ------------------------------------------------------------
@@ -7181,9 +7785,21 @@ object BlurDrawHook {
         val srcRect = renderSource.srcRect
         val source = renderSource.source
         val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
-        val cornerRadius = entry.cornerRadius.takeIf { it > 0f }
+        val cornerRadius = GlassRegistry.cornerOverrideFor(id)?.coerceAtMost(minOf(w, h) / 2f)
+            ?: entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
-        val params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
+        var params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
+        // 音量元素（hostViewName="volume-*"：音量条/···按钮）弱化折射与色散：小面积元素强折射会把
+        // 快照内容放大成扭曲倒影（验收反馈的黑渐变/棕色带/红色倒影），预设未接管该键时才衰减
+        if (entry.hostViewName.startsWith("volume-")) {
+            val ov = GlassRegistry.overridesFor(id)
+            if (ov?.get(Prefs.KEY_REFRACTION_AMOUNT) == null) {
+                params = params.copy(refractionAmount = params.refractionAmount * VOLUME_REFRACTION_DAMP)
+            }
+            if (ov?.get(Prefs.KEY_DISPERSION) == null) {
+                params = params.copy(dispersion = params.dispersion * VOLUME_DISPERSION_DAMP)
+            }
+        }
         val shader = obtainShader(id, metaball = entry.metaBall != null)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
         LiquidGlassShader.setUniforms(
@@ -11355,10 +11971,10 @@ object BlurDrawHook {
             val viewport = geo.viewport
             val ownCornerRadius = if (entry.cornerRadius > 0f) entry.cornerRadius else 0f
             // [doc/spec/101 统一界面圆角] 作用域内 + 开关开 → 按规则重算本体圆角：
-            //   min(max(统一半径, 自身圆角), min(w,h)/2)（圆形/药丸不被压扁，见 Prefs.unifiedCornerRadius）。
-            // 开关关 / 不在作用域 → 原值（= 改动前行为，逐像素零变化）。
+            //   min(max(统一半径, 基准圆角), min(w,h)/2)（圆形/药丸不被压扁，见 Prefs.unifiedCornerRadius）。
+            // 基准 = 按类圆角覆盖命中值，未命中回落实测值；开关关 / 不在作用域 → 基准值原样透传。
             // 只改 r：CONIC 标志与权重原样透传（白名单内通知卡是 CONIC，shader 仍按 1.5×r 画 CONIC 角）。
-            val cornerRadius = resolveUnifiedCornerRadius(entry, ownCornerRadius, viewport.width(), viewport.height())
+            val cornerRadius = resolveUnifiedCornerRadius(entry, ownCornerRadius, id, viewport.width(), viewport.height())
             // [任务 A] 真实大小掩码圆角：仅当检测到扩张（geo.offset>0）时，掩码才需要圆角匹配 body 几何
             //（swipe 用 entry.maskCornerRadius raw；通知卡等扩张元素用 cornerRadius，与本体 CONIC
             //  同值 → 掩码与 body 几何一致，不切边）。无扩张 → entry.maskCornerRadius。
@@ -11519,9 +12135,10 @@ object BlurDrawHook {
         val source = renderSource.source
         // [doc/spec/101 统一界面圆角] 与 computeGeometry 同一条规则：首帧构建路径也必须用统一后的
         // 半径，否则首帧显示元素自身圆角、约 1s 后 geometryCache 重算才切到统一值 = 肉眼可见的跳变。
+        // 按类圆角覆盖同理在本出口生效（首帧与后续帧同值，不闪变）。
         val regionCornerRadius = resolveUnifiedCornerRadius(
             entry, if (entry.cornerRadius > 0f) entry.cornerRadius else 0f,
-            viewport.width(), viewport.height(),
+            id, viewport.width(), viewport.height(),
         )
         // [任务 A] 真实大小掩码圆角：仅当检测到扩张（geo.offset>0）时，掩码才需要圆角匹配 body 几何
         //（swipe 用 entry.maskCornerRadius raw 值，shader 侧 CONIC ×1.5；通知卡等扩张元素用
@@ -13391,6 +14008,16 @@ object BlurDrawHook {
         if (simpleBannerActiveHost?.get()?.rootView === rootView) return true
         if (headsUpActiveHost?.get()?.rootView === rootView) return true
         if (cardBackgroundActiveHost?.get()?.rootView === rootView) return true
+        // 音量弹窗：刚绘制过（1.5s 活跃窗）的音量条宿主窗口根
+        val volumeHost = volumeGlassHost?.get()
+        if (volumeHost != null && SystemClock.uptimeMillis() - volumeGlassHostAtMs < VOLUME_HOST_ACTIVE_MS) {
+            val volumeRoot = try {
+                volumeHost.rootView
+            } catch (t: Throwable) {
+                null
+            }
+            if (volumeRoot === rootView) return true
+        }
         val name = rootView.javaClass.name
         return name.contains("NotificationShadeWindowView") ||
             name.contains("HeadsUpLayout") ||

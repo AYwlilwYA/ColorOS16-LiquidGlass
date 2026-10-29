@@ -11,11 +11,13 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 玻璃效果预设与玻璃类探测注册表（hook 侧与设置页共用）。
  *
- * 三块职责：
+ * 四块职责：
  * - [bind]：绘制对象出现时登记其类名（进程内判重，热路径只做一次查表），
  *   聚合后按「集合有变化或超过刷新间隔」写入 [Prefs.KEY_GLASS_CLASSES] 缓存。
  * - [overridesFor]：按元素所属类取预设参数覆盖表（500ms TTL 解析缓存，热路径零 IPC）。
- * - [parsePresets] / [encodePresets] / [parseClasses] / [encodeClasses]：两端共用的 JSON 编解码。
+ * - [cornerOverrideFor]：按元素所属类取圆角覆盖值（同款 TTL；缺失 = 跟随实测圆角）。
+ * - [parsePresets] / [encodePresets] / [parseClasses] / [encodeClasses] /
+ *   [parseCornerOverrides] / [encodeCornerOverrides]：两端共用的 JSON 编解码。
  *
  * 每进程一份实例状态：SystemUI / 桌面 / 设置页各持一份，互不共享。
  */
@@ -142,6 +144,30 @@ object GlassRegistry {
             arr.put(o)
         }
         return arr.toString()
+    }
+
+    /** 解析 [Prefs.KEY_CORNER_OVERRIDES]（类全名 → 圆角半径 px）；空串 / 格式错误 → 空表（不抛）。 */
+    fun parseCornerOverrides(json: String?): Map<String, Float> {
+        if (json.isNullOrEmpty()) return emptyMap()
+        return try {
+            val obj = JSONObject(json)
+            val out = HashMap<String, Float>(obj.length())
+            for (key in obj.keys()) {
+                val v = obj.optDouble(key, Double.NaN).toFloat()
+                if (!v.isNaN()) out[key] = v
+            }
+            out
+        } catch (t: Throwable) {
+            Lg.w(TAG, "parse glass_corner_overrides failed", t)
+            emptyMap()
+        }
+    }
+
+    /** 序列化圆角覆盖表（按类名排序，同内容同字节）。 */
+    fun encodeCornerOverrides(map: Map<String, Float>): String {
+        val obj = JSONObject()
+        for (key in map.keys.sorted()) obj.put(key, map[key]!!.toDouble())
+        return obj.toString()
     }
 
     // ------------------------------------------------------------ 探测登记（hook 侧） ------------------------------------------------------------
@@ -408,5 +434,39 @@ object GlassRegistry {
             Lg.w(TAG, "read glass_presets failed", t)
         }
         return presetCache
+    }
+
+    // ------------------------------------------------------------ 圆角覆盖查询（渲染热路径） ------------------------------------------------------------
+
+    @Volatile
+    private var cornerCache: Map<String, Float> = emptyMap()
+
+    @Volatile
+    private var cornerCacheAtMs = 0L
+
+    /**
+     * 按元素所属类取圆角覆盖值（px）；无覆盖 / 未登记类 → null（调用方回落实测圆角）。
+     * 命中顺序与 [overridesFor] 一致：卡片类优先，回落绘制对象类。
+     * [PRESET_TTL_MS] 内零 IPC，TTL 到点才重读一次。
+     */
+    fun cornerOverrideFor(elementId: Int): Float? {
+        if (elementId == 0) return null
+        val b = bound[elementId] ?: return null
+        val map = snapshotCornerOverrides()
+        if (map.isEmpty()) return null
+        return map[b.cardClass ?: b.name] ?: map[b.name]
+    }
+
+    private fun snapshotCornerOverrides(): Map<String, Float> {
+        val now = SystemClock.uptimeMillis()
+        if (now - cornerCacheAtMs < PRESET_TTL_MS) return cornerCache
+        cornerCacheAtMs = now
+        val prefs = prefsOrNull() ?: return cornerCache
+        try {
+            cornerCache = parseCornerOverrides(prefs.getString(Prefs.KEY_CORNER_OVERRIDES, null))
+        } catch (t: Throwable) {
+            Lg.w(TAG, "read glass_corner_overrides failed", t)
+        }
+        return cornerCache
     }
 }

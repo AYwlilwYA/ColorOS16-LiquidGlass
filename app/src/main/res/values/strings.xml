@@ -273,12 +273,18 @@
     <string name="cat_components_desc">音量条与相册、计算器、智能侧边栏的液态玻璃</string>
     <string name="settings_volume_seekbar_glass">音量条液态玻璃</string>
     <string name="settings_volume_seekbar_glass_desc">给调节音量时弹出的竖向音量条加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_volume_panel_clean">进度条亮白填充</string>
+    <string name="settings_volume_panel_clean_desc">把音量滑杆的进度条改成亮白磨砂填充，顶边加一道高光，在玻璃背景上更清晰。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_volume_panel_backdrop">音量面板去白底</string>
+    <string name="settings_volume_panel_backdrop_desc">去掉展开音量面板背后那层模糊的发白底色，只保留模糊效果。关闭即恢复系统原样。开启后立即生效，无需重启系统界面。</string>
     <string name="settings_gallery_glass">相册液态玻璃</string>
     <string name="settings_gallery_glass_desc">把相册里的视图背景模糊接管成液态玻璃。该功能依赖相册自身的模糊实现，不同界面效果可能不一致。</string>
     <string name="settings_calculator_glass">计算器液态玻璃</string>
     <string name="settings_calculator_glass_desc">把计算器的对话框与弹出菜单背景模糊接管成液态玻璃。</string>
     <string name="settings_smart_sidebar_glass">智能侧边栏液态玻璃</string>
     <string name="settings_smart_sidebar_glass_desc">把智能侧边栏面板与卡片的背景模糊接管成液态玻璃。</string>
+    <string name="settings_gallery_shader_probe">相册采样范围探针（实验）</string>
+    <string name="settings_gallery_shader_probe_desc">临时替换相册背景模糊做诊断：元素边缘出现红色环＝模糊取到了元素外面的背景（可以做真折射），绿色环＝只取到元素内的内容。开启后相册背景会变清晰并带一圈色环，关掉即恢复原模糊。</string>
 
     <!-- 组件位置描述（类清单/管理对话框里「在哪里的」一句话） -->
     <string name="loc_blur_drawable">通知中心与控制中心的多类卡片共用背景</string>
@@ -349,6 +355,14 @@
     <string name="glass_preset_created">已新建「%1$s」</string>
     <string name="glass_preset_deleted">已删除「%1$s」，它的类已回到默认效果</string>
     <string name="glass_preset_name_fmt">预设%1$d</string>
+
+    <!-- 圆角独立（按组件类单独设置圆角） -->
+    <string name="cat_corner">圆角独立</string>
+    <string name="cat_corner_desc">按组件类单独设置圆角</string>
+    <string name="corner_page_hint">为每一类组件单独指定圆角；未指定的沿用系统实测圆角。改动约 1 秒内生效。</string>
+    <string name="corner_follow_measured">跟随实测</string>
+    <string name="corner_custom_value">%1$d dp</string>
+    <string name="corner_reset">恢复跟随实测</string>
 
     <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
     <string name="update_dialog_title">发现新版本</string>

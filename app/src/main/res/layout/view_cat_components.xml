@@ -25,6 +25,38 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 进度条亮白填充（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchVolumePanelClean"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_volume_panel_clean" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_volume_panel_clean_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 音量面板去白底（面板后方模糊层净化；默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchVolumePanelBackdrop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_volume_panel_backdrop" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_volume_panel_backdrop_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <!-- 相册液态玻璃（默认关） -->
         <Switch
             android:id="@+id/switchGalleryGlass"
@@ -70,6 +102,22 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="@string/settings_smart_sidebar_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 相册背景采样范围探针（实验，默认关） -->
+        <Switch
+            android:id="@+id/switchGalleryShaderProbe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_gallery_shader_probe" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_gallery_shader_probe_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 

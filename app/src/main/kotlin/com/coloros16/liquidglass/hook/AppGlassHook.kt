@@ -1,9 +1,11 @@
 package com.coloros16.liquidglass.hook
 
+import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewTreeObserver
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.entry.XposedEntry
 import com.coloros16.liquidglass.glass.GlassRegistry
@@ -11,7 +13,9 @@ import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.reflect.Method
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
+import java.util.WeakHashMap
 
 /**
  * 第三方 App 进程玻璃化接入（相册 / 计算器 / 智能侧边栏）。
@@ -23,9 +27,11 @@ import java.util.concurrent.ConcurrentHashMap
  *   计算器对话框 / 侧边栏面板等）。
  *
  * 本 hook 在目标进程内拦截这两族的挂载点，把命中的元素按 **View 类名** 登记进 [GlassRegistry]
- * （组件清单出现该组件、预设可按组件命中）。**渲染腿尚未接通**：自研玻璃 shader 需要进程内背景源，
- * 而第三方进程没有抓屏权限（`IWindowManager.captureDisplay` 需 READ_FRAME_BUFFER），故当前只做
- * 组件登记与诊断，背景仍由系统模糊渲染。
+ * （组件清单出现该组件、预设可按组件命中）。渲染腿现状：
+ * - A 族：shader input 覆盖范围探针（[Prefs.KEY_GALLERY_SHADER_PROBE]，默认关）——
+ *   把背景 RenderEffect 临时换成越界采样染色探针（[AppGlassProbeShader]），判定折射环带可行性；
+ * - B 族：边缘光学装饰层（高光描边 + 内发光，[AppGlassDecorDrawable]）——随该 App 玻璃开关
+ *   生效，经 View.overlay 覆盖绘制，系统 SF 模糊保持原样当底。
  *
  * 开关按 App 独立（默认 false，TTL 500ms 重读）：关闭时拦截体只读 volatile 后直接放行。
  */
@@ -73,6 +79,15 @@ object AppGlassHook {
     @Volatile
     private var switchLogged = false
 
+    @Volatile
+    private var cachedProbe = false
+
+    @Volatile
+    private var cachedProbeAtMs = 0L
+
+    @Volatile
+    private var probeLogged = false
+
     private var aFamilyMounted = false
 
     private var bFamilyMounted = false
@@ -82,6 +97,21 @@ object AppGlassHook {
 
     /** 已登记过的元素（identityHashCode），防重复 bind 日志刷屏。 */
     private val boundElements = ConcurrentHashMap.newKeySet<Int>()
+
+    /** B 族装饰层状态（View 弱引用键：值不得强引用键，否则 WeakHashMap 失效）。 */
+    private class BDecorState(view: View) {
+        val viewRef = WeakReference(view)
+        val drawable = AppGlassDecorDrawable(view.resources.displayMetrics.density)
+        var overlayAdded = false
+        var lastW = 0
+        var lastH = 0
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            viewRef.get()?.let { syncBDecor(it) }
+            true
+        }
+    }
+
+    private val bDecorStates = WeakHashMap<View, BDecorState>()
 
     fun install(api: XposedInterface, classLoader: ClassLoader, packageName: String) {
         this.api = api
@@ -111,21 +141,7 @@ object AppGlassHook {
             )
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        if (glassEnabled()) {
-                            val view = try {
-                                chain.getArg(1) as? View
-                            } catch (t: Throwable) {
-                                null
-                            }
-                            if (view != null) registerElement(view, view.javaClass.name, "A")
-                        }
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "A-family intercept error", t)
-                    }
-                    chain.proceed()
-                }
+                .intercept { chain -> aFamilyIntercept(chain) }
             aFamilyMounted = true
             Lg.i(TAG, "mounted: $CLASS_VIEW_BG_RENDER_EFFECT#$METHOD_SET_BACKGROUND_RENDER_EFFECT(RenderEffect, View) (A-family)")
         } catch (t: Throwable) {
@@ -142,30 +158,129 @@ object AppGlassHook {
                 .apply { isAccessible = true }
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        if (glassEnabled()) {
-                            val bg = try {
-                                chain.getArg(0) as? Drawable
-                            } catch (t: Throwable) {
-                                null
-                            }
-                            val view = chain.getThisObject() as? View
-                            if (view != null && bg != null &&
-                                bg.javaClass.name == CLASS_BACKGROUND_BLUR_DRAWABLE
-                            ) {
-                                registerElement(view, view.javaClass.name, "B")
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "B-family intercept error", t)
-                    }
-                    chain.proceed()
-                }
+                .intercept { chain -> bFamilyIntercept(chain) }
             bFamilyMounted = true
             Lg.i(TAG, "mounted: android.view.View#setBackground(Drawable) (B-family $CLASS_BACKGROUND_BLUR_DRAWABLE)")
         } catch (t: Throwable) {
             Lg.e(TAG, "mount FAILED: android.view.View#setBackground", t)
+        }
+    }
+
+    /** A 族拦截体：登记元素；探针开关开时把背景 RenderEffect 换成覆盖范围探针（LibXposed 无 setArg，走 proceed(newArgs)）。 */
+    private fun aFamilyIntercept(chain: XposedInterface.Chain): Any? {
+        try {
+            if (glassEnabled()) {
+                val view = try {
+                    chain.getArg(1) as? View
+                } catch (t: Throwable) {
+                    null
+                }
+                if (view != null) {
+                    registerElement(view, view.javaClass.name, "A")
+                    if (probeEnabled()) {
+                        val probe = try {
+                            AppGlassProbeShader.createEffect(view.width, view.height)
+                        } catch (t: Throwable) {
+                            logOnce("probe:compile-error", "probe shader compile failed: ${t.message}")
+                            null
+                        }
+                        if (probe != null) {
+                            val args = chain.getArgs().toTypedArray()
+                            args[0] = probe
+                            logOnce(
+                                "probe:swap:${view.javaClass.name}",
+                                "A probe swapped view=${view.javaClass.name} ${view.width}x${view.height}",
+                            )
+                            return chain.proceed(args)
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Lg.e(TAG, "A-family intercept error", t)
+        }
+        return chain.proceed()
+    }
+
+    /** B 族拦截体：登记元素并确保边缘装饰层挂载（装饰随 App 玻璃开关启停，preDraw 同步）。 */
+    private fun bFamilyIntercept(chain: XposedInterface.Chain): Any? {
+        try {
+            if (glassEnabled()) {
+                val bg = try {
+                    chain.getArg(0) as? Drawable
+                } catch (t: Throwable) {
+                    null
+                }
+                val view = chain.getThisObject() as? View
+                if (view != null && bg != null &&
+                    bg.javaClass.name == CLASS_BACKGROUND_BLUR_DRAWABLE
+                ) {
+                    registerElement(view, view.javaClass.name, "B")
+                    ensureBDecor(view)
+                }
+            }
+        } catch (t: Throwable) {
+            Lg.e(TAG, "B-family intercept error", t)
+        }
+        return chain.proceed()
+    }
+
+    /** B 族装饰层挂载：首次建状态并挂 preDraw 监听；重绑时换挂到当前 ViewTreeObserver。 */
+    private fun ensureBDecor(view: View) {
+        val existing = bDecorStates[view]
+        if (existing != null) {
+            try {
+                view.viewTreeObserver.removeOnPreDrawListener(existing.listener)
+            } catch (_: Throwable) {
+            }
+            try {
+                view.viewTreeObserver.addOnPreDrawListener(existing.listener)
+            } catch (t: Throwable) {
+                Lg.w(TAG, "preDraw listener re-add failed", t)
+            }
+            return
+        }
+        val state = BDecorState(view)
+        bDecorStates[view] = state
+        try {
+            view.viewTreeObserver.addOnPreDrawListener(state.listener)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "preDraw listener add failed", t)
+        }
+    }
+
+    /** preDraw 同步装饰层：开关开 → 补挂 overlay 并跟随尺寸；开关关 → 摘除。 */
+    private fun syncBDecor(view: View) {
+        val state = bDecorStates[view] ?: return
+        if (!glassEnabled()) {
+            if (state.overlayAdded) {
+                try {
+                    view.overlay.remove(state.drawable)
+                } catch (_: Throwable) {
+                }
+                state.overlayAdded = false
+            }
+            return
+        }
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) return
+        if (w != state.lastW || h != state.lastH) {
+            state.lastW = w
+            state.lastH = h
+            state.drawable.bounds = Rect(0, 0, w, h)
+        }
+        if (!state.overlayAdded) {
+            try {
+                view.overlay.add(state.drawable)
+                state.overlayAdded = true
+                logOnce(
+                    "b-decor:${view.javaClass.name}",
+                    "B decor overlay added view=${view.javaClass.name} ${w}x${h}",
+                )
+            } catch (t: Throwable) {
+                Lg.w(TAG, "overlay add failed", t)
+            }
         }
     }
 
@@ -206,6 +321,27 @@ object AppGlassHook {
             if (shouldLog) Lg.i(TAG, "switch $switchKey = $cachedSwitch")
         }
         return cachedSwitch
+    }
+
+    /** 探针开关（TTL [SWITCH_TTL_MS] 重读，语义同 [glassEnabled]）。 */
+    private fun probeEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedProbeAtMs > SWITCH_TTL_MS) {
+            cachedProbeAtMs = now
+            val before = cachedProbe
+            cachedProbe = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read ${Prefs.KEY_GALLERY_SHADER_PROBE} failed, default false", t)
+                false
+            }
+            val shouldLog = cachedProbe != before || !probeLogged
+            probeLogged = true
+            if (shouldLog) Lg.i(TAG, "switch ${Prefs.KEY_GALLERY_SHADER_PROBE} = $cachedProbe")
+        }
+        return cachedProbe
     }
 
     /** 同类日志只打一次（挂载期/首命中诊断，防高频拦截刷屏）。 */
