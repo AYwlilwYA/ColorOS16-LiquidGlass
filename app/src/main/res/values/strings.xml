@@ -277,6 +277,9 @@
     <string name="settings_volume_panel_clean_desc">把音量滑杆的进度条改成亮白磨砂填充，顶边加一道高光，在玻璃背景上更清晰。开启后立即生效，无需重启系统界面。</string>
     <string name="settings_volume_panel_backdrop">音量面板去白底</string>
     <string name="settings_volume_panel_backdrop_desc">去掉展开音量面板背后那层模糊的发白底色，只保留模糊效果。关闭即恢复系统原样。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_notification_popup_glass">通知长按菜单玻璃</string>
+    <string name="settings_notification_popup_glass_desc">给长按通知后弹出的操作菜单卡加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="loc_notification_popup_menu">长按通知弹出的操作菜单卡</string>
     <string name="settings_gallery_glass">相册液态玻璃</string>
     <string name="settings_gallery_glass_desc">把相册里的视图背景模糊接管成液态玻璃。该功能依赖相册自身的模糊实现，不同界面效果可能不一致。</string>
     <string name="settings_calculator_glass">计算器液态玻璃</string>

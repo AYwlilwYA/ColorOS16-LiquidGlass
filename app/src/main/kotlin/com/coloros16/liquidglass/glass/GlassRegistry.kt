@@ -295,6 +295,7 @@ object GlassRegistry {
         "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "智能侧边栏面板",
         "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "垂直滑条基类",
         "com.coui.appcompat.seekbar.COUISeekBar" to "横向滑条基类",
+        "com.coui.appcompat.poplist.COUIPopupListWindow" to "通知长按菜单",
     )
 
     /** 类全名 → 位置描述的 strings.xml 资源名（「在哪里的」一句话；UI 侧经 [classLocationKey] 取用）。 */
@@ -328,6 +329,7 @@ object GlassRegistry {
         "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "loc_smart_sidebar",
         "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "loc_vertical_seekbar",
         "com.coui.appcompat.seekbar.COUISeekBar" to "loc_horizontal_seekbar",
+        "com.coui.appcompat.poplist.COUIPopupListWindow" to "loc_notification_popup_menu",
     )
 
     /** 清单/对话框展示用：有标签显示「标签（简单类名）」，无标签只显示简单类名。 */

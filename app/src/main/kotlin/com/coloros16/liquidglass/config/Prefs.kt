@@ -414,6 +414,13 @@ object Prefs {
     /** 音量面板去白底默认值（false = 保持系统原样含发白底色） */
     const val DEFAULT_VOLUME_PANEL_BACKDROP = false
 
+    // ---------- 通知长按菜单玻璃化（doc/spec/135） ----------
+    /** 通知长按菜单卡液态玻璃。默认 **false**；关 = 系统原样纯色菜单卡。
+     *  改动即时生效（TTL 500ms 重读）。 */
+    const val KEY_NOTIFICATION_POPUP_GLASS = "notification_popup_glass_enable"
+    /** 通知长按菜单玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_NOTIFICATION_POPUP_GLASS = false
+
     // ---------- 第三方 App 玻璃化（相册/计算器/智能侧边栏） ----------
     /** 相册玻璃化：拦截 App 内的视图背景模糊（RenderEffect / 窗口模糊 drawable）改画液态玻璃。
      *  默认 **false**；开启后需要进程内背景源（抓屏）通道可用，抓不到时保持系统原样模糊。
