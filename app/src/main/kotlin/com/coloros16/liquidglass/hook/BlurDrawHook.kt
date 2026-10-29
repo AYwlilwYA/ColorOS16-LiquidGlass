@@ -282,6 +282,8 @@ object BlurDrawHook {
      *  registeredHostViews 全部宿主反射窗口类型（无 heads-up 时每宿主一次反射）后失败 → 此窗口内直接返回
      *  null 不重复遍历；新宿主登记（registerHostView）清零 → 通知出现时立即重新解析。 */
     private const val HEADS_UP_SFC_NEG_CACHE_MS = 300L
+    /** 音量窗 sfc 解析失败负缓存毫秒：无音量弹窗期间直接返回 null 不重复解析。 */
+    private const val VOLUME_SFC_NEG_CACHE_MS = 300L
     /** [2026-08-13 captureDisplay 开始延迟优化] 抓屏热路径远程 Prefs（LibXposed 框架侧存储，跨进程 IPC）
      *  时间节流缓存毫秒：≥此值才重读一次，配置改动 ≤1s 生效；热路径零 IPC。 */
     private const val CAPTURE_PREFS_CACHE_MS = 1000L
@@ -563,6 +565,7 @@ object BlurDrawHook {
     /** 音量面板去白底：展开面板背景类（mDialogView 宿主；expandPanel hook 用）。 */
     private const val CLASS_VOLUME_DIALOG_VIEW = "com.oplus.systemui.volume.view.OplusVolumeDialogView"
     private const val METHOD_EXPAND_PANEL = "expandPanel"
+    private const val METHOD_DISMISS_H = "dismissH"
     /** 纯模糊替换失败时的面板圆角 dp 兜底。 */
     private const val VOLUME_PANEL_CORNER_DP_FALLBACK = 24f
     /** 面板纯模糊替换的模糊半径（px，对齐系统 getVolumePanelBackground 的 800）。 */
@@ -1618,6 +1621,9 @@ object BlurDrawHook {
     private var mGetViewRootImpl: Method? = null
     @Volatile
     private var mViewRootImplGetSurfaceControl: Method? = null
+    /** ViewRootImpl.mSurfaceControl 字段缓存（方法反射失败时直读第二通道）。 */
+    @Volatile
+    private var mViewRootImplSurfaceControlField: Field? = null
     /** ViewRootImpl.getWindowAttributes / WindowManager.LayoutParams.type 字段缓存（reflectWindowType）。 */
     @Volatile
     private var mGetWindowAttributes: Method? = null
@@ -1837,6 +1843,8 @@ object BlurDrawHook {
 
     /** drawable(identityHashCode) → 屏幕区域 + 局部 bounds（AutoBlurDrawable.draw hook 建立，bounds 供兜底匹配） */
     private val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
+    /** 绘制宿主戳：NBV draw 栈内记录本帧 bgView，渲染侧消歧/补身份用（生命周期=一次 draw 栈）。 */
+    private val drawHostStamp = ThreadLocal<WeakReference<View>>()
 
     /**
      * [doc/spec/99 clip∩bounds] 注册键（posteffect drawable identityHashCode，与 [screenRegionMap] 同键空间）
@@ -2054,6 +2062,8 @@ object BlurDrawHook {
     // ---- 音量面板去白底 + 音量弹窗错界面修复状态 ----
     /** expandPanel hook 是否已挂（install 幂等） */
     private var volumePanelCleanMounted = false
+    /** dismissH hook 是否已挂（install 幂等） */
+    private var volumeDismissMounted = false
     /** 音量面板去白底开关缓存（TTL [VOLUME_SEEKBAR_GLASS_TTL_MS] 重读） */
     @Volatile
     private var cachedVolumePanelClean = false
@@ -2066,6 +2076,12 @@ object BlurDrawHook {
     private var volumeGlassHost: WeakReference<View>? = null
     @Volatile
     private var volumeGlassHostAtMs = 0L
+    /** 音量弹窗窗口根 sfc 缓存（有效则直接复用；dismissH 时清空）。 */
+    @Volatile
+    private var volumeSfcCache: SurfaceControl? = null
+    /** 音量窗 sfc 解析失败负缓存截止时刻（此刻前 resolveVolumeWindowSfc 直接返回 null）。 */
+    @Volatile
+    private var volumeSfcMissAt = 0L
     /** 各实例最近绘制时间（identityHashCode → 上次绘制时刻；出现判定用） */
     private val volumeLastDrawAtMs = ConcurrentHashMap<Int, Long>()
     /** COUIVerticalSeekBar.mProgressColor 字段缓存（null = 宿主无此字段，去白底进度着色降级跳过） */
@@ -2559,6 +2575,8 @@ object BlurDrawHook {
         mountVolumeSeekBarGlass(api, classLoader)
         // [doc/spec/134] 音量面板去白底（expandPanel 后面板背景换纯模糊，独立开关，默认关）
         mountVolumePanelBackdropBackground(api, classLoader)
+        // 音量弹窗 dismissH：消失即清音量窗排除登记（volumeGlassHost + sfc 缓存）
+        mountVolumeDialogDismiss(api, classLoader)
         // [doc/spec/134 第二轮] ···展开按钮玻璃（attach 时白底容器换玻璃 drawable，默认关）
         mountVolumeMoreButtonGlass(api, classLoader)
         // [doc/spec/78 补齐] 设备中心卡片组件登记（卡片语义类进组件清单，供预设按组件命中）
@@ -4348,6 +4366,13 @@ object BlurDrawHook {
         return null
     }
 
+    /** 渲染侧补身份：注册缺席帧用绘制宿主戳推导 cardClass（无戳维持 null，零回归）。 */
+    private fun renderSideCardClass(): String? {
+        val host = drawHostStamp.get()?.get() ?: return null
+        hostSemanticCardClass(host)?.let { return it }
+        return if (host.javaClass.name.contains("NotificationBackgroundView")) CLASS_NBV_EXT_IMP else null
+    }
+
     /**
      * [任务 2/3] AutoBlurDrawable 子类（普通 tile / LightStyleStrokeDrawable）统一注册入口。
      * MixColorTileDrawable.draw（任务 3）取出内层 AutoBlurDrawable 后也走这里。
@@ -5052,14 +5077,19 @@ object BlurDrawHook {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     try {
-                        recordNotificationCardRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
+                        try {
+                            recordNotificationCardRegion(chain)
+                        } catch (t: Throwable) {
+                            Lg.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
+                        }
+                        // [磨砂根因·修 1] proceed 前临时把 ViewBlurManager.currentMaterialColor 置透明 →
+                        // 稳态分支 materialColorDrawable.setTint(透明) 不覆盖玻璃；suppress 内部
+                        // try-finally 保证 proceed 后恢复原值（防状态污染）。反射失败 → proceed 原样（含磨砂）。
+                        suppressNotificationMaterialColor(chain)
+                    } finally {
+                        // draw 栈结束清宿主戳，防跨 draw 泄漏
+                        drawHostStamp.remove()
                     }
-                    // [磨砂根因·修 1] proceed 前临时把 ViewBlurManager.currentMaterialColor 置透明 →
-                    // 稳态分支 materialColorDrawable.setTint(透明) 不覆盖玻璃；suppress 内部
-                    // try-finally 保证 proceed 后恢复原值（防状态污染）。反射失败 → proceed 原样（含磨砂）。
-                    suppressNotificationMaterialColor(chain)
                 }
             Lg.i(TAG, "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)")
             GlassRegistry.registerClass(CLASS_NBV_EXT_IMP)
@@ -5224,11 +5254,14 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: getThisObject failed", t); return
         } ?: return
+        // 盖戳先置 null：后续 early-return 帧渲染侧按「无宿主」维持现状
+        drawHostStamp.set(null)
         val bgView = try {
             mNbvGetBgView?.invoke(extImp) as? View
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: getBgView failed", t); return
         } ?: return
+        drawHostStamp.set(WeakReference(bgView))
         // [doc/spec/99 clip∩bounds] 宿主 canvas clip：本 hook 的 arg0 就是 bgView 自己的 draw canvas，
         // 与 `region = loc + bounds` 反推出的 bounds **同坐标空间（bgView 本地）**，且在 proceed() 之前
         // 采集 = 与随后 BaseDrawable.draw→drawBlurShader 用的是同一块 canvas 同一状态。
@@ -5281,7 +5314,7 @@ object BlurDrawHook {
             Lg.e(TAG, "nbv: posteffect getBounds failed", t); null
         } ?: Rect(0, 0, bgView.width, bgView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
-            logThrottled("nbv-skip-empty-bounds", Log.DEBUG) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
+            logThrottled("nbv-skip-empty-bounds", Log.INFO) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
             return
         }
         // [Bug 5 方向确认 2026-08-13] 登记 bgView：卡片尺寸/位置变化 → invalidate 宿主 → 重录 draw →
@@ -7118,6 +7151,28 @@ object BlurDrawHook {
         }
     }
 
+    /** hook `OplusVolumeDialogView.dismissH(int)`：弹窗消失后清音量窗排除登记，排除即撤。 */
+    private fun mountVolumeDialogDismiss(api: XposedInterface, classLoader: ClassLoader) {
+        if (volumeDismissMounted) return
+        try {
+            val clazz = hostForName(CLASS_VOLUME_DIALOG_VIEW, classLoader)
+            val method = clazz.getMethod(METHOD_DISMISS_H, Int::class.javaPrimitiveType)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    volumeGlassHost = null
+                    volumeSfcCache = null
+                    Lg.i(TAG, "volume-dialog: dismissH -> host/sfc cleared")
+                    result
+                }
+            volumeDismissMounted = true
+            Lg.i(TAG, "Volume dialog dismiss mounted: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_DISMISS_H(int)")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "volume-dialog dismiss mount FAILED: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_DISMISS_H", t)
+        }
+    }
+
     /** 进度条亮白填充开关（TTL [VOLUME_SEEKBAR_GLASS_TTL_MS] 重读，改动无需重启 SystemUI）。 */
     private fun volumePanelCleanEnabled(): Boolean {
         val now = SystemClock.uptimeMillis()
@@ -7367,6 +7422,8 @@ object BlurDrawHook {
         if (volumeLastDrawAtMs.size > 32) volumeLastDrawAtMs.clear()
         volumeGlassHost = WeakReference(seekbar)
         volumeGlassHostAtMs = now
+        // 新弹窗出现：清负缓存让音量窗 sfc 立即可解析
+        volumeSfcMissAt = 0L
         if (now - last > VOLUME_APPEAR_GAP_MS) {
             triggerFirstFrameCaptureWithBurst(
                 burstStop = { false },
@@ -11192,7 +11249,7 @@ object BlurDrawHook {
      */
     private fun replaceShaderIfPossible(drawable: Any): Boolean {
         val id = System.identityHashCode(drawable)
-        GlassRegistry.bind(id, drawable)
+        GlassRegistry.bind(id, drawable, renderSideCardClass())
 
         // [spec/85 省电模式·关玻璃] 省电开启 → 还原系统 shader 并回退系统绘制（**最优先**：省电下
         // 音量条 tint、背景 scrim 黑 tint 等一切模块绘制都应一并消失）。
@@ -12337,6 +12394,26 @@ object BlurDrawHook {
             for ((k, e) in screenRegionMap) {
                 val diff = Math.abs(e.autoBounds.width() - w) + Math.abs(e.autoBounds.height() - h)
                 if (diff == bestDiff) candidates.add(k to e)
+            }
+            // 绘制宿主戳消歧：候选中宿主引用与本帧戳一致且唯一 → 直取，0 或多个落回位置匹配
+            val stampHost = drawHostStamp.get()?.get()
+            if (stampHost != null) {
+                var hostEntry: RegionEntry? = null
+                var hostCount = 0
+                for ((k, e) in candidates) {
+                    if (e.hostViewRef?.get() === stampHost) {
+                        hostEntry = e
+                        hostCount++
+                    }
+                }
+                if (hostCount == 1 && hostEntry != null) {
+                    mapHitCount.incrementAndGet()
+                    logThrottled("fallback-by-host-stamp", Log.DEBUG) {
+                        "map: fallback by host stamp id=$id host=${stampHost.javaClass.simpleName} " +
+                            "bounds=$drawableBounds"
+                    }
+                    return hostEntry
+                }
             }
             // [歧义修复] 候选 >1：用「该 drawable 上次成功渲染的屏幕区域」做位置匹配，
             // 与候选 region 中心距离最近且唯一者胜出（折叠组展开动画时卡片相对位置稳定，
@@ -14087,6 +14164,80 @@ object BlurDrawHook {
         return null
     }
 
+    /**
+     * 解析音量弹窗窗口根 SurfaceControl（供 [collectExcludes] 排除，防玻璃自采样弹窗自己）：
+     * 宿主来自 [noteVolumeAppearance] 登记的 [volumeGlassHost]，身份判据复用 [isGlassOwnWindowRoot]。
+     * 正缓存有效直接复用；宿主缺失/未 attach/解析失败记负缓存（[VOLUME_SFC_NEG_CACHE_MS] 内不重解析）；
+     * dismissH 清缓存与宿主，新弹窗出现清负缓存立即可解析。
+     * 双通道取 sfc：先方法反射（[reflectViewRootSurfaceControl]），失败再直读
+     * ViewRootImpl.mSurfaceControl 字段（[fieldViewRootSurfaceControl]），都失败才 miss。
+     */
+    @Synchronized
+    private fun resolveVolumeWindowSfc(): SurfaceControl? {
+        volumeSfcCache?.let {
+            if (it.isValid) {
+                logVolumeSfc("ok", "cache", null)
+                return it
+            }
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now < volumeSfcMissAt) return null
+        val host = volumeGlassHost?.get()
+        if (host == null || !host.isAttachedToWindow) {
+            volumeSfcMissAt = now + VOLUME_SFC_NEG_CACHE_MS
+            logVolumeSfc("false", "null", if (host == null) "no-host" else "not-attached")
+            return null
+        }
+        val rootView = try {
+            host.rootView
+        } catch (t: Throwable) {
+            null
+        }
+        if (rootView == null || !isGlassOwnWindowRoot(rootView)) {
+            volumeSfcMissAt = now + VOLUME_SFC_NEG_CACHE_MS
+            logVolumeSfc("false", "null", if (rootView == null) "no-root" else "not-own-root")
+            return null
+        }
+        val viaReflect = try {
+            reflectViewRootSurfaceControl(rootView)
+        } catch (t: Throwable) {
+            null
+        }
+        if (viaReflect != null && viaReflect.isValid) {
+            volumeSfcCache = viaReflect
+            logVolumeSfc("ok", "reflect", null)
+            return viaReflect
+        }
+        val vri = try {
+            var m1 = mGetViewRootImpl
+            if (m1 == null) {
+                m1 = View::class.java.getMethod("getViewRootImpl")
+                mGetViewRootImpl = m1
+            }
+            m1.invoke(rootView)
+        } catch (t: Throwable) {
+            null
+        }
+        if (vri != null) {
+            val viaField = fieldViewRootSurfaceControl(vri)
+            if (viaField != null && viaField.isValid) {
+                volumeSfcCache = viaField
+                logVolumeSfc("ok", "field", null)
+                return viaField
+            }
+        }
+        volumeSfcMissAt = now + VOLUME_SFC_NEG_CACHE_MS
+        logVolumeSfc("false", "null", if (vri == null) "no-vri" else "both-channels-failed")
+        return null
+    }
+
+    /** volume-sfc 解析诊断（每 key 每 2s 最多一条，Lg.i 受模块日志门控）。 */
+    private fun logVolumeSfc(result: String, via: String, reason: String?) {
+        logThrottled("volume-sfc", Log.INFO) {
+            "volume-sfc: resolve $result via=$via" + (reason?.let { " reason=$it" } ?: "")
+        }
+    }
+
     /** [spec/19] heads-up 窗口根 View 判定：rootView=HeadsUpLayout（HeadsUpContainerWindow ccView，
      *  反编译实证 com.oplus.systemui.notification.headsup.windowframe.HeadsUpLayout）；
      *  兜底按窗口类型 type==2017（TYPE_STATUS_BAR_SUB_PANEL，HeadsUpContainerWindow lp 实证）。 */
@@ -14282,6 +14433,23 @@ object BlurDrawHook {
         }
     }
 
+    /** 直读 ViewRootImpl.mSurfaceControl 字段（方法反射失败时的第二通道）。失败返回 null。 */
+    private fun fieldViewRootSurfaceControl(vri: Any): SurfaceControl? {
+        return try {
+            var f = mViewRootImplSurfaceControlField
+            if (f == null) {
+                f = vri.javaClass.getDeclaredField("mSurfaceControl")
+                f.isAccessible = true
+                mViewRootImplSurfaceControlField = f
+            }
+            val sfc = f.get(vri) as? SurfaceControl ?: return null
+            if (!sfc.isValid) return null
+            sfc
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     /** 反射 SurfaceControl.getName()（@SystemApi）→ 层名（仅日志）。失败 null。 */
     private fun reflectSurfaceControlName(sfc: SurfaceControl): String? = try {
         sfc.javaClass.getMethod("getName").invoke(sfc) as? String
@@ -14308,6 +14476,7 @@ object BlurDrawHook {
      * [spec/19] 追加 heads-up 窗口根 surface（`resolveShadeSfc` 只认 NotificationShadeWindowView；
      * heads-up = HeadsUpLayout，type 2017），两者分开解析。
      * [2026-08-15] 再追加 Simple Banner 窗口根 / 流体云展开大卡窗口根。
+     * 再追加音量弹窗窗口根（[resolveVolumeWindowSfc]，弹窗在屏期间排除防自采样）。
      */
     private fun collectExcludes(shade: SurfaceControl?): ArrayList<SurfaceControl> {
         val excludes = ArrayList<SurfaceControl>(2)
@@ -14329,15 +14498,25 @@ object BlurDrawHook {
             Lg.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
             null
         }
+        val vol = try {
+            resolveVolumeWindowSfc()
+        } catch (t: Throwable) {
+            logThrottled("volume-sfc-fail", Log.WARN) {
+                "bg-element: resolve volume-window sfc failed ${t.javaClass.simpleName}"
+            }
+            null
+        }
         if (shade != null && shade.isValid) excludes.add(shade)
         hu?.let { if (it.isValid) excludes.add(it) }
         banner?.let { if (it.isValid) excludes.add(it) }
         card?.let { if (it.isValid) excludes.add(it) }
+        if (vol != null && vol.isValid && excludes.none { e -> e == vol }) excludes.add(vol)
         // [doc/spec/92 §5.5 · 2026-10-10] 诊断日志（模块日志开关 + 节流）：一眼分辨两类根因——
         // 「解析不到」（banner=null / n 偏小）vs 「解析到了但 SF 不认 setExcludeLayers」（n≥1 仍叠加）。
         logThrottled("excludes", Log.DEBUG) {
             "bg-element: excludes n=${excludes.size} " +
-                "[shade=${exclName(shade)}, hu=${exclName(hu)}, banner=${exclName(banner)}, card=${exclName(card)}]"
+                "[shade=${exclName(shade)}, hu=${exclName(hu)}, banner=${exclName(banner)}, card=${exclName(card)}, " +
+                "vol=${exclName(vol)}]"
         }
         return excludes
     }
