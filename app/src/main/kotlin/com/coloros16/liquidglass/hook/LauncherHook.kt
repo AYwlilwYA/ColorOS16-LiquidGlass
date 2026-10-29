@@ -231,6 +231,30 @@ object LauncherHook {
     /** 清除钮玻璃开关重读间隔（ms）。 */
     private const val CLEAR_ALL_BTN_GLASS_TTL_MS = 500L
 
+    // ---- 桌面编辑模式整理/完成钮玻璃（并入 PressFeedback 白名单共享机制） ----
+    /** 编辑模式工具条容器（onFinishInflate 后读 getter 捕获整理/完成两钮实例）。 */
+    private const val CLASS_EDIT_TOOLBAR = "com.android.launcher.togglebar.views.ToggleStateToolbar"
+    /** 左钮 getter（back_to_main_page，动态改文为「整理」）。 */
+    private const val METHOD_GET_BACK_TO_MAIN_PAGE = "getBackToMainPage"
+    /** 右钮 getter（apply，固定文案「完成」）。 */
+    private const val METHOD_GET_APPLY_BTN = "getApplyBtn"
+    /** 编辑工具条玻璃开关重读间隔（ms）。 */
+    private const val EDIT_TOOLBAR_GLASS_TTL_MS = 500L
+
+    // ---- 桌面长按菜单底衬玻璃（PopupBlurView 离线位图两层 → 自研玻璃渲染核） ----
+    /** 长按菜单全屏底衬 View（应用/文件夹/卡片/堆叠长按共用同一弹窗底衬）。 */
+    private const val CLASS_POPUP_BLUR_VIEW = "com.android.launcher3.popup.PopupBlurView"
+    /** 底衬模糊壁纸层私有字段（BitmapDrawable，bounds=全屏）。 */
+    private const val FIELD_POPUP_WM_DRAWABLE = "mWallpaperDrawable"
+    /** 底衬模糊 dragLayer 层私有字段（BitmapDrawable，bounds=全屏）。 */
+    private const val FIELD_POPUP_DL_DRAWABLE = "mDragLayerDrawable"
+    /** 底衬绘制方法（原实现顺序画壁纸层→dragLayer 层→super 子 View）。 */
+    private const val METHOD_POPUP_DISPATCH_DRAW = "dispatchDraw"
+    /** 底衬分离回调（清理我们侧合成缓存；系统在其中回收两层源位图）。 */
+    private const val METHOD_POPUP_ON_DETACHED = "onDetachedFromWindow"
+    /** 长按菜单玻璃开关重读间隔（ms）。 */
+    private const val POPUP_MENU_GLASS_TTL_MS = 500L
+
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
     /** [doc/spec/42 2026-08-13] Launcher 抓屏「只抓壁纸层」UID 过滤：setUid 语义 = 只抓
@@ -459,8 +483,22 @@ object LauncherHook {
         enabled = { clearAllBtnGlassEnabled() },
     )
 
+    /** 编辑模式「整理」钮条目（宿主 = ToggleStateToolbar.backToMainPage）。 */
+    private val editTidySlot = PressGlassSlot(
+        name = "edit-tidy-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { editToolbarGlassEnabled() },
+    )
+
+    /** 编辑模式「完成」钮条目（宿主 = ToggleStateToolbar.applyBtn）。 */
+    private val editApplySlot = PressGlassSlot(
+        name = "edit-apply-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { editToolbarGlassEnabled() },
+    )
+
     /** 白名单表：drawPressedColor 拦截逐条匹配，未命中 → 原绘制。 */
-    private val pressGlassSlots = listOf(clearAllBtnSlot)
+    private val pressGlassSlots = listOf(clearAllBtnSlot, editTidySlot, editApplySlot)
 
     /** PressFeedbackHandler.mView 私有字段（白名单判定反射）。 */
     private var mPfhHostViewField: Field? = null
@@ -473,6 +511,36 @@ object LauncherHook {
     private var cachedClearAllBtnGlass = false
     @Volatile
     private var cachedClearAllBtnGlassAtMs = 0L
+
+    /** 编辑工具条玻璃开关缓存（整理/完成两钮共享一个开关，TTL 同清除钮）。 */
+    @Volatile
+    private var cachedEditToolbarGlass = false
+    @Volatile
+    private var cachedEditToolbarGlassAtMs = 0L
+
+    // ---- 长按菜单底衬玻璃运行态 ----
+    /** 底衬两层位图的反射字段（install 期解析）。 */
+    @Volatile
+    private var mPopupWmField: Field? = null
+    @Volatile
+    private var mPopupDlField: Field? = null
+    /** 长按菜单玻璃开关缓存（TTL [POPUP_MENU_GLASS_TTL_MS]）。 */
+    @Volatile
+    private var cachedPopupMenuGlass = false
+    @Volatile
+    private var cachedPopupMenuGlassAtMs = 0L
+    /** 玻璃绘制专用 Paint（每帧绑定 shader，finally 清空防残留到子 View 绘制）。 */
+    private val popupGlassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** 两层系统位图的一次合成缓存（按底衬 View 身份键控；任一层 drawable 换新即重建）。 */
+    private class PopupBackdrop(
+        val wallpaperKey: Int,
+        val dragLayerKey: Int,
+        val bitmap: Bitmap,
+    )
+
+    /** 底衬 View identityHashCode → 合成背景（dispatchDraw 主线程访问；detach 清理）。 */
+    private val popupBackdropMap = ConcurrentHashMap<Int, PopupBackdrop>()
 
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
@@ -650,8 +718,10 @@ object LauncherHook {
         mountPageIndicatorGlass(api, classLoader)
         // [doc/spec/78] 桌面卡片/分组卡片/小组件背景玻璃化（Launcher 侧此前唯一未映射的模糊产生点）
         mountCardBlurGlass(api, classLoader)
-        // PressFeedback 平色家族玻璃接管（白名单驱动；当前条目：最近任务清除钮）
+        // PressFeedback 平色家族玻璃接管（白名单驱动；当前条目：最近任务清除钮/编辑模式整理完成钮）
         mountPressFeedbackGlass(api, classLoader)
+        // 桌面长按菜单全屏底衬玻璃（离线位图两层 → 自研玻璃渲染核）
+        mountPopupMenuGlass(api)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
         // [doc/spec/83] 开/关/文件夹动画的壁纸缩放信号（镜像折算玻璃采样窗）
@@ -2374,6 +2444,7 @@ object LauncherHook {
     private fun mountPressFeedbackGlass(api: XposedInterface, classLoader: ClassLoader) {
         // ① 各宿主捕获挂点（按钮实例就绪时点 → 写入白名单槽）
         mountClearAllBtnCapture(api)
+        mountEditToolbarCapture(api)
         // ② 共享拦截：drawPressedColor 白名单命中 → 玻璃顶掉平色（不 proceed）；未命中原样
         try {
             val handlerCls = hostForName(CLASS_PRESS_FEEDBACK_HANDLER)
@@ -2456,6 +2527,56 @@ object LauncherHook {
         return cachedClearAllBtnGlass
     }
 
+    /** 编辑工具条捕获挂点：工具条 onFinishInflate 后读 getter 捕获整理/完成两钮写入白名单槽。
+     *  挂失败只留空槽（拦截照挂但恒不命中 = 原绘制，零风险）。 */
+    private fun mountEditToolbarCapture(api: XposedInterface) {
+        try {
+            val toolbar = hostForName(CLASS_EDIT_TOOLBAR)
+            val getTidy = toolbar.getMethod(METHOD_GET_BACK_TO_MAIN_PAGE)
+            val getApply = toolbar.getMethod(METHOD_GET_APPLY_BTN)
+            val method = toolbar.getMethod("onFinishInflate")
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val obj = chain.getThisObject()
+                        (getTidy.invoke(obj) as? View)?.let {
+                            editTidySlot.hostRef = WeakReference(it)
+                            Lg.i(TAG, "launcher press-glass: ${editTidySlot.name} captured (${it.javaClass.name})")
+                        }
+                        (getApply.invoke(obj) as? View)?.let {
+                            editApplySlot.hostRef = WeakReference(it)
+                            Lg.i(TAG, "launcher press-glass: ${editApplySlot.name} captured (${it.javaClass.name})")
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher press-glass: read edit toolbar buttons failed", t)
+                    }
+                    result
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_EDIT_TOOLBAR#onFinishInflate (${editTidySlot.name}/${editApplySlot.name} capture)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_EDIT_TOOLBAR#onFinishInflate, edit toolbar glass disabled", t)
+        }
+    }
+
+    /** 编辑工具条玻璃开关（TTL [EDIT_TOOLBAR_GLASS_TTL_MS] 重读，开关切换无需重启 Launcher）。 */
+    private fun editToolbarGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedEditToolbarGlassAtMs > EDIT_TOOLBAR_GLASS_TTL_MS) {
+            cachedEditToolbarGlassAtMs = now
+            cachedEditToolbarGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read edit_toolbar_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedEditToolbarGlass
+    }
+
     /** 在按压宿主的 onDraw canvas 上画液态玻璃（坐标系 = 按钮局部坐标，无需平移）。
      *  返回 true = 已画玻璃（拦截侧跳过原平色）；false = 任一门控/快照失败，回退原平色（零黑屏）。
      *  每帧全量重绑 uniform（单个小按钮，成本可忽略）。 */
@@ -2514,6 +2635,198 @@ object LauncherHook {
             true
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher press-glass: ${slot.name} draw failed", t)
+            logRenderMode(id, "BLUR", "draw failed")
+            false
+        }
+    }
+
+    // ------------------------------------------------------------ 桌面长按菜单底衬玻璃
+
+    /**
+     * 长按菜单全屏底衬玻璃接管 —— hook `PopupBlurView.dispatchDraw`：底衬是系统离线位图管线
+     * （模糊壁纸层 + 模糊 dragLayer 层，与 posteffect 漏斗零关系）→ 必须 View 级接管。
+     * 开关关/源位图未就绪/任一门控失败 → 原样 proceed（系统两层照画）。玻璃命中时先画玻璃
+     * 再把两层字段临时置空 → proceed 只画子 View（菜单项在玻璃上），finally 还原字段保系统
+     * 回收链（onDetachedFromWindow 按位图身份回收，字段必须是原对象）。
+     * 底衬创建即 setAlpha(0)+330ms 动画 → **严禁 alpha<=0 守卫**（alpha=0 帧照画，合成期
+     * RenderNode alpha 自然乘掉；按 alpha skip 会永久空背景）。
+     */
+    private fun mountPopupMenuGlass(api: XposedInterface) {
+        try {
+            val popupCls = hostForName(CLASS_POPUP_BLUR_VIEW)
+            mPopupWmField = popupCls.getDeclaredField(FIELD_POPUP_WM_DRAWABLE).apply { isAccessible = true }
+            mPopupDlField = popupCls.getDeclaredField(FIELD_POPUP_DL_DRAWABLE).apply { isAccessible = true }
+            val dispatch = popupCls.getDeclaredMethod(METHOD_POPUP_DISPATCH_DRAW, Canvas::class.java)
+            api.hook(dispatch)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    var glassDrawn = false
+                    try {
+                        val view = chain.getThisObject() as? View
+                        val canvas = chain.getArgs()?.getOrNull(0) as? Canvas
+                        if (view != null && canvas != null && popupMenuGlassActive() && drawPopupGlassOnCanvas(canvas, view)) {
+                            glassDrawn = true
+                            val wm = mPopupWmField?.get(view)
+                            val dl = mPopupDlField?.get(view)
+                            mPopupWmField?.set(view, null)
+                            mPopupDlField?.set(view, null)
+                            try {
+                                chain.proceed()
+                            } finally {
+                                mPopupWmField?.set(view, wm)
+                                mPopupDlField?.set(view, dl)
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher popup-glass: dispatchDraw intercept error", t)
+                    }
+                    if (!glassDrawn) chain.proceed()
+                }
+            // 分离清理：合成缓存位图是我们侧分配的，系统只回收它自己的两层源位图
+            try {
+                val detach = popupCls.getDeclaredMethod(METHOD_POPUP_ON_DETACHED)
+                api.hook(detach)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            val id = System.identityHashCode(chain.getThisObject())
+                            popupBackdropMap.remove(id)?.let {
+                                if (!it.bitmap.isRecycled) it.bitmap.recycle()
+                            }
+                        } catch (t: Throwable) {
+                            Lg.w(TAG, "launcher popup-glass: backdrop cleanup failed", t)
+                        }
+                        result
+                    }
+            } catch (t: Throwable) {
+                Lg.w(TAG, "launcher popup-glass: onDetachedFromWindow hook failed, backdrop cache may linger", t)
+            }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_POPUP_BLUR_VIEW#$METHOD_POPUP_DISPATCH_DRAW(Canvas) (popup menu backdrop glass)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_POPUP_BLUR_VIEW#$METHOD_POPUP_DISPATCH_DRAW, popup menu glass disabled", t)
+        }
+    }
+
+    /** 长按菜单玻璃总门控（TTL [POPUP_MENU_GLASS_TTL_MS] 重读；热路径 volatile 读）。 */
+    private fun popupMenuGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedPopupMenuGlassAtMs > POPUP_MENU_GLASS_TTL_MS) {
+            cachedPopupMenuGlassAtMs = now
+            cachedPopupMenuGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read popup_menu_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedPopupMenuGlass
+    }
+
+    /** dispatchDraw 拦截前置门控（draw 内部还有各层细门控，任一失败回退原绘制）。 */
+    private fun popupMenuGlassActive(): Boolean =
+        popupMenuGlassEnabled() && !isPowerSaveGlassOff() && Prefs.glassEnabled(api)
+
+    /** 取/建两层系统位图的合成背景（任一层 drawable 身份变化 → 重建并回收旧合成）。 */
+    private fun resolvePopupBackdrop(popup: View, wm: Drawable, dl: Drawable): PopupBackdrop? {
+        val wmKey = System.identityHashCode(wm)
+        val dlKey = System.identityHashCode(dl)
+        val id = System.identityHashCode(popup)
+        popupBackdropMap[id]?.let { hit ->
+            if (hit.wallpaperKey == wmKey && hit.dragLayerKey == dlKey && !hit.bitmap.isRecycled) return hit
+            if (!hit.bitmap.isRecycled) hit.bitmap.recycle()
+            popupBackdropMap.remove(id)
+        }
+        if (popupBackdropMap.size > 4) {
+            for ((k, v) in popupBackdropMap) {
+                if (!v.bitmap.isRecycled) v.bitmap.recycle()
+                popupBackdropMap.remove(k)
+            }
+        }
+        return try {
+            val wmBmp = (wm as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return null
+            val dlBmp = (dl as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return null
+            if (wmBmp.isRecycled || dlBmp.isRecycled) return null
+            if (wmBmp.config == Bitmap.Config.HARDWARE || dlBmp.config == Bitmap.Config.HARDWARE) {
+                logOncePerSecond("popup-glass-hw-bitmap") {
+                    Lg.w(TAG, "launcher popup-glass: hardware bitmap source, glass skipped")
+                }
+                return null
+            }
+            val bw = wm.bounds.width().takeIf { it > 0 } ?: wmBmp.width
+            val bh = wm.bounds.height().takeIf { it > 0 } ?: wmBmp.height
+            val composite = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+            val c = Canvas(composite)
+            wm.draw(c)
+            dl.draw(c)
+            PopupBackdrop(wmKey, dlKey, composite).also { popupBackdropMap[id] = it }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher popup-glass: composite backdrop failed", t)
+            null
+        }
+    }
+
+    /** 在底衬 dispatchDraw 的 canvas 上画全屏液态玻璃（坐标系 = View 局部，全屏无圆角）。
+     *  返回 true = 已画玻璃（拦截侧再置空两层字段 proceed 只画子 View）；false = 回退原绘制。 */
+    private fun drawPopupGlassOnCanvas(canvas: Canvas, popup: View): Boolean {
+        if (isPowerSaveGlassOff()) return false
+        if (!popupMenuGlassEnabled()) return false
+        if (!Prefs.glassEnabled(api)) return false
+        val w = popup.width
+        val h = popup.height
+        if (w <= 0 || h <= 0) return false
+        if (!popup.isAttachedToWindow) return false
+        val wm = try {
+            mPopupWmField?.get(popup) as? Drawable
+        } catch (t: Throwable) {
+            null
+        }
+        val dl = try {
+            mPopupDlField?.get(popup) as? Drawable
+        } catch (t: Throwable) {
+            null
+        }
+        if (wm == null || dl == null) {
+            logOncePerSecond("popup-glass-src-pending") {
+                Lg.i(TAG, "launcher popup-glass: source layers not ready yet")
+            }
+            return false
+        }
+        val backdrop = resolvePopupBackdrop(popup, wm, dl) ?: return false
+        val id = System.identityHashCode(popup)
+        GlassRegistry.bind(id, popup, CLASS_POPUP_BLUR_VIEW)
+        registerHostView(popup)
+        // 全屏底衬：无元素圆角（SDF 角效应只在屏幕边界，避免短边比例折射失控）
+        val params = buildParams(w.toFloat(), h.toFloat(), 0f, elementId = id)
+        val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
+        shaderOwnerSet.add(shader)
+        if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(backdrop.bitmap)
+        val srcRect = RectF(0f, 0f, backdrop.bitmap.width.toFloat(), backdrop.bitmap.height.toFloat())
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        val tier = LowResTier.tierShaderOf(backdrop.bitmap, srcRect, wantDiv)
+        LiquidGlassShader.setUniforms(
+            shader, params, sourceShader, tier?.shader ?: sourceShader,
+            sourceRect = srcRect,
+            lowResSourceRect = tier?.lowResSrcRect ?: srcRect,
+            sourceSizeX = backdrop.bitmap.width.toFloat(),
+            sourceSizeY = backdrop.bitmap.height.toFloat(),
+        )
+        return try {
+            canvas.save()
+            try {
+                popupGlassPaint.shader = shader
+                canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), popupGlassPaint)
+            } finally {
+                popupGlassPaint.shader = null
+                canvas.restore()
+            }
+            logRenderMode(id, "GLASS")
+            true
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher popup-glass: draw failed", t)
             logRenderMode(id, "BLUR", "draw failed")
             false
         }

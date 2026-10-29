@@ -349,6 +349,7 @@ object GlassRegistry {
         "com.coui.appcompat.seekbar.COUISeekBar" to "横向滑条基类",
         "com.coui.appcompat.poplist.COUIPopupListWindow" to "通知长按菜单",
         "com.android.launcher.views.PressFeedbackButton" to "最近任务清除按钮",
+        "com.android.launcher3.popup.PopupBlurView" to "长按菜单底衬",
     )
 
     /** 类全名 → 位置描述的 strings.xml 资源名（「在哪里的」一句话；UI 侧经 [classLocationKey] 取用）。 */
@@ -386,6 +387,7 @@ object GlassRegistry {
         "com.coui.appcompat.seekbar.COUISeekBar" to "loc_horizontal_seekbar",
         "com.coui.appcompat.poplist.COUIPopupListWindow" to "loc_notification_popup_menu",
         "com.android.launcher.views.PressFeedbackButton" to "loc_clear_all_button",
+        "com.android.launcher3.popup.PopupBlurView" to "loc_popup_menu_backdrop",
     )
 
     /** 清单/对话框展示用：有标签显示「标签（简单类名）」，无标签只显示简单类名。 */

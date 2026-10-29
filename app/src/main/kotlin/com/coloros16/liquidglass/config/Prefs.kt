@@ -409,6 +409,22 @@ object Prefs {
     /** 最近任务清除按钮玻璃默认值（false = 不干预，保持系统原样平色胶囊） */
     const val DEFAULT_CLEAR_ALL_BTN_GLASS = false
 
+    // ---------- 桌面编辑模式整理/完成钮液态玻璃化 ----------
+    /** 双指捏合编辑模式左上「整理」与右上「完成」按钮液态玻璃。默认 **false**。该组按钮同为
+     *  `PressFeedbackButton` 平色 Paint 填充（不走系统模糊管线），开启后由本模块接管渲染。
+     *  开关切换即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_EDIT_TOOLBAR_GLASS = "edit_toolbar_glass_enable"
+    /** 编辑模式整理/完成钮玻璃默认值（false = 不干预，保持系统原样平色胶囊） */
+    const val DEFAULT_EDIT_TOOLBAR_GLASS = false
+
+    // ---------- 桌面长按菜单底衬液态玻璃化 ----------
+    /** 桌面长按（应用图标/文件夹/卡片/堆叠）主菜单全屏底衬液态玻璃。默认 **false**。
+     *  底衬由系统离线位图管线（模糊壁纸 + 模糊 dragLayer 两层）产生，不走系统模糊管线，
+     *  开启后由本模块接管渲染。开关切换即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_POPUP_MENU_GLASS_ENABLE = "popup_menu_glass_enable"
+    /** 长按菜单底衬玻璃默认值（false = 不干预，保持系统原样模糊底衬） */
+    const val DEFAULT_POPUP_MENU_GLASS_ENABLE = false
+
     // ---------- 音量条液态玻璃化（doc/spec/09） ----------
     /** 音量条（垂直滑条）液态玻璃。默认 **false**。音量条背景走 framework 窗口模糊
      *  （BackgroundBlurDrawable，draw 空实现），现有 drawable 替换链打不中，需按 spec/09

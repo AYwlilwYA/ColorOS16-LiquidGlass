@@ -201,5 +201,37 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 桌面编辑模式整理/完成钮玻璃（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchEditToolbarGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_edit_toolbar_glass" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_edit_toolbar_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 桌面长按菜单底衬玻璃（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchPopupMenuGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_popup_menu_glass" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_popup_menu_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
     </LinearLayout>
 </ScrollView>
