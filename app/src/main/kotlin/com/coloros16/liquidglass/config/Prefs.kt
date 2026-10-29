@@ -488,6 +488,12 @@ object Prefs {
     /** 速览（负一屏）玻璃化默认值（false = 不干预） */
     const val DEFAULT_ASSISTANT_SCREEN_GLASS = false
 
+    /** 全局搜索（com.heytap.quicksearchbox）弹窗玻璃化（只覆盖 App 内 COUI 长按菜单/弹窗，
+     *  不含搜索条——搜索条是自绘纯色不在模糊管线）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_QUICK_SEARCH_GLASS = "quick_search_glass_enable"
+    /** 全局搜索弹窗玻璃化默认值（false = 不干预） */
+    const val DEFAULT_QUICK_SEARCH_GLASS = false
+
     /** 相册背景采样范围探针（实验）：把 A 族视图背景 RenderEffect 临时替换为越界采样染色探针，
      * 肉眼判定 shader input 是否含节点外像素（折射环带可行性）。默认 **false**；
      * 开启时相册原模糊观感被探针覆盖（主体透传=清晰背景 + 边缘色环）。改动即时生效（TTL 500ms 重读）。 */

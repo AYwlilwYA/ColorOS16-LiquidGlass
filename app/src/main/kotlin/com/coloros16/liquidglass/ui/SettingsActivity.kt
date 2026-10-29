@@ -1353,6 +1353,7 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchCalculatorGlass, Prefs.KEY_CALCULATOR_GLASS, Prefs.DEFAULT_CALCULATOR_GLASS)
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)
         bindGlassSwitch(view, R.id.switchAssistantScreenGlass, Prefs.KEY_ASSISTANT_SCREEN_GLASS, Prefs.DEFAULT_ASSISTANT_SCREEN_GLASS)
+        bindGlassSwitch(view, R.id.switchQuickSearchGlass, Prefs.KEY_QUICK_SEARCH_GLASS, Prefs.DEFAULT_QUICK_SEARCH_GLASS)
         bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
         bindGlassSwitch(view, R.id.switchClearAllBtnGlass, Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
         bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)

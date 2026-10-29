@@ -67,7 +67,8 @@ class XposedEntry : XposedModule() {
         // 与 SystemUI 共用同一套 posteffect drawBlurShader hook（FQCN 相同，两份独立 hook 实例）。
         if (param.packageName != PACKAGE_SYSTEMUI && param.packageName != PACKAGE_LAUNCHER &&
             param.packageName != PACKAGE_GALLERY && param.packageName != PACKAGE_CALCULATOR &&
-            param.packageName != PACKAGE_SMART_SIDEBAR && param.packageName != PACKAGE_ASSISTANT_SCREEN
+            param.packageName != PACKAGE_SMART_SIDEBAR && param.packageName != PACKAGE_ASSISTANT_SCREEN &&
+            param.packageName != PACKAGE_QUICK_SEARCH_BOX
         ) return
         val classLoader = param.getDefaultClassLoader() ?: return
         // [doc/spec/110] 存宿主 classLoader：同 ClassLoader 复用重载时 onHotReloaded 直接取用；
@@ -113,7 +114,7 @@ class XposedEntry : XposedModule() {
         }
         if (pkg != PACKAGE_SYSTEMUI && pkg != PACKAGE_LAUNCHER &&
             pkg != PACKAGE_GALLERY && pkg != PACKAGE_CALCULATOR && pkg != PACKAGE_SMART_SIDEBAR &&
-            pkg != PACKAGE_ASSISTANT_SCREEN
+            pkg != PACKAGE_ASSISTANT_SCREEN && pkg != PACKAGE_QUICK_SEARCH_BOX
         ) {
             // 非目标进程：按框架语义卸掉旧 hook（这些进程本就不该有模块 hook）
             param.oldHookHandles.forEach { h ->
@@ -188,7 +189,8 @@ class XposedEntry : XposedModule() {
             }
             // 第三方 App（相册/计算器/智能侧边栏/速览）：A/B 族模糊挂载点登记（组件清单 + 预设按组件命中）。
             // 渲染腿尚未接通（进程内无抓屏权限拿不到背景源），背景仍由系统模糊渲染，见 AppGlassHook 头注。
-            PACKAGE_GALLERY, PACKAGE_CALCULATOR, PACKAGE_SMART_SIDEBAR, PACKAGE_ASSISTANT_SCREEN -> {
+            PACKAGE_GALLERY, PACKAGE_CALCULATOR, PACKAGE_SMART_SIDEBAR, PACKAGE_ASSISTANT_SCREEN,
+            PACKAGE_QUICK_SEARCH_BOX -> {
                 AppGlassHook.install(this, classLoader, packageName)
             }
         }
@@ -263,6 +265,8 @@ class XposedEntry : XposedModule() {
         const val PACKAGE_SMART_SIDEBAR = "com.coloros.smartsidebar"
         /** 速览（负一屏）进程：卡片/控件窗口模糊组件登记（AppGlassHook B 族）。 */
         const val PACKAGE_ASSISTANT_SCREEN = "com.coloros.assistantscreen"
+        /** 全局搜索进程：COUI 长按菜单/弹窗窗口模糊组件登记（AppGlassHook B 族）。 */
+        const val PACKAGE_QUICK_SEARCH_BOX = "com.heytap.quicksearchbox"
         /** [doc/spec/110] 宿主 classLoader 缓存（onPackageLoaded 存 / onHotReloaded 读）。 */
         private val cachedLoaders = java.util.concurrent.ConcurrentHashMap<String, ClassLoader>()
         /** [doc/spec/110] 模块版本标记（热重载完成日志用，便于 daemon 侧对账 loaded version）。 */
