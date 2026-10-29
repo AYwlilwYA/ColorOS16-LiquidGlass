@@ -282,6 +282,10 @@
     <string name="settings_notification_popup_glass">通知长按菜单玻璃</string>
     <string name="settings_notification_popup_glass_desc">给长按通知后弹出的操作菜单卡加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
     <string name="loc_notification_popup_menu">长按通知弹出的操作菜单卡</string>
+    <string name="settings_device_entrance_glass">设备空间入口卡玻璃</string>
+    <string name="settings_device_entrance_glass_desc">给控制中心设备空间里的小入口方块加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_qs_detail_glass">快捷开关展开卡玻璃</string>
+    <string name="settings_qs_detail_glass_desc">给控制中心点开 WiFi、蓝牙等开关后弹出的大面板加液态玻璃背景（只作用于面板底板）。开启后立即生效，无需重启系统界面。</string>
     <string name="settings_gallery_glass">相册液态玻璃</string>
     <string name="settings_gallery_glass_desc">把相册里的视图背景模糊接管成液态玻璃。该功能依赖相册自身的模糊实现，不同界面效果可能不一致。</string>
     <string name="settings_calculator_glass">计算器液态玻璃</string>
@@ -319,6 +323,8 @@
     <string name="loc_toggle_seekbar">亮度弹窗里的横向滑条</string>
     <string name="loc_device_card_square">控制中心设备中心里的方形设备卡片</string>
     <string name="loc_device_card_rect">控制中心设备中心里的长条设备卡片</string>
+    <string name="loc_device_entrance">控制中心设备空间里的小入口方块</string>
+    <string name="loc_qs_detail">控制中心点开磁贴后弹出的展开大面板</string>
     <string name="loc_gallery_photo_bg">相册照片页的背景材质模糊</string>
     <string name="loc_gallery_bg_view">相册内的通用背景模糊覆盖层</string>
     <string name="loc_window_blur">对话框与侧边栏等窗口的背景模糊层</string>

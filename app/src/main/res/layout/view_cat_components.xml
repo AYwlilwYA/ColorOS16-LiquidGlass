@@ -73,6 +73,38 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 设备空间入口卡玻璃（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchDeviceEntranceGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_device_entrance_glass" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_device_entrance_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <!-- 快捷开关展开卡玻璃（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchQsDetailGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_qs_detail_glass" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_qs_detail_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <!-- 相册液态玻璃（默认关） -->
         <Switch
             android:id="@+id/switchGalleryGlass"

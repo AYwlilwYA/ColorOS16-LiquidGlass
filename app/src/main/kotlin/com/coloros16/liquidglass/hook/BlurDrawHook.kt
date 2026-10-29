@@ -574,6 +574,7 @@ object BlurDrawHook {
     private val SYNC_CAPTURE_FORCE_PUBLISH_SOURCES = setOf(
         "volume-expand-main-thread",
         "volume-appear-main-thread",
+        "heads-up-main-thread",
     )
     /** 音量元素（音量条 / ···按钮）玻璃折射强度衰减系数：小面积元素强折射在快照上放大成扭曲倒影。 */
     private const val VOLUME_REFRACTION_DAMP = 0.25f
@@ -622,6 +623,10 @@ object BlurDrawHook {
     private const val SUFFIX_DEVICE_CARD_VIEW = "DeviceCardView"
     /** 分组展开/回收动画覆盖层 View 类名后缀（语义复用通知卡预设行）。 */
     private const val SUFFIX_GROUP_OVERLAY_CONTAINER_VIEW = "GroupOverlayContainerView"
+    /** 设备空间入口卡 View 类名后缀（Square/Rectangle/NoDevice 三兄弟共用）。 */
+    private const val SUFFIX_ENTRANCE_CARD_VIEW = "EntranceCardView"
+    /** 控制中心磁贴展开大卡 View 类名后缀（Dialog 容器根）。 */
+    private const val SUFFIX_QS_DETAIL = "OplusQSDetail"
     /** 设备中心卡片 hook 重读/诊断节流间隔（ms）。 */
     private const val DEVICE_CARD_DIAG_TTL_MS = 2_000L
     /** attach 后模糊背景后插的重扫延迟（ms，两拍：背景插入通常发生在首帧布局后）。 */
@@ -1927,8 +1932,9 @@ object BlurDrawHook {
     private const val RENDER_LEG_POSTEFFECT = "posteffect-drawBlurShader"
     private const val RENDER_LEG_SEEDLING = "seedling-canvas"
 
-    /** 记录最后渲染腿（值未变则零写入）。 */
+    /** 记录最后渲染腿（值未变则零写入；超限整表清，同 screenRegionMap 语义）。 */
     private fun markRenderLeg(id: Int, leg: String) {
+        if (renderLegMap.size > 1024) renderLegMap.clear()
         if (renderLegMap[id] != leg) renderLegMap[id] = leg
     }
 
@@ -2502,7 +2508,8 @@ object BlurDrawHook {
                 if (last == null || now - last >= intervalMs) {
                     logThrottleLastTimes[key] = now
                     if (logThrottleLastTimes.size > 256) logThrottleLastTimes.clear()
-                    val text = msg()
+                    // key 回显进打印文本：按 key grep 日志可命中（只进节流表时 grep 恒 0 假阴）
+                    val text = "[$key] ${msg()}"
                     when (level) {
                         Log.WARN -> Lg.w(TAG, text)
                         Log.DEBUG -> Lg.d(TAG, text)
@@ -2510,7 +2517,7 @@ object BlurDrawHook {
                     }
                 }
             } else {
-                Lg.e(TAG, msg())
+                Lg.e(TAG, "[$key] ${msg()}")
             }
         }
     }
@@ -2533,7 +2540,7 @@ object BlurDrawHook {
     ) {
         if (!moduleLogEnabled) return
         if (level == Log.ERROR) {
-            msg()?.let { Lg.e(TAG, it) }
+            msg()?.let { Lg.e(TAG, "[$key] $it") }
             return
         }
         val now = SystemClock.uptimeMillis()
@@ -2541,7 +2548,8 @@ object BlurDrawHook {
         if (last != null && now - last < intervalMs) return
         logThrottleLastTimes[key] = now
         if (logThrottleLastTimes.size > 256) logThrottleLastTimes.clear()
-        val text = msg() ?: return
+        val msgNow = msg() ?: return
+        val text = "[$key] $msgNow"
         when (level) {
             Log.WARN -> Lg.w(TAG, text)
             Log.DEBUG -> Lg.d(TAG, text)
@@ -3943,7 +3951,7 @@ object BlurDrawHook {
         // 门 1：开关。OFF → 只做 OFF 边沿回写；从未写穿时 [restoreUnifiedCornerIfApplied]
         // 第一行布尔判断即返回 = 纯 return（零新分配、零新日志，spec/101 §七 回归保证第 1 条）。
         if (!Prefs.unifiedCornerEnabled(api)) {
-            restoreUnifiedCornerIfApplied()
+            restoreUnifiedCornerIfApplied("gate1")
             return false
         }
         if (unifiedCornerWriting.get() == true) {
@@ -4034,7 +4042,7 @@ object BlurDrawHook {
                 // 系统改过：先把**整表**回写到系统原状（连自己一起还原，不留「config 已是新值、
                 // 共享 provider 还挂着我们的 U」的半拉子状态），再按当前存储值重采一份干净影子。
                 // 其余 config 的影子已清 → 它们下次 applyConfigToPlatformBlur 会自动重写。
-                restoreUnifiedCornerIfApplied()
+                restoreUnifiedCornerIfApplied("uc-resync")
                 cornerRadiusCache.remove(System.identityHashCode(vbp))
                 resolveCornerRadiusUncached(vbp, bounds, view)
             } else {
@@ -4136,15 +4144,18 @@ object BlurDrawHook {
                 existing.fromOverride = true
                 writeUnifiedCornerToConfig(cfg, desired, existing)
                 existing.lastWritten = desired
-                unifiedCornerApplied = true
+                // 覆盖写穿不置 unifiedCornerApplied：该标志只表统一圆角写过；覆盖记账
+                // 归 overrideShadowActive/overrideCornerWritten 管（置位会让 unified OFF
+                // 时门1 全量还原清遍覆盖记账 → 与写穿每 ~2s 拉锯重发）
                 overrideShadowActive = true
                 overrideCornerWritten[elementId] = desired
                 applyBlurConfigAndInvalidate(vbp)
                 return true
             }
-            // 首次写穿 / 系统又改过圆角 → 重新采集原值（沿用旧影子会把系统的新原值弄丢）
+            // 首次写穿 / 系统又改过圆角 → 重新采集原值。系统已改值 = 旧影子 own 已过时，
+            // 不做全量还原（会清遍全表记账引发与写穿拉锯）；旧影子由下方 captureUnifiedCornerShadow
+            // 同 key 覆盖，新影子以系统当前值为 own 基线
             val info = if (existing != null) {
-                restoreUnifiedCornerIfApplied()
                 cornerRadiusCache.remove(System.identityHashCode(vbp))
                 resolveCornerRadiusUncached(vbp, bounds, view)
             } else {
@@ -4162,7 +4173,7 @@ object BlurDrawHook {
                 "corner-override: write-through path=$pathTag own=${info.radius}(${info.source}) -> $desired cap=${minOf(w, h) / 2f} w=${w.toInt()}h=${h.toInt()}"
             }
             writeUnifiedCornerToConfig(cfg, desired, shadow)
-            unifiedCornerApplied = true
+            // 覆盖写穿不置 unifiedCornerApplied（语义见 rewrite 分支注释）
             overrideShadowActive = true
             overrideCornerWritten[elementId] = desired
             applyBlurConfigAndInvalidate(vbp)
@@ -4298,7 +4309,7 @@ object BlurDrawHook {
                 logThrottled("lg-ucorner-overflow", Log.WARN) {
                     "unified-corner: shadow table full (${unifiedCornerShadow.size}), restore-all then clear"
                 }
-                restoreUnifiedCornerIfApplied()
+                restoreUnifiedCornerIfApplied("overflow")
                 unifiedCornerShadow.clear()
                 unifiedProviderShadow.clear()
             }
@@ -4423,7 +4434,7 @@ object BlurDrawHook {
      *
      *  从未被写过的 config 不在表里 → 天然零动作；开关从未开过时 [unifiedCornerApplied] 为 false，
      *  第一行即返回（本函数因此可以放在热路径第一道门后而零开销）。 */
-    private fun restoreUnifiedCornerIfApplied() {
+    private fun restoreUnifiedCornerIfApplied(caller: String) {
         if (!unifiedCornerApplied) return
         // 先清标志：回写过程会经 applyBlurConfig 重入本 hook（开关已关）→ 重入路径直接短路
         unifiedCornerApplied = false
@@ -4490,12 +4501,17 @@ object BlurDrawHook {
         }
         unifiedCornerShadow.clear()
         unifiedProviderShadow.clear()
+        if (overrideShadowActive) {
+            logThrottled("lg-143-wipe", Log.WARN) {
+                "corner-override: bookkeeping wiped by unified restore caller=$caller"
+            }
+        }
         // [doc/spec/143] 覆盖影子随全量还原一并作废，否则快判缓存恒命中 → 永久错位
         overrideShadowActive = false
         overrideCornerWritten.clear()
         logThrottled("lg-ucorner-restore", Log.INFO) {
             "unified-corner: switch OFF, restored $restoredConfigs BlurConfig + $restoredProviders pathProvider" +
-                " to system originals (failed cfg=$failedConfigs) (spec/108 m5)"
+                " to system originals (failed cfg=$failedConfigs) caller=$caller (spec/108 m5)"
         }
     }
 
@@ -4780,6 +4796,10 @@ object BlurDrawHook {
             if (SEEKBAR_HOST_SUFFIXES.any { name.endsWith(it) }) return name
             // 分组展开/回收动画覆盖层：复用通知卡预设行（返回自身类名则预设表无该行仍 miss）
             if (name.endsWith(SUFFIX_GROUP_OVERLAY_CONTAINER_VIEW)) return CLASS_NBV_EXT_IMP
+            // 设备空间入口卡（Square/Rectangle/NoDevice 三兄弟共用后缀）各归各预设行
+            if (name.endsWith(SUFFIX_ENTRANCE_CARD_VIEW)) return name
+            // 控制中心磁贴展开大卡（WiFi/蓝牙/移动数据等全部 Dialog 容器）
+            if (name.endsWith(SUFFIX_QS_DETAIL)) return name
             cur = cur.parent as? View
             depth++
         }
@@ -5121,6 +5141,16 @@ object BlurDrawHook {
             logThrottled("semantic-rebind", Log.INFO) {
                 "semantic-rebind: ${hostView.javaClass.simpleName} -> $semantic"
             }
+        }
+        // 每元素开关门：入口卡/展开卡各归各开关，关 = 不登记（渲染链无 entry → BLUR 回退）
+        if (effectiveCardClass != null &&
+            (effectiveCardClass.endsWith(SUFFIX_ENTRANCE_CARD_VIEW) && !Prefs.deviceEntranceGlassEnabled(api) ||
+                effectiveCardClass.endsWith(SUFFIX_QS_DETAIL) && !Prefs.qsDetailGlassEnabled(api))
+        ) {
+            logThrottled("$logTag-skip-switch-off", Log.DEBUG) {
+                "$logTag: skip register —— $effectiveCardClass switch off"
+            }
+            return false
         }
         GlassRegistry.bind(System.identityHashCode(target), target, effectiveCardClass)
         // [spec/38 修复 2026-08-13] ScrimView（面板背景 scrim，ScrimControllerExImp.refreshBehindDrawable 的
@@ -7862,7 +7892,8 @@ object BlurDrawHook {
                         } catch (t: Throwable) {
                             null
                         }
-                        if (sameDialog && (hostDetached || showing == false)) {
+                        // host 已死无条件清；host 活着时须同 dialog 且已收起才清（防他窗 dismissH 误清）
+                        if (hostDetached || (sameDialog && showing == false)) {
                             volumeGlassHost = null
                             volumeSfcCache = null
                             Lg.i(TAG, "volume-dialog: dismissH -> host/sfc cleared")
@@ -7914,15 +7945,15 @@ object BlurDrawHook {
     private fun volumePanelBackdropEnabled(): Boolean {
         val now = SystemClock.uptimeMillis()
         if (now - cachedVolumePanelBackdropAtMs > VOLUME_PANEL_BACKDROP_TTL_MS) {
+            // api 未就绪时不打时间戳：避免污染 TTL 致就绪后仍按未初始化的 false 执行
+            val apiNow = api ?: return false
             cachedVolumePanelBackdropAtMs = now
             val before = cachedVolumePanelBackdrop
             cachedVolumePanelBackdrop = try {
-                api?.let {
-                    Prefs.read(it).getBoolean(
-                        Prefs.KEY_VOLUME_PANEL_BACKDROP,
-                        Prefs.DEFAULT_VOLUME_PANEL_BACKDROP,
-                    )
-                } ?: false
+                Prefs.read(apiNow).getBoolean(
+                    Prefs.KEY_VOLUME_PANEL_BACKDROP,
+                    Prefs.DEFAULT_VOLUME_PANEL_BACKDROP,
+                )
             } catch (t: Throwable) {
                 Lg.w(TAG, "prefs read volume_panel_backdrop_enable failed, default false", t)
                 false
@@ -8084,6 +8115,10 @@ object BlurDrawHook {
         val id = System.identityHashCode(seekbar)
         val last = volumeLastDrawAtMs.put(id, now) ?: 0L
         if (volumeLastDrawAtMs.size > 32) volumeLastDrawAtMs.clear()
+        // host 实例更换（新弹窗 seekbar 首绘）→ 清旧窗 sfc，不跨弹窗复用
+        if (volumeGlassHost?.get() !== seekbar) {
+            volumeSfcCache = null
+        }
         volumeGlassHost = WeakReference(seekbar)
         volumeGlassHostAtMs = now
         // 新弹窗出现：清负缓存让音量窗 sfc 立即可解析
@@ -8523,9 +8558,11 @@ object BlurDrawHook {
             }
             return
         }
-        if (host.alpha <= 0.01f || !host.isShown) {
+        // alpha 不作守卫：菜单 spring 动画经 RenderNode 属性快通道改 alpha 不触发重绘，
+        // 首帧（alpha=0）若 skip 则 DisplayList 背景内容永久为空 → 只按 isShown 判
+        if (!host.isShown) {
             logThrottled("notif-popup-draw", Log.INFO) {
-                "notif-popup: draw skip —— alpha=${host.alpha} shown=${host.isShown}"
+                "notif-popup: draw skip —— shown=false alpha=${host.alpha}"
             }
             return
         }
@@ -13088,6 +13125,14 @@ object BlurDrawHook {
             // hostView 弱引用已回收 → 回退注册 region + bounds delta 对齐（旧逻辑兜底，静止可接受）
             applyContainerTransform(reconcileRegion(entry, bounds), null)
         }
+        // 出场飞行段（卡整体屏上外）不出玻璃 → BLUR 回退：屏外像素采样无意义，
+        // 停稳（top≥0）后自然启用玻璃
+        if (liveRegion.top < 0f) {
+            logThrottled("liquid-not-settled", Log.DEBUG) {
+                "liquid: skip build —— liveRegion.top=${liveRegion.top} id=$id view=${entry.hostViewName}"
+            }
+            return null
+        }
         // [整屏快照背景源 2026-08-13] 渲染源 = 共享整屏快照（0.5 降采样），srcRect = 元素【真实区域】
         //（实时 liveRegion）折算到快照坐标（移动实时跟手）；快照缺失 → null 回退系统模糊
         val renderSource = resolveRenderSource(id, liveRegion) ?: return null
@@ -13268,12 +13313,20 @@ object BlurDrawHook {
             // srcRect = 元素当前区域折算到快照坐标（按降采样比例缩放，坐标空间一致不错位）
             val scaleX = snap.bitmap.width.toFloat() / snap.region.width()
             val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
-            val srcRect = RectF(
-                (screenRegion.left - snap.region.left) * scaleX,
-                (screenRegion.top - snap.region.top) * scaleY,
-                (screenRegion.right - snap.region.left) * scaleX,
-                (screenRegion.bottom - snap.region.top) * scaleY,
-            )
+            var srcLeft = (screenRegion.left - snap.region.left) * scaleX
+            var srcTop = (screenRegion.top - snap.region.top) * scaleY
+            var srcRight = (screenRegion.right - snap.region.left) * scaleX
+            var srcBottom = (screenRegion.bottom - snap.region.top) * scaleY
+            // region 超屏（弹窗滑入动画起点等）→ srcRect 可整体越出快照 → discard 恒真玻璃整条透明；
+            // 钳进快照 bounds 后仍可采到可见部分；真无交集（clamp 后 left≥right）才回退系统模糊
+            val bmpW = snap.bitmap.width.toFloat()
+            val bmpH = snap.bitmap.height.toFloat()
+            srcLeft = srcLeft.coerceIn(0f, bmpW)
+            srcTop = srcTop.coerceIn(0f, bmpH)
+            srcRight = srcRight.coerceIn(0f, bmpW)
+            srcBottom = srcBottom.coerceIn(0f, bmpH)
+            if (srcLeft >= srcRight || srcTop >= srcBottom) return null
+            val srcRect = RectF(srcLeft, srcTop, srcRight, srcBottom)
             // MetaBall 扩张/动画中 region 可能含屏外负偏移 → srcRect 可能越界；AGSL BitmapShader CLAMP 兜底
             return RenderSource(snap.bitmap, srcRect, isElementSource = true)
         }
@@ -13337,6 +13390,9 @@ object BlurDrawHook {
         var topKey = -1
         var topCount = 0
         for ((k, e) in screenRegionMap) {
+            // 通知卡家族不做 bounds 兜底候选：出场新 drawable 主键 miss 时按等宽高匹配到
+            // 旧 entry 会采错内容（错 entry 首帧闪）→ 宁缺毋滥回退系统模糊
+            if (e.sourceTag == "notifCard" || e.sourceTag == "seedling") continue
             val diff = Math.abs(e.autoBounds.width() - w) + Math.abs(e.autoBounds.height() - h)
             if (diff < bestDiff) {
                 bestDiff = diff
@@ -13361,6 +13417,7 @@ object BlurDrawHook {
             // 并列 → 第二遍只收集并列项（分配只发生在这里；歧义本身罕见）
             val candidates = ArrayList<Pair<Int, RegionEntry>>(topCount)
             for ((k, e) in screenRegionMap) {
+                if (e.sourceTag == "notifCard" || e.sourceTag == "seedling") continue
                 val diff = Math.abs(e.autoBounds.width() - w) + Math.abs(e.autoBounds.height() - h)
                 if (diff == bestDiff) candidates.add(k to e)
             }

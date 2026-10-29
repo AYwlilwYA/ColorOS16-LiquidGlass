@@ -271,7 +271,7 @@ internal object DebugOverlay {
                 wmgr.addView(v, lp)
             }
         } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay attach frame failed", t)
+            logThrottled("attach-frame-fail", "debug overlay attach frame failed ${t.javaClass.simpleName}", warn = true)
             frameView = null
         }
     }
@@ -304,7 +304,7 @@ internal object DebugOverlay {
                 wmgr.addView(v, lp)
             }
         } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay attach panel failed", t)
+            logThrottled("attach-panel-fail", "debug overlay attach panel failed ${t.javaClass.simpleName}", warn = true)
         }
     }
 
@@ -337,7 +337,7 @@ internal object DebugOverlay {
                 wmgr.addView(v, lp)
             }
         } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay attach ball failed", t)
+            logThrottled("attach-ball-fail", "debug overlay attach ball failed ${t.javaClass.simpleName}", warn = true)
             ballView = null
             ballParams = null
         }
@@ -375,6 +375,9 @@ internal object DebugOverlay {
     private fun togglePanel() {
         panelExpanded = !panelExpanded
         if (panelExpanded) {
+            // 点球开面板时退出待点抓取态：面板与待点窗不并存
+            pendingPick = false
+            ballView?.pending = false
             openPanelExtras()
         }
         pumpNow()
@@ -435,12 +438,33 @@ internal object DebugOverlay {
         val snap = snapshotProvider?.invoke() ?: emptyList()
         val tol = PICK_TOLERANCE_DIP * density
         var best: DebugElement? = null
+        var bestZ = Int.MIN_VALUE
+        var bestDepth = -1
         var bestArea = Float.MAX_VALUE
+        var zIndexMap: Map<View, Int>? = null
         for (e in snap) {
             val r = e.region
             if (r.left - tol <= x && x <= r.right + tol && r.top - tol <= y && y <= r.bottom + tol) {
+                val host = e.hostViewRef?.get()
+                val root = try {
+                    host?.rootView
+                } catch (t: Throwable) {
+                    null
+                }
+                val z = if (root != null) {
+                    (zIndexMap ?: buildWindowZIndexMap().also { zIndexMap = it })[root] ?: -1
+                } else {
+                    -1
+                }
+                val depth = if (host != null) viewDepthOf(host) else -1
                 val area = r.width() * r.height()
-                if (area < bestArea) {
+                // 上层优先：窗口 z 序（mViews 索引大=上）> 同窗 View 树深度 > 面积小者
+                if (z > bestZ ||
+                    (z == bestZ && depth > bestDepth) ||
+                    (z == bestZ && depth == bestDepth && area < bestArea)
+                ) {
+                    bestZ = z
+                    bestDepth = depth
                     bestArea = area
                     best = e
                 }
@@ -448,10 +472,40 @@ internal object DebugOverlay {
         }
         val hit = best
         return if (hit != null) {
-            buildGlassResult(hit)
+            buildGlassResult(hit, via = "registry")
         } else {
             buildFallbackResult(x, y)
         }
+    }
+
+    /** 窗口根 → mViews 索引映射（索引大=窗口层高；反射失败返回空表，决胜退化为深度/面积）。 */
+    private fun buildWindowZIndexMap(): Map<View, Int> {
+        return try {
+            val cls = Class.forName("android.view.WindowManagerGlobal")
+            val inst = cls.getMethod("getInstance").invoke(null)
+            val views = cls.getDeclaredField("mViews").apply { isAccessible = true }
+                .get(inst) as? ArrayList<View> ?: return emptyMap()
+            val snapshot = ArrayList(views)
+            val map = HashMap<View, Int>(snapshot.size)
+            for (i in snapshot.indices) {
+                val decor = snapshot[i] ?: continue
+                map[decor] = i
+            }
+            map
+        } catch (t: Throwable) {
+            emptyMap()
+        }
+    }
+
+    /** View 树深度（窗口根=0；越大越靠上层）。 */
+    private fun viewDepthOf(v: View): Int {
+        var depth = 0
+        var p = v.parent
+        while (p is View && depth < 64) {
+            depth++
+            p = p.parent
+        }
+        return depth
     }
 
     private fun buildFallbackResult(x: Float, y: Float): CaptureResult {
@@ -480,7 +534,7 @@ internal object DebugOverlay {
 
     // ------------------------------------------------------------ 输出组装 --------------------------------------------------
 
-    private fun buildGlassResult(e: DebugElement): CaptureResult {
+    private fun buildGlassResult(e: DebugElement, via: String): CaptureResult {
         val sb = StringBuilder()
         val v = e.hostViewRef?.get()
         val loc = IntArray(2)
@@ -500,6 +554,7 @@ internal object DebugOverlay {
         } else {
             sb.append("（宿主 View 已回收）")
         }
+        sb.append("  via=").append(via)
         sb.append('\n')
         // [窗口]
         appendWindowLine(sb, v)
@@ -575,7 +630,8 @@ internal object DebugOverlay {
         sb.append("  id=").append(idNameOf(v))
         sb.append("  bounds=").append(loc[0]).append(',').append(loc[1])
             .append(' ').append(v.width).append('×').append(v.height)
-        sb.append("  attach=").append(v.isAttachedToWindow).append('\n')
+        sb.append("  attach=").append(v.isAttachedToWindow)
+        sb.append("  via=viewtree").append('\n')
         // [窗口]
         appendWindowLine(sb, v)
         // [父链]（View 父链，cap 12）
@@ -880,14 +936,14 @@ internal object DebugOverlay {
 
     // ------------------------------------------------------------ 日志 --------------------------------------------------
 
-    /** 按 key 节流的 i 级日志（同 key 默认 2s 一条）。 */
-    private fun logThrottled(key: String, msg: String) {
+    /** 按 key 节流的 i 级日志（同 key 默认 2s 一条）；warn=true 走 w 级。 */
+    private fun logThrottled(key: String, msg: String, warn: Boolean = false) {
         val now = SystemClock.uptimeMillis()
         val last = logThrottleMap[key]
         if (last != null && now - last < LOG_THROTTLE_MS) return
         logThrottleMap[key] = now
         if (logThrottleMap.size > 64) logThrottleMap.clear()
-        Lg.i(TAG, msg)
+        if (warn) Lg.w(TAG, msg) else Lg.i(TAG, msg)
     }
 
     // ------------------------------------------------------------ 视图 --------------------------------------------------

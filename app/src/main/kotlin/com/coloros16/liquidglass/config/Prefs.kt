@@ -436,6 +436,19 @@ object Prefs {
     /** 通知长按菜单玻璃默认值（false = 不干预，保持系统原样） */
     const val DEFAULT_NOTIFICATION_POPUP_GLASS = false
 
+    // ---------- 控制中心组件玻璃（设备空间入口卡 / 快捷开关展开卡） ----------
+    /** 设备空间入口方块（控制中心设备空间 1×1 入口卡）玻璃。默认 **false**；
+     *  开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_DEVICE_ENTRANCE_GLASS = "device_entrance_glass_enable"
+    /** 设备空间入口方块玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_DEVICE_ENTRANCE_GLASS = false
+
+    /** 快捷开关展开大卡（控制中心点开 WiFi/蓝牙等磁贴后的展开面板）玻璃。默认 **false**；
+     *  开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_QS_DETAIL_GLASS = "qs_detail_glass_enable"
+    /** 快捷开关展开大卡玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_QS_DETAIL_GLASS = false
+
     // ---------- 第三方 App 玻璃化（相册/计算器/智能侧边栏） ----------
     /** 相册玻璃化：拦截 App 内的视图背景模糊（RenderEffect / 窗口模糊 drawable）改画液态玻璃。
      *  默认 **false**；开启后需要进程内背景源（抓屏）通道可用，抓不到时保持系统原样模糊。
@@ -727,6 +740,50 @@ object Prefs {
             DEFAULT_DEBUG_DRAW_ENABLE
         }
         debugDrawCache = v
+        return v
+    }
+
+    @Volatile
+    private var deviceEntranceCache: Boolean = DEFAULT_DEVICE_ENTRANCE_GLASS
+
+    @Volatile
+    private var deviceEntranceCacheAtMs = 0L
+
+    /** 设备空间入口方块玻璃开关（500ms TTL 缓存；注册链每次 draw 读）。 */
+    fun deviceEntranceGlassEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_DEVICE_ENTRANCE_GLASS
+        val now = SystemClock.uptimeMillis()
+        if (now - deviceEntranceCacheAtMs < 500L) return deviceEntranceCache
+        deviceEntranceCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_DEVICE_ENTRANCE_GLASS, DEFAULT_DEVICE_ENTRANCE_GLASS)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read device_entrance_glass_enable failed, default $DEFAULT_DEVICE_ENTRANCE_GLASS", t)
+            DEFAULT_DEVICE_ENTRANCE_GLASS
+        }
+        deviceEntranceCache = v
+        return v
+    }
+
+    @Volatile
+    private var qsDetailCache: Boolean = DEFAULT_QS_DETAIL_GLASS
+
+    @Volatile
+    private var qsDetailCacheAtMs = 0L
+
+    /** 快捷开关展开大卡玻璃开关（500ms TTL 缓存；注册链每次 draw 读）。 */
+    fun qsDetailGlassEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_QS_DETAIL_GLASS
+        val now = SystemClock.uptimeMillis()
+        if (now - qsDetailCacheAtMs < 500L) return qsDetailCache
+        qsDetailCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_QS_DETAIL_GLASS, DEFAULT_QS_DETAIL_GLASS)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read qs_detail_glass_enable failed, default $DEFAULT_QS_DETAIL_GLASS", t)
+            DEFAULT_QS_DETAIL_GLASS
+        }
+        qsDetailCache = v
         return v
     }
 
