@@ -30,6 +30,7 @@ import java.util.WeakHashMap
  * （组件清单出现该组件、预设可按组件命中）。渲染腿现状：
  * - A 族：shader input 覆盖范围探针（[Prefs.KEY_GALLERY_SHADER_PROBE]，默认关）——
  *   把背景 RenderEffect 临时换成越界采样染色探针（[AppGlassProbeShader]），判定折射环带可行性；
+ *   相册进程另挂 BlurButtonWrapperView 自调用探针（[mountSelfProbeHook]），宿主零调用也能出环；
  * - B 族：边缘光学装饰层（高光描边 + 内发光，[AppGlassDecorDrawable]）——随该 App 玻璃开关
  *   生效，经 View.overlay 覆盖绘制，系统 SF 模糊保持原样当底。
  *
@@ -48,6 +49,9 @@ object AppGlassHook {
 
     /** B 族挂载点：framework 窗口背景模糊 drawable（本体 draw 空实现，合成层处理）。 */
     private const val CLASS_BACKGROUND_BLUR_DRAWABLE = "com.android.internal.graphics.drawable.BackgroundBlurDrawable"
+
+    /** 相册按钮容器（图集页五类纯色钮共用类）：探针自调用挂载目标。 */
+    private const val CLASS_BLUR_BUTTON_WRAPPER = "com.oplus.gallery.basebiz.widget.BlurButtonWrapperView"
 
     /** 目标包 → 玻璃开关键。 */
     private val SWITCH_KEYS = mapOf(
@@ -94,6 +98,22 @@ object AppGlassHook {
 
     private var bFamilyMounted = false
 
+    private var selfProbeMounted = false
+
+    /** 自调用 setBackgroundRenderEffect 的反射句柄（install 期解析，调度路径直用）。 */
+    @Volatile
+    private var selfProbeSetBg: Method? = null
+
+    /** 自调用进行中标记：旁路自家 A 族拦截，防重入。 */
+    @Volatile
+    private var selfProbeActive = false
+
+    /** 探针效果按 w×h 编译缓存（RuntimeShader 编译昂贵，同尺寸效果对象复用）。 */
+    private val probeEffectCache = ConcurrentHashMap<String, RenderEffect>()
+
+    /** 已挂 preDraw 等布局的 View → 监听器（防尺寸变化回调重复调度叠监听）。 */
+    private val selfProbeScheduled = WeakHashMap<View, ViewTreeObserver.OnPreDrawListener>()
+
     /** A/B 族命中类名是否已打过日志（只打一次，防刷屏）。 */
     private val loggedClasses = ConcurrentHashMap.newKeySet<String>()
 
@@ -126,6 +146,10 @@ object AppGlassHook {
         Lg.i(TAG, "installing app glass hook into $packageName (switch=$key default=$switchDefault)")
         mountBackgroundRenderEffectHook(api, classLoader)
         mountViewSetBackgroundHook(api)
+        if (switchKey == Prefs.KEY_GALLERY_GLASS) {
+            mountSelfProbeHook(api, classLoader)
+            Lg.i(TAG, "probe switch read=${probeEnabled()}")
+        }
     }
 
     /** A 族：hook 视图背景 RenderEffect 挂载点，命中即按 View 类登记组件。 */
@@ -168,9 +192,175 @@ object AppGlassHook {
         }
     }
 
+    /**
+     * 相册专属探针自调用挂载：BlurButtonWrapperView attach/尺寸就绪后由模块自己调
+     * `setBackgroundRenderEffect` 换探针，不依赖宿主那条双重门控的调用。
+     * 只挂该类自身声明的生命周期方法或构造器，禁 hook 框架 View 基类。
+     */
+    private fun mountSelfProbeHook(api: XposedInterface, classLoader: ClassLoader) {
+        if (selfProbeMounted) return
+        val clazz = try {
+            hostForName(CLASS_BLUR_BUTTON_WRAPPER, classLoader)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "$CLASS_BLUR_BUTTON_WRAPPER unavailable, self-probe skipped")
+            return
+        }
+        val setBg = try {
+            hostForName(CLASS_VIEW_BG_RENDER_EFFECT, classLoader)
+                .getMethod(METHOD_SET_BACKGROUND_RENDER_EFFECT, RenderEffect::class.java, View::class.java)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "$CLASS_VIEW_BG_RENDER_EFFECT unavailable, self-probe skipped")
+            return
+        }
+        selfProbeSetBg = setBg
+        val ownMethods = clazz.declaredMethods
+        val onAttach = ownMethods.firstOrNull {
+            it.name == "onAttachedToWindow" && it.parameterTypes.isEmpty()
+        }
+        val onSize = ownMethods.firstOrNull {
+            it.name == "onSizeChanged" &&
+                it.parameterTypes.size == 4 &&
+                it.parameterTypes.all { p -> p == Integer.TYPE }
+        }
+        val lifecycle = onAttach ?: onSize
+        if (lifecycle != null) {
+            try {
+                lifecycle.isAccessible = true
+                api.hook(lifecycle)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            (chain.getThisObject() as? View)?.let { scheduleSelfProbe(it) }
+                        } catch (t: Throwable) {
+                            Lg.w(TAG, "self-probe schedule error", t)
+                        }
+                        result
+                    }
+                selfProbeMounted = true
+                Lg.i(TAG, "self-probe mounted on ${clazz.name}#${lifecycle.name} (declared)")
+                return
+            } catch (t: Throwable) {
+                Lg.w(TAG, "self-probe lifecycle hook FAILED ${clazz.name}#${lifecycle.name}", t)
+            }
+        }
+        var hooked = 0
+        for (ctor in clazz.declaredConstructors) {
+            try {
+                ctor.isAccessible = true
+                api.hook(ctor)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            (chain.getThisObject() as? View)?.let { v ->
+                                v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                                    override fun onViewAttachedToWindow(attached: View) {
+                                        attached.removeOnAttachStateChangeListener(this)
+                                        scheduleSelfProbe(attached)
+                                    }
+
+                                    override fun onViewDetachedFromWindow(detached: View) = Unit
+                                })
+                            }
+                        } catch (t: Throwable) {
+                            Lg.w(TAG, "self-probe attach listener error", t)
+                        }
+                        result
+                    }
+                hooked++
+            } catch (t: Throwable) {
+                Lg.w(TAG, "self-probe ctor hook FAILED ${clazz.name}", t)
+            }
+        }
+        selfProbeMounted = hooked > 0
+        Lg.i(TAG, "self-probe mounted on ${clazz.name} constructors x$hooked")
+    }
+
+    /** 调度自调用探针：挂一次性 preDraw 等首布局，尺寸有效且开关开时装探针。 */
+    private fun scheduleSelfProbe(view: View) {
+        if (selfProbeScheduled.containsKey(view)) return
+        val observer = view.viewTreeObserver
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                val current = view.viewTreeObserver
+                if (!glassEnabled() || !probeEnabled()) {
+                    removeSelfProbeListener(view, this, current, observer)
+                    return true
+                }
+                if (view.width > 1 && view.height > 1) {
+                    removeSelfProbeListener(view, this, current, observer)
+                    applySelfProbe(view)
+                }
+                return true
+            }
+        }
+        try {
+            observer.addOnPreDrawListener(listener)
+            selfProbeScheduled[view] = listener
+        } catch (t: Throwable) {
+            Lg.w(TAG, "self-probe preDraw add failed", t)
+        }
+    }
+
+    private fun removeSelfProbeListener(
+        view: View,
+        listener: ViewTreeObserver.OnPreDrawListener,
+        current: ViewTreeObserver,
+        fallback: ViewTreeObserver,
+    ) {
+        selfProbeScheduled.remove(view)
+        try {
+            (if (current.isAlive) current else fallback).removeOnPreDrawListener(listener)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 装探针：取缓存的探针效果，经静态挂载点写进 View 背景；自调用期间旁路 A 族拦截。 */
+    private fun applySelfProbe(view: View) {
+        val setBg = selfProbeSetBg ?: return
+        val effect = cachedProbeEffect(view.width, view.height) ?: run {
+            logOnce(
+                "probe:size-skip:${view.javaClass.name}",
+                "probe:size-skip view=${view.javaClass.name} ${view.width}x${view.height}",
+            )
+            return
+        }
+        selfProbeActive = true
+        try {
+            setBg.invoke(null, effect, view)
+            logOnce(
+                "probe:self-swap:${view.javaClass.name}",
+                "self probe swapped view=${view.javaClass.name} ${view.width}x${view.height}",
+            )
+        } catch (t: Throwable) {
+            logOnce("probe:self-error", "self probe invoke failed: ${t.message}")
+        } finally {
+            selfProbeActive = false
+        }
+    }
+
+    /** 探针效果 w×h 编译缓存复用（每尺寸只编译一次 RuntimeShader）。 */
+    private fun cachedProbeEffect(width: Int, height: Int): RenderEffect? {
+        val key = "${width}x$height"
+        probeEffectCache[key]?.let { return it }
+        val effect = try {
+            AppGlassProbeShader.createEffect(width, height)
+        } catch (t: Throwable) {
+            logOnce("probe:compile-error", "probe shader compile failed: ${t.message}")
+            null
+        }
+        if (effect != null) {
+            if (probeEffectCache.size >= 16) probeEffectCache.clear()
+            probeEffectCache[key] = effect
+        }
+        return effect
+    }
+
     /** A 族拦截体：登记元素；探针开关开时把背景 RenderEffect 换成覆盖范围探针（LibXposed 无 setArg，走 proceed(newArgs)）。 */
     private fun aFamilyIntercept(chain: XposedInterface.Chain): Any? {
         try {
+            if (selfProbeActive) return chain.proceed()
             if (glassEnabled()) {
                 val view = try {
                     chain.getArg(1) as? View
@@ -180,12 +370,7 @@ object AppGlassHook {
                 if (view != null) {
                     registerElement(view, view.javaClass.name, "A")
                     if (switchKey == Prefs.KEY_GALLERY_GLASS && probeEnabled()) {
-                        val probe = try {
-                            AppGlassProbeShader.createEffect(view.width, view.height)
-                        } catch (t: Throwable) {
-                            logOnce("probe:compile-error", "probe shader compile failed: ${t.message}")
-                            null
-                        }
+                        val probe = cachedProbeEffect(view.width, view.height)
                         if (probe != null) {
                             val args = chain.getArgs().toTypedArray()
                             args[0] = probe
@@ -195,6 +380,10 @@ object AppGlassHook {
                             )
                             return chain.proceed(args)
                         }
+                        logOnce(
+                            "probe:size-skip:${view.javaClass.name}",
+                            "probe:size-skip view=${view.javaClass.name} ${view.width}x${view.height}",
+                        )
                     }
                 }
             }
