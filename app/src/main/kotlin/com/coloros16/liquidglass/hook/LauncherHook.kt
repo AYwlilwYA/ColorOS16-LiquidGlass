@@ -22,6 +22,8 @@ import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.debug.DebugElement
+import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
@@ -248,12 +250,14 @@ object LauncherHook {
 
     // ------------------------------------------------------------ 数据结构
 
-    /** screenRegionMap 条目：屏幕区域 + 局部 bounds + 宿主名 + 圆角。 */
+    /** screenRegionMap 条目：屏幕区域 + 局部 bounds + 宿主名 + 圆角 + 最近登记时刻 + 宿主弱引用。 */
     private data class RegionEntry(
         val region: RectF,
         val autoBounds: Rect,
         val hostViewName: String,
         val cornerRadius: Float,
+        val lastSeenMs: Long,
+        val hostViewRef: WeakReference<View>,
     )
 
     /** 整屏快照条目：captureDisplay 整屏（排除 Launcher 根 surface，0.5 降采样）干净壁纸背景，共享所有玻璃元素。 */
@@ -654,6 +658,13 @@ object LauncherHook {
         mountWallpaperZoomCommand(api, classLoader)
         // [spec/85 补接] 省电模式广播（开 → 即刻门控 + 重录宿主；关 → 下一帧恢复玻璃）
         registerPowerSaveBroadcastReceiver()
+        // 调试悬浮球（launcher 进程独立实例，与 SystemUI 三窗互不共享运行态）
+        DebugOverlay.ensureStarted(
+            contextProvider = { launcherAppContext },
+            snapshotProvider = ::debugSnapshot,
+            enabledProvider = { Prefs.debugDrawEnabled(api) },
+            processLabel = "launcher",
+        )
         Lg.i(TAG, "LauncherHook install done")
     }
 
@@ -1545,7 +1556,7 @@ object LauncherHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
-        registerBlurRegion(inner, sw, resolveDockCornerPx(sw), blurLayerForCorner = drawable)
+        registerBlurRegion(inner, sw, resolveDockCornerPx(sw), hostName = "Dock", blurLayerForCorner = drawable)
     }
 
     /** [doc/spec/66] Dock 玻璃圆角 px：系统 `createBlurDrawable`（`OplusHotseat:203`）取
@@ -2217,22 +2228,60 @@ object LauncherHook {
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
         applyLauncherCornerWrite(blurLayerForCorner, key, resolvedCorner, bw.toFloat(), bh.toFloat(), "$hostName")
         registerHostView(hostView)
-        val entry = RegionEntry(region, Rect(0, 0, bw, bh), hostName, resolvedCorner)
         val previous = screenRegionMap[key]
+        screenRegionMap[key] = RegionEntry(
+            region,
+            Rect(0, 0, bw, bh),
+            hostName,
+            resolvedCorner,
+            SystemClock.uptimeMillis(),
+            WeakReference(hostView),
+        )
         if (previous == null) {
-            screenRegionMap[key] = entry
             if (screenRegionMap.size > 512) screenRegionMap.clear()
             Lg.i(
                 TAG,
                 "coord: $hostName id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "size=${bw}x${bh} cornerRadius=$resolvedCorner"
             )
-            // [doc/spec/07 + 2026-08-13] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
+            // [doc/spec/07] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
             triggerBackgroundCapture()
-        } else if (previous.region != region) {
-            screenRegionMap[key] = entry
-            // 位置/尺寸更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
         }
+        // 位置/尺寸/重绘更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
+    }
+
+    /** 调试快照条目 TTL（超时条目视为已回收，不进快照）。 */
+    private const val DEBUG_SNAPSHOT_TTL_MS = 3000L
+
+    /** 调试悬浮球快照：只读 screenRegionMap，TTL 过滤后映射为 DebugElement（零副作用）。 */
+    internal fun debugSnapshot(): List<DebugElement> {
+        val now = SystemClock.uptimeMillis()
+        val out = ArrayList<DebugElement>(screenRegionMap.size)
+        for ((id, e) in screenRegionMap) {
+            if (now - e.lastSeenMs > DEBUG_SNAPSHOT_TTL_MS) continue
+            out.add(
+                DebugElement(
+                    id = id,
+                    region = RectF(e.region),
+                    cornerRadius = e.cornerRadius,
+                    cornerRadiusSource = "launcher",
+                    hostViewName = e.hostViewName,
+                    sourceTag = debugSourceTagOf(e.hostViewName),
+                    renderLeg = null,
+                    lastSeenMs = e.lastSeenMs,
+                    hostViewRef = e.hostViewRef,
+                )
+            )
+        }
+        return out
+    }
+
+    /** 宿主名 → 调试快照挂点标签。 */
+    private fun debugSourceTagOf(hostName: String): String = when (hostName) {
+        "Card" -> "launcher-card"
+        "Dock" -> "launcher-dock"
+        "PageIndicator" -> "launcher-page-indicator"
+        else -> "launcher-folder"
     }
 
     /** [doc/spec/143 §5.3] 桌面 Layer A 覆盖写穿：ov 非空且总开关开 → desired 写进

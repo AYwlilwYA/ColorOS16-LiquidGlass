@@ -24,10 +24,12 @@ import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.hook.BlurDrawHook
 import com.coloros16.liquidglass.log.Lg
 import java.lang.ref.WeakReference
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** 调试悬浮窗快照元素（BlurDrawHook.debugSnapshot 产出；全部为注册/渲染链现成字段的只读拷贝）。 */
+/** 调试悬浮窗快照元素（BlurDrawHook / LauncherHook 的 debugSnapshot 产出；全部为注册/渲染链现成字段的只读拷贝）。 */
 internal data class DebugElement(
     val id: Int,
     val region: RectF,
@@ -41,7 +43,7 @@ internal data class DebugElement(
 )
 
 /**
- * 调试悬浮球工具（SystemUI 进程内）：悬浮球 + 面板 + 框体三窗。
+ * 调试悬浮球工具（SystemUI / Launcher 进程各自一份实例）：悬浮球 + 面板 + 框体三窗。
  * 球可拖动、点球开合面板；面板含抓取/复制按钮、单槽输出区、玻璃绘制清单、整页 UI 树；
  * 抓取命中后框体窗画双框（青=玻璃实际框，橙=控件实际框）。
  *
@@ -56,6 +58,12 @@ internal object DebugOverlay {
     /** SystemUI 自有权限允许多实例的窗口类型（TYPE_VOLUME_OVERLAY）。 */
     private const val WINDOW_TYPE = 2020
 
+    /** 普通应用进程（Launcher）的悬浮窗类型（TYPE_APPLICATION_OVERLAY，需 SAW 权限）。 */
+    private const val WINDOW_TYPE_APP = 2038
+
+    private const val PROC_SYSTEMUI = "systemui"
+    private const val PROC_LAUNCHER = "launcher"
+
     private const val TICK_MS = 66L
     private const val TICK_FAST_MS = 33L
     private const val PICK_TOLERANCE_DIP = 24f
@@ -68,6 +76,7 @@ internal object DebugOverlay {
     private const val LOG_THROTTLE_MS = 2000L
     private const val BALL_SIZE_DIP = 48f
     private const val DRAG_SLOP_DIP = 8f
+    private const val LAUNCHER_BALL_OFFSET_Y_PX = 100f
     private const val PANEL_HEIGHT_RATIO = 0.5f
 
     private const val COLOR_GLASS_BOX = 0xFF00E5FF.toInt()
@@ -82,6 +91,7 @@ internal object DebugOverlay {
     private var contextProvider: (() -> Context?)? = null
     private var snapshotProvider: (() -> List<DebugElement>)? = null
     private var enabledProvider: (() -> Boolean)? = null
+    private var processLabel = PROC_SYSTEMUI
 
     private var windowManager: WindowManager? = null
     private var density = 1f
@@ -139,11 +149,14 @@ internal object DebugOverlay {
         contextProvider: () -> Context?,
         snapshotProvider: () -> List<DebugElement>,
         enabledProvider: () -> Boolean,
+        processLabel: String = PROC_SYSTEMUI,
     ) {
         if (running) return
         this.contextProvider = contextProvider
         this.snapshotProvider = snapshotProvider
         this.enabledProvider = enabledProvider
+        this.processLabel = processLabel
+        if (processLabel == PROC_LAUNCHER && ballY == 0f) ballY = LAUNCHER_BALL_OFFSET_Y_PX
         running = true
         mainHandler.post(tick)
     }
@@ -223,11 +236,15 @@ internal object DebugOverlay {
         }
     }
 
+    /** 本进程可用的悬浮窗类型（SystemUI=2020，应用进程=2038）。 */
+    private fun windowType(): Int =
+        if (processLabel == PROC_LAUNCHER) WINDOW_TYPE_APP else WINDOW_TYPE
+
     private fun baseLayoutParams(): WindowManager.LayoutParams {
         return WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
-            WINDOW_TYPE,
+            windowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
@@ -311,7 +328,7 @@ internal object DebugOverlay {
     private fun attachBall(ctx: Context, wmgr: WindowManager) {
         try {
             if (ballView == null) {
-                val v = BallView(ctx)
+                val v = BallView(ctx, if (processLabel == PROC_LAUNCHER) "调L" else "调S")
                 v.onTap = { togglePanel() }
                 v.onDragStart = {
                     dragBaseX = ballX
@@ -326,7 +343,7 @@ internal object DebugOverlay {
                 val lp = ballParams ?: WindowManager.LayoutParams(
                     size,
                     size,
-                    WINDOW_TYPE,
+                    windowType(),
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT,
@@ -513,7 +530,7 @@ internal object DebugOverlay {
             enumerateWindows()
         } catch (t: Throwable) {
             return CaptureResult(
-                "[命中] 未命中任何控件（hitTest 失败：窗口枚举 ${t.javaClass.simpleName}: ${t.message}）",
+                "[进程] $processLabel\n[命中] 未命中任何控件（hitTest 失败：窗口枚举 ${t.javaClass.simpleName}: ${t.message}）",
                 null,
                 null,
             )
@@ -528,7 +545,7 @@ internal object DebugOverlay {
                 bestView = v
             }
         }
-        val v = bestView ?: return CaptureResult("[命中] 未命中任何控件（hitTest 无可见控件命中）", null, null)
+        val v = bestView ?: return CaptureResult("[进程] $processLabel\n[命中] 未命中任何控件（hitTest 无可见控件命中）", null, null)
         return buildViewResult(v)
     }
 
@@ -536,6 +553,7 @@ internal object DebugOverlay {
 
     private fun buildGlassResult(e: DebugElement, via: String): CaptureResult {
         val sb = StringBuilder()
+        sb.append("[进程] ").append(processLabel).append('\n')
         val v = e.hostViewRef?.get()
         val loc = IntArray(2)
         if (v != null) {
@@ -587,22 +605,26 @@ internal object DebugOverlay {
             .append(" 渲染腿=").append(e.renderLeg ?: "（尚未渲染）")
             .append(" 圆角覆盖=").append(GlassRegistry.cornerOverrideFor(e.id) ?: "null")
             .append('\n')
-        // [黏连]（命中元素相关的桥对；无桥一行「无」）
-        val pairs = BlurDrawHook.debugBridgePairs().filter { it.aId == e.id || it.bId == e.id }
-        val bridgeBoxes = ArrayList<RectF>(pairs.size)
-        if (pairs.isEmpty()) {
-            sb.append("[黏连] 无\n")
+        // [黏连]（SystemUI：命中元素相关的桥对；Launcher 无桥数据源）
+        val bridgeBoxes = ArrayList<RectF>()
+        if (processLabel != PROC_SYSTEMUI) {
+            sb.append("[黏连] 本进程无桥数据\n")
         } else {
-            for (p in pairs) {
-                val other = if (p.aId == e.id) "#${p.bId} ${p.bName}" else "#${p.aId} ${p.aName}"
-                sb.append("[黏连] ").append(p.kind)
-                    .append(" 对方=").append(other)
-                    .append(" gap=").append(if (p.gapPx < 0f) "—" else "${p.gapPx.toInt()}px")
-                    .append(" mode=").append(p.mode.toInt())
-                    .append(" k=").append(p.k)
-                    .append(" bridgeBox=").append(boxStr(p.bridgeBox.left.toInt(), p.bridgeBox.top.toInt(), p.bridgeBox.width().toInt(), p.bridgeBox.height().toInt()))
-                    .append('\n')
-                bridgeBoxes.add(RectF(p.bridgeBox))
+            val pairs = BlurDrawHook.debugBridgePairs().filter { it.aId == e.id || it.bId == e.id }
+            if (pairs.isEmpty()) {
+                sb.append("[黏连] 无\n")
+            } else {
+                for (p in pairs) {
+                    val other = if (p.aId == e.id) "#${p.bId} ${p.bName}" else "#${p.aId} ${p.aName}"
+                    sb.append("[黏连] ").append(p.kind)
+                        .append(" 对方=").append(other)
+                        .append(" gap=").append(if (p.gapPx < 0f) "—" else "${p.gapPx.toInt()}px")
+                        .append(" mode=").append(p.mode.toInt())
+                        .append(" k=").append(p.k)
+                        .append(" bridgeBox=").append(boxStr(p.bridgeBox.left.toInt(), p.bridgeBox.top.toInt(), p.bridgeBox.width().toInt(), p.bridgeBox.height().toInt()))
+                        .append('\n')
+                    bridgeBoxes.add(RectF(p.bridgeBox))
+                }
             }
         }
         val controlBox = if (v != null) {
@@ -625,6 +647,7 @@ internal object DebugOverlay {
         } catch (ignored: Throwable) {
         }
         val sb = StringBuilder()
+        sb.append("[进程] ").append(processLabel).append('\n')
         // [命中]
         sb.append("[命中] ").append(v.javaClass.name)
         sb.append("  id=").append(idNameOf(v))
@@ -651,8 +674,8 @@ internal object DebugOverlay {
         if (v == null) return
         val root = v.rootView ?: return
         sb.append("[窗口] root=").append(root.javaClass.name)
-            .append(" type=").append(BlurDrawHook.reflectWindowType(root))
-            .append(" title=").append(truncate(BlurDrawHook.reflectWindowTitle(root)?.toString() ?: "—", TITLE_CAP))
+            .append(" type=").append(reflectWindowType(root))
+            .append(" title=").append(truncate(reflectWindowTitle(root)?.toString() ?: "—", TITLE_CAP))
             .append('\n')
     }
 
@@ -906,7 +929,7 @@ internal object DebugOverlay {
             val decor = snapshot[i] ?: continue
             if (isOwnWindow(decor)) continue
             val lp = params?.getOrNull(i)
-            val type = lp?.type ?: BlurDrawHook.reflectWindowType(decor)
+            val type = lp?.type ?: reflectWindowType(decor)
             out.add(WindowEntry(decor, type, lp?.title?.toString()))
         }
         return out
@@ -932,6 +955,65 @@ internal object DebugOverlay {
             }
         }
         return v
+    }
+
+    // ------------------------------------------------------------ 窗口反射 --------------------------------------------------
+
+    private var mGetViewRootImpl: Method? = null
+    private var mGetWindowAttributes: Method? = null
+    private var mWindowGetTitleMethod: Method? = null
+    private var mWindowAttrsTypeField: Field? = null
+
+    /** 反射读窗口根 View 的窗口类型（ViewRootImpl.getWindowAttributes().type）。失败 -1。 */
+    private fun reflectWindowType(rootView: View): Int {
+        return try {
+            var m1 = mGetViewRootImpl
+            if (m1 == null) {
+                m1 = View::class.java.getMethod("getViewRootImpl")
+                mGetViewRootImpl = m1
+            }
+            val vri = m1.invoke(rootView) ?: return -1
+            var m2 = mGetWindowAttributes
+            if (m2 == null) {
+                m2 = vri.javaClass.getMethod("getWindowAttributes")
+                mGetWindowAttributes = m2
+            }
+            val lp = m2.invoke(vri) ?: return -1
+            var f = mWindowAttrsTypeField
+            if (f == null) {
+                f = lp.javaClass.getField("type")
+                mWindowAttrsTypeField = f
+            }
+            (f.get(lp) as? Int) ?: -1
+        } catch (t: Throwable) {
+            -1
+        }
+    }
+
+    /** 反射读窗口根 View 的窗口标题（ViewRootImpl.getWindowAttributes().getTitle()）。失败 null。 */
+    private fun reflectWindowTitle(rootView: View): CharSequence? {
+        return try {
+            var m1 = mGetViewRootImpl
+            if (m1 == null) {
+                m1 = View::class.java.getMethod("getViewRootImpl")
+                mGetViewRootImpl = m1
+            }
+            val vri = m1.invoke(rootView) ?: return null
+            var m2 = mGetWindowAttributes
+            if (m2 == null) {
+                m2 = vri.javaClass.getMethod("getWindowAttributes")
+                mGetWindowAttributes = m2
+            }
+            val lp = m2.invoke(vri) ?: return null
+            var m3 = mWindowGetTitleMethod
+            if (m3 == null) {
+                m3 = lp.javaClass.getMethod("getTitle")
+                mWindowGetTitleMethod = m3
+            }
+            m3.invoke(lp) as? CharSequence
+        } catch (t: Throwable) {
+            null
+        }
     }
 
     // ------------------------------------------------------------ 日志 --------------------------------------------------
@@ -998,7 +1080,7 @@ internal object DebugOverlay {
     }
 
     /** 悬浮球：可拖动、点击开合面板；待点状态变色。 */
-    private class BallView(ctx: Context) : View(ctx) {
+    private class BallView(ctx: Context, private val label: String) : View(ctx) {
 
         var pending = false
             set(value) {
@@ -1024,7 +1106,7 @@ internal object DebugOverlay {
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
-            textSize = 16f * resources.displayMetrics.density
+            textSize = 13f * resources.displayMetrics.density
             textAlign = Paint.Align.CENTER
         }
 
@@ -1037,7 +1119,7 @@ internal object DebugOverlay {
             canvas.drawCircle(cx, cy, rad, fillPaint)
             canvas.drawCircle(cx, cy, rad, strokePaint)
             val baseline = cy - (textPaint.descent() + textPaint.ascent()) / 2f
-            canvas.drawText("调", cx, baseline, textPaint)
+            canvas.drawText(label, cx, baseline, textPaint)
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
