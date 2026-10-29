@@ -1574,19 +1574,13 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchLogs.setOnCheckedChangeListener(logsListener)
         refreshBooleanSwitch(switchLogs, logsListener, Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
-        // 调试悬浮窗（框出玻璃元素）+ 点选元素查看（拾取弹详情面板）
-        val switchOverlay = view.findViewById<Switch>(R.id.switchDebugOverlay)
-        val overlayListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_DEBUG_OVERLAY_ENABLE, checked)
+        // 调试绘制（悬浮球调试工具：抓取控件/输出区/玻璃清单/UI 树）
+        val switchDebugDraw = view.findViewById<Switch>(R.id.switchDebugDraw)
+        val debugDrawListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_DEBUG_DRAW_ENABLE, checked)
         }
-        switchOverlay.setOnCheckedChangeListener(overlayListener)
-        refreshBooleanSwitch(switchOverlay, overlayListener, Prefs.KEY_DEBUG_OVERLAY_ENABLE, Prefs.DEFAULT_DEBUG_OVERLAY_ENABLE)
-        val switchPick = view.findViewById<Switch>(R.id.switchDebugPick)
-        val pickListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_DEBUG_PICK_ENABLE, checked)
-        }
-        switchPick.setOnCheckedChangeListener(pickListener)
-        refreshBooleanSwitch(switchPick, pickListener, Prefs.KEY_DEBUG_PICK_ENABLE, Prefs.DEFAULT_DEBUG_PICK_ENABLE)
+        switchDebugDraw.setOnCheckedChangeListener(debugDrawListener)
+        refreshBooleanSwitch(switchDebugDraw, debugDrawListener, Prefs.KEY_DEBUG_DRAW_ENABLE, Prefs.DEFAULT_DEBUG_DRAW_ENABLE)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表
         captureStartRow = view.findViewById(R.id.captureStartRow)
         captureStopRow = view.findViewById(R.id.captureStopRow)

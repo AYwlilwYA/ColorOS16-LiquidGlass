@@ -26,32 +26,17 @@
             android:textColor="?android:attr/textColorSecondary" />
 
         <Switch
-            android:id="@+id/switchDebugOverlay"
+            android:id="@+id/switchDebugDraw"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/settings_debug_overlay" />
+            android:text="@string/settings_debug_draw" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="@string/settings_debug_overlay_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
-        <Switch
-            android:id="@+id/switchDebugPick"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_debug_pick" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_debug_pick_desc"
+            android:text="@string/settings_debug_draw_desc"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 

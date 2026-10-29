@@ -612,6 +612,10 @@ object BlurDrawHook {
     private const val PROXIMITY_BRIDGE_GAP_VP = 60f
     /** 邻近扫描活跃通知卡元素上限：超过则跳过扫描 + 一次性节流诊断（对数 ≤120，微秒级）。 */
     private const val MAX_PROXIMITY_ACTIVE = 16
+    /** 黏连桥 debug 快照存活期（ms）：注入后超时的对在读取侧过滤。 */
+    private const val BRIDGE_DEBUG_TTL_MS = 3000L
+    /** 黏连桥 debug map 条目上限（超限整表清，debug-only 不追究精确性）。 */
+    private const val BRIDGE_DEBUG_MAP_CAP = 32
 
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记（方形/长条设备卡背景绑定卡片语义类） ----
     /** 设备中心卡片 View 类名后缀（`com.oplus.deviceplugin.sdk` 的方形/长条设备卡）。 */
@@ -1850,6 +1854,27 @@ object BlurDrawHook {
 
     /** drawable(identityHashCode) → 屏幕区域 + 局部 bounds（AutoBlurDrawable.draw hook 建立，bounds 供兜底匹配） */
     private val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
+
+    /**
+     * 黏连桥 debug 只读快照对（spec/144 §六：applyProximityBridge/applyMenuBridge 桥对与参数
+     * 零副作用导出）。写入=两桥注入命中处各一行 put；读取=[debugBridgePairs] 按 TTL 过滤。
+     * 不写审计不打日志；桥区几何=伴球注入的对方矩形（屏坐标）。
+     */
+    internal data class BridgeDebugPair(
+        val aId: Int,
+        val aName: String,
+        val bId: Int,
+        val bName: String,
+        val kind: String,
+        val bridgeBox: RectF,
+        val gapPx: Float,
+        val mode: Float,
+        val k: Float,
+        val atMs: Long,
+    )
+
+    /** 注入目标 id → 最近一次桥对快照（同目标多邻居时留最后命中）。 */
+    private val bridgeDebugPairs = ConcurrentHashMap<Int, BridgeDebugPair>()
     /** 绘制宿主戳：NBV draw 栈内记录本帧 bgView，渲染侧消歧/补身份用（生命周期=一次 draw 栈）。 */
     private val drawHostStamp = ThreadLocal<WeakReference<View>>()
 
@@ -1931,6 +1956,34 @@ object BlurDrawHook {
             )
         }
         return out
+    }
+
+    /** 黏连桥 debug 只读导出（spec/144 §四/§六）：TTL 内的桥对列表，零副作用（不写审计不打日志）。 */
+    internal fun debugBridgePairs(): List<BridgeDebugPair> {
+        val now = SystemClock.uptimeMillis()
+        val out = ArrayList<BridgeDebugPair>(bridgeDebugPairs.size)
+        for ((_, p) in bridgeDebugPairs) {
+            if (now - p.atMs <= BRIDGE_DEBUG_TTL_MS) out.add(p)
+        }
+        return out
+    }
+
+    /** 桥对快照写入（两桥注入命中处调用；超限整表清）。 */
+    private fun recordBridgePair(
+        aId: Int,
+        aName: String,
+        bId: Int,
+        bName: String,
+        kind: String,
+        bridgeBox: RectF,
+        gapPx: Float,
+        mode: Float,
+        k: Float,
+    ) {
+        if (bridgeDebugPairs.size >= BRIDGE_DEBUG_MAP_CAP) bridgeDebugPairs.clear()
+        bridgeDebugPairs[aId] = BridgeDebugPair(
+            aId, aName, bId, bName, kind, bridgeBox, gapPx, mode, k, SystemClock.uptimeMillis(),
+        )
     }
 
     /**
@@ -2700,8 +2753,7 @@ object BlurDrawHook {
         DebugOverlay.ensureStarted(
             contextProvider = ::resolveSystemUiContext,
             snapshotProvider = ::debugSnapshot,
-            overlayEnabledProvider = { Prefs.debugOverlayEnabled(api) },
-            pickEnabledProvider = { Prefs.debugPickEnabled(api) },
+            enabledProvider = { Prefs.debugDrawEnabled(api) },
         )
         // [doc/spec/118] 预热全部停用：旧 GPU 预热白做（独立 GrContext）；真实窗口预热
         // 在真机把 SystemUI 打进重启循环（卸载恢复 2026-10-14），未定位前禁止复活。
@@ -5440,6 +5492,13 @@ object BlurDrawHook {
         )
         entry.metaBall = merged
         if (previous != null && previous !== entry) previous.metaBall = merged
+        recordBridgePair(
+            aId = key, aName = entry.hostViewName,
+            bId = System.identityHashCode(menu), bName = "menu:" + menu.javaClass.simpleName,
+            kind = "menu",
+            bridgeBox = RectF(menuLoc[0].toFloat(), menuLoc[1].toFloat(), (menuLoc[0] + mw).toFloat(), (menuLoc[1] + mh).toFloat()),
+            gapPx = -1f, mode = mode, k = k,
+        )
         logThrottled("menu-bridge", Log.DEBUG) {
             "menu-bridge: id=$key mode=$mode ball=pos(${posX.toInt()},${posY.toInt()}) " +
                 "half(${mw / 2}x${mh / 2}) k=$k"
@@ -5562,6 +5621,13 @@ object BlurDrawHook {
                 "proximity-bridge: id=$key <- other=$otherKey gap=${gap.toInt()}px " +
                     "ball=pos(${posX.toInt()},${posY.toInt()}) half(${(oW / 2).toInt()}x${(oH / 2).toInt()})"
             }
+            recordBridgePair(
+                aId = key, aName = entry.hostViewName,
+                bId = otherKey, bName = other.hostViewName,
+                kind = "proximity",
+                bridgeBox = RectF(oRegion),
+                gapPx = gap, mode = merged.mode, k = MENU_BRIDGE_BLEND_SHAPE_PX,
+            )
         }
         val result = merged ?: return
         entry.metaBall = result

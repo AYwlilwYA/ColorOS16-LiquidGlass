@@ -290,17 +290,12 @@ object Prefs {
     /** 模块日志开关默认值（2026-08-26 用户要求默认关：false = 默认关日志，需要调试时设置里手动开） */
     const val DEFAULT_ENABLE_LOGS = false
 
-    // ---------- 调试悬浮窗（doc/spec/142） ----------
-    /** 调试悬浮窗开关：true=屏幕上框出每个玻璃元素并标注名称；默认 false。
-     *  hook 端 500ms TTL 重读，改动 ≤0.5s 生效，无需重启 SystemUI。 */
-    const val KEY_DEBUG_OVERLAY_ENABLE = "debug_overlay_enable"
-    /** 调试悬浮窗开关默认值（默认关） */
-    const val DEFAULT_DEBUG_OVERLAY_ENABLE = false
-    /** 点选元素查看开关：开=进入一次点选（命中弹详情后自动回到关）；默认 false。
-     *  想再选一个元素=设置里关了再开。 */
-    const val KEY_DEBUG_PICK_ENABLE = "debug_pick_enable"
-    /** 点选元素查看开关默认值（默认关） */
-    const val DEFAULT_DEBUG_PICK_ENABLE = false
+    // ---------- 调试绘制（悬浮球调试工具） ----------
+    /** 调试绘制开关：true=显示悬浮球调试工具（抓取控件/输出区/玻璃清单/UI 树）；默认 false。
+     *  hook 端 500ms TTL 重读，≤0.5s 生效，无需重启 SystemUI。 */
+    const val KEY_DEBUG_DRAW_ENABLE = "debug_draw_enable"
+    /** 调试绘制开关默认值（默认关） */
+    const val DEFAULT_DEBUG_DRAW_ENABLE = false
 
     // ---------- 文字背景反转取色（doc/spec/21，2026-08-13） ----------
     /** 文字反转取色总开关：true=开启（默认）；false=不 hook QsColorUtil/TextView，走系统原逻辑。
@@ -714,46 +709,24 @@ object Prefs {
     }
 
     @Volatile
-    private var debugOverlayCache: Boolean = DEFAULT_DEBUG_OVERLAY_ENABLE
+    private var debugDrawCache: Boolean = DEFAULT_DEBUG_DRAW_ENABLE
 
     @Volatile
-    private var debugOverlayCacheAtMs = 0L
+    private var debugDrawCacheAtMs = 0L
 
-    /** 调试悬浮窗开关（500ms TTL 缓存；关 = 无窗口无 tick，仅本 volatile 读）。 */
-    fun debugOverlayEnabled(api: XposedInterface?): Boolean {
-        if (api == null) return DEFAULT_DEBUG_OVERLAY_ENABLE
+    /** 调试绘制开关（500ms TTL 缓存；关 = 无窗口无 tick，仅本 volatile 读）。 */
+    fun debugDrawEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_DEBUG_DRAW_ENABLE
         val now = SystemClock.uptimeMillis()
-        if (now - debugOverlayCacheAtMs < 500L) return debugOverlayCache
-        debugOverlayCacheAtMs = now
+        if (now - debugDrawCacheAtMs < 500L) return debugDrawCache
+        debugDrawCacheAtMs = now
         val v = try {
-            read(api).getBoolean(KEY_DEBUG_OVERLAY_ENABLE, DEFAULT_DEBUG_OVERLAY_ENABLE)
+            read(api).getBoolean(KEY_DEBUG_DRAW_ENABLE, DEFAULT_DEBUG_DRAW_ENABLE)
         } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read debug_overlay_enable failed, default $DEFAULT_DEBUG_OVERLAY_ENABLE", t)
-            DEFAULT_DEBUG_OVERLAY_ENABLE
+            Lg.w(TAG, "prefs read debug_draw_enable failed, default $DEFAULT_DEBUG_DRAW_ENABLE", t)
+            DEFAULT_DEBUG_DRAW_ENABLE
         }
-        debugOverlayCache = v
-        return v
-    }
-
-    @Volatile
-    private var debugPickCache: Boolean = DEFAULT_DEBUG_PICK_ENABLE
-
-    @Volatile
-    private var debugPickCacheAtMs = 0L
-
-    /** 点选元素查看开关（500ms TTL 缓存；hook 端按 off→on 跳变沿进入一次点选）。 */
-    fun debugPickEnabled(api: XposedInterface?): Boolean {
-        if (api == null) return DEFAULT_DEBUG_PICK_ENABLE
-        val now = SystemClock.uptimeMillis()
-        if (now - debugPickCacheAtMs < 500L) return debugPickCache
-        debugPickCacheAtMs = now
-        val v = try {
-            read(api).getBoolean(KEY_DEBUG_PICK_ENABLE, DEFAULT_DEBUG_PICK_ENABLE)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read debug_pick_enable failed, default $DEFAULT_DEBUG_PICK_ENABLE", t)
-            DEFAULT_DEBUG_PICK_ENABLE
-        }
-        debugPickCache = v
+        debugDrawCache = v
         return v
     }
 

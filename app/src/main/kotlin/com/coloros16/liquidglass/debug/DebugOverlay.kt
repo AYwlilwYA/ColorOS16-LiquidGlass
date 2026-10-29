@@ -1,27 +1,31 @@
 package com.coloros16.liquidglass.debug
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
-import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.TextPaint
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.hook.BlurDrawHook
 import com.coloros16.liquidglass.log.Lg
+import java.lang.ref.WeakReference
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** 调试悬浮窗快照元素（BlurDrawHook.debugSnapshot 产出；全部为注册/渲染链现成字段的只读拷贝）。 */
 internal data class DebugElement(
@@ -33,15 +37,16 @@ internal data class DebugElement(
     val sourceTag: String,
     val renderLeg: String?,
     val lastSeenMs: Long,
-    val hostViewRef: java.lang.ref.WeakReference<View>?,
+    val hostViewRef: WeakReference<View>?,
 )
 
 /**
- * [doc/spec/142] 悬浮调试窗（SystemUI 进程内）：框出每个玻璃元素 + 名称标签；
- * 「点选元素查看」开启后进入一次拾取，命中元素弹完整详情面板（绘制链 / 视图 / 类名）。
+ * 调试悬浮球工具（SystemUI 进程内）：悬浮球 + 面板 + 框体三窗。
+ * 球可拖动、点球开合面板；面板含抓取/复制按钮、单槽输出区、玻璃绘制清单、整页 UI 树；
+ * 抓取命中后框体窗画双框（青=玻璃实际框，橙=控件实际框）。
  *
- * 硬约束：只用普通 Canvas.drawRect/drawText + Paint，全程不碰 RuntimeShader；
- * 全 try-catch，失败只打日志、绝不影响宿主；拾取窗单次生效 + 超时自动退出。
+ * 硬约束：只用普通 Canvas + Paint，全程不碰 RuntimeShader；
+ * 全 try-catch，失败只打日志、绝不影响宿主；开关关 = 每 tick 仅一次 volatile 读。
  */
 @SuppressLint("SetTextI18n")
 internal object DebugOverlay {
@@ -53,20 +58,21 @@ internal object DebugOverlay {
 
     private const val TICK_MS = 66L
     private const val TICK_FAST_MS = 33L
-    private const val PICK_TIMEOUT_MS = 10_000L
     private const val PICK_TOLERANCE_DIP = 24f
+    private const val GLASS_LIST_INTERVAL_MS = 1000L
+    private const val STALE_MS = 3000L
+    private const val TREE_MAX_DEPTH = 8
+    private const val TREE_MAX_NODES = 800
+    private const val PARENT_CHAIN_CAP = 12
+    private const val TITLE_CAP = 40
+    private const val LOG_THROTTLE_MS = 2000L
+    private const val BALL_SIZE_DIP = 48f
+    private const val DRAG_SLOP_DIP = 8f
+    private const val PANEL_HEIGHT_RATIO = 0.5f
 
-    /** sourceTag → 静态链路说明（挂点→注册→渲染；照 spec §5.2 链路表）。 */
-    private val CHAIN_NOTES = mapOf(
-        "map" to "磁贴/卡片背景 hook → recordScreenRegion → core → drawBlurShader 主腿",
-        "swipe" to "侧滑菜单 → recordSwipeMenuRegion → core（maskRect 专用）→ 主腿",
-        "capsule" to "锁屏胶囊挂点 → registerPlatformBlurRegion → 主腿",
-        "capsule-shard" to "锁屏胶囊碎片挂点 → registerPlatformBlurRegion → 主腿",
-        "capsuleEar" to "锁屏胶囊耳挂点 → registerPlatformBlurRegion → 主腿",
-        "mediaCarousel" to "媒体横幅挂点 → registerPlatformBlurRegion → 主腿",
-        "notifCard" to "通知卡 hook → recordNotificationCardRegion 直构 → 主腿",
-        "seedling" to "流体云/菜单卡挂点 → registerSeedlingCardRegion → seedling canvas 腿",
-    )
+    private const val COLOR_GLASS_BOX = 0xFF00E5FF.toInt()
+    private const val COLOR_CONTROL_BOX = 0xFFFF9100.toInt()
+    private const val COLOR_BRIDGE_BOX = 0xFFFF4081.toInt()
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -75,26 +81,43 @@ internal object DebugOverlay {
 
     private var contextProvider: (() -> Context?)? = null
     private var snapshotProvider: (() -> List<DebugElement>)? = null
-    private var overlayEnabledProvider: (() -> Boolean)? = null
-    private var pickEnabledProvider: (() -> Boolean)? = null
+    private var enabledProvider: (() -> Boolean)? = null
 
-    private var windowManager: android.view.WindowManager? = null
+    private var windowManager: WindowManager? = null
     private var density = 1f
+    private var screenW = 0
+    private var screenH = 0
 
-    private var frameView: FrameView? = null
+    private var ballView: BallView? = null
+    private var ballParams: WindowManager.LayoutParams? = null
     private var pickView: PickView? = null
-    private var panelRoot: LinearLayout? = null
-    private var panelText: TextView? = null
-    private var panelShown = false
-    private var panelTarget: DebugElement? = null
+    private var panelScroll: ScrollView? = null
+    private var outputText: TextView? = null
+    private var glassListText: TextView? = null
+    private var treeText: TextView? = null
+    private var frameView: FrameView? = null
 
-    private var picking = false
-    private var pickDeadlineMs = 0L
-    private var lastPickPref = false
+    private var panelExpanded = false
+    private var pendingPick = false
+    private var captureResult: CaptureResult? = null
+    private var outputContent = ""
+    private var ballX = 0f
+    private var ballY = 0f
+    private var dragBaseX = 0f
+    private var dragBaseY = 0f
+    private var lastGlassListAt = 0L
+    private var lastGlassHash = Int.MIN_VALUE
+    private val logThrottleMap = HashMap<String, Long>()
 
-    private var cached: List<DebugElement> = emptyList()
-    private var lastHash = 0
-    private val labelCache = HashMap<Int, String>()
+    /** 抓取结果：输出区文本 + 双框（glassBox 青、controlBox 橙）+ 桥区虚线框列表（品红；无桥空表）。 */
+    private class CaptureResult(
+        val text: String,
+        val glassBox: RectF?,
+        val controlBox: RectF?,
+        val bridgeBoxes: List<RectF> = emptyList(),
+    ) {
+        fun hasBoxes(): Boolean = glassBox != null || controlBox != null || bridgeBoxes.isNotEmpty()
+    }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -105,7 +128,7 @@ internal object DebugOverlay {
                 Lg.w(TAG, "debug overlay tick failed", t)
             }
             if (running) {
-                val interval = if (picking || panelShown) TICK_FAST_MS else TICK_MS
+                val interval = if (pendingPick || panelExpanded) TICK_FAST_MS else TICK_MS
                 mainHandler.postDelayed(this, interval)
             }
         }
@@ -115,37 +138,21 @@ internal object DebugOverlay {
     fun ensureStarted(
         contextProvider: () -> Context?,
         snapshotProvider: () -> List<DebugElement>,
-        overlayEnabledProvider: () -> Boolean,
-        pickEnabledProvider: () -> Boolean,
+        enabledProvider: () -> Boolean,
     ) {
         if (running) return
         this.contextProvider = contextProvider
         this.snapshotProvider = snapshotProvider
-        this.overlayEnabledProvider = overlayEnabledProvider
-        this.pickEnabledProvider = pickEnabledProvider
+        this.enabledProvider = enabledProvider
         running = true
         mainHandler.post(tick)
     }
 
-    /** 摘除全部窗口并停 tick（开关关闭 tick 内自收敛；shutdownForHotReload 也走这里）。 */
+    /** 摘除全部窗口并停 tick（shutdownForHotReload 也走这里）。 */
     fun detach() {
         running = false
         mainHandler.removeCallbacksAndMessages(null)
-        val cleanup = Runnable {
-            picking = false
-            panelTarget = null
-            removeViewSafe(frameView)
-            frameView = null
-            removeViewSafe(pickView)
-            pickView = null
-            removeViewSafe(panelRoot)
-            panelRoot = null
-            panelText = null
-            panelShown = false
-            cached = emptyList()
-            lastHash = 0
-            labelCache.clear()
-        }
+        val cleanup = Runnable { teardownAll() }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             cleanup.run()
         } else {
@@ -156,36 +163,575 @@ internal object DebugOverlay {
     // ------------------------------------------------------------ tick --------------------------------------------------
 
     private fun tickOnce() {
-        val on = overlayEnabledProvider?.invoke() == true
+        val on = enabledProvider?.invoke() == true
         if (!on) {
-            if (frameView != null) removeFrame()
-            if (picking) endPick()
-            if (panelShown) dismissPanel()
-            cached = emptyList()
-            lastHash = 0
-            labelCache.clear()
-            lastPickPref = pickEnabledProvider?.invoke() == true
+            teardownAll()
             return
         }
-        attachFrameIfNeeded()
-        val pickOn = pickEnabledProvider?.invoke() == true
-        val edge = pickOn && !lastPickPref
-        lastPickPref = pickOn
-        if (edge && !picking) beginPick()
-        if (picking && SystemClock.uptimeMillis() > pickDeadlineMs) endPick()
+        val ctx = contextProvider?.invoke() ?: return
+        val wmgr = resolveWindowManager(ctx) ?: return
+        syncWindows(ctx, wmgr)
+        if (panelExpanded) refreshGlassListIfDue()
+    }
+
+    /** 状态变更后立即跑一轮 tick，让窗口挂摘不等下个周期。 */
+    private fun pumpNow() {
+        try {
+            tickOnce()
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay pump failed", t)
+        }
+    }
+
+    /** 清态并摘全部窗口（开关关 / detach 共用）。 */
+    private fun teardownAll() {
+        pendingPick = false
+        panelExpanded = false
+        captureResult = null
+        outputContent = ""
+        lastGlassHash = Int.MIN_VALUE
+        lastGlassListAt = 0
+        logThrottleMap.clear()
+        removeViewSafe(frameView)
+        frameView = null
+        removeViewSafe(pickView)
+        pickView = null
+        removeViewSafe(panelScroll)
+        panelScroll = null
+        outputText = null
+        glassListText = null
+        treeText = null
+        removeViewSafe(ballView)
+        ballView = null
+        ballParams = null
+    }
+
+    // ------------------------------------------------------------ 窗口管理 --------------------------------------------------
+
+    private fun resolveWindowManager(ctx: Context): WindowManager? {
+        return try {
+            val w = windowManager
+                ?: (ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+                    ?.also { windowManager = it }
+            val dm = ctx.resources.displayMetrics
+            density = dm.density
+            screenW = dm.widthPixels
+            screenH = dm.heightPixels
+            w
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun baseLayoutParams(): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            WINDOW_TYPE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        )
+    }
+
+    /** 按期望窗口集合重排（z 序=frame < pick < panel < ball；集合变化才动，动即全量按序重挂）。 */
+    private fun syncWindows(ctx: Context, wmgr: WindowManager) {
+        val wantFrame = captureResult?.hasBoxes() == true
+        val wantPick = pendingPick
+        val wantPanel = panelExpanded
+        val desired = ArrayList<String>(4)
+        if (wantFrame) desired.add("frame")
+        if (wantPick) desired.add("pick")
+        if (wantPanel) desired.add("panel")
+        desired.add("ball")
+        val current = ArrayList<String>(4)
+        if (frameView?.parent != null) current.add("frame")
+        if (pickView?.parent != null) current.add("pick")
+        if (panelScroll?.parent != null) current.add("panel")
+        if (ballView?.parent != null) current.add("ball")
+        if (current == desired) return
+        removeViewSafe(frameView)
+        removeViewSafe(pickView)
+        removeViewSafe(panelScroll)
+        removeViewSafe(ballView)
+        if (wantFrame) attachFrame(ctx, wmgr)
+        if (wantPick) attachPick(ctx, wmgr)
+        if (wantPanel) attachPanel(ctx, wmgr)
+        attachBall(ctx, wmgr)
+    }
+
+    private fun attachFrame(ctx: Context, wmgr: WindowManager) {
+        try {
+            if (frameView == null) frameView = FrameView(ctx)
+            val v = frameView ?: return
+            v.result = captureResult
+            if (v.parent == null) {
+                val lp = baseLayoutParams()
+                lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                wmgr.addView(v, lp)
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay attach frame failed", t)
+            frameView = null
+        }
+    }
+
+    private fun attachPick(ctx: Context, wmgr: WindowManager) {
+        try {
+            if (pickView == null) {
+                val v = PickView(ctx)
+                v.onTouch = { x, y -> handlePickTouch(x, y) }
+                pickView = v
+            }
+            val v = pickView ?: return
+            if (v.parent == null) wmgr.addView(v, baseLayoutParams())
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay attach pick failed", t)
+            pickView = null
+            pendingPick = false
+            ballView?.pending = false
+        }
+    }
+
+    private fun attachPanel(ctx: Context, wmgr: WindowManager) {
+        try {
+            if (panelScroll == null) buildPanel(ctx)
+            val v = panelScroll ?: return
+            if (v.parent == null) {
+                val lp = baseLayoutParams()
+                lp.height = (screenH * PANEL_HEIGHT_RATIO).toInt().coerceAtLeast(1)
+                lp.gravity = Gravity.BOTTOM
+                wmgr.addView(v, lp)
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay attach panel failed", t)
+        }
+    }
+
+    private fun attachBall(ctx: Context, wmgr: WindowManager) {
+        try {
+            if (ballView == null) {
+                val v = BallView(ctx)
+                v.onTap = { togglePanel() }
+                v.onDragStart = {
+                    dragBaseX = ballX
+                    dragBaseY = ballY
+                }
+                v.onDragMove = { dx, dy -> moveBall(dragBaseX + dx, dragBaseY + dy) }
+                ballView = v
+            }
+            val v = ballView ?: return
+            if (v.parent == null) {
+                val size = (BALL_SIZE_DIP * density).roundToInt()
+                val lp = ballParams ?: WindowManager.LayoutParams(
+                    size,
+                    size,
+                    WINDOW_TYPE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT,
+                ).apply { gravity = Gravity.TOP or Gravity.START }
+                ballParams = lp
+                lp.x = ballX.roundToInt().coerceIn(0, (screenW - size).coerceAtLeast(0))
+                lp.y = ballY.roundToInt().coerceIn(0, (screenH - size).coerceAtLeast(0))
+                wmgr.addView(v, lp)
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay attach ball failed", t)
+            ballView = null
+            ballParams = null
+        }
+    }
+
+    private fun moveBall(x: Float, y: Float) {
+        val wmgr = windowManager ?: return
+        val v = ballView ?: return
+        val lp = ballParams ?: return
+        ballX = x.coerceIn(0f, (screenW - lp.width).coerceAtLeast(0).toFloat())
+        ballY = y.coerceIn(0f, (screenH - lp.height).coerceAtLeast(0).toFloat())
+        lp.x = ballX.roundToInt()
+        lp.y = ballY.roundToInt()
+        try {
+            wmgr.updateViewLayout(v, lp)
+        } catch (ignored: Throwable) {
+        }
+    }
+
+    private fun removeViewSafe(v: View?) {
+        val wmgr = windowManager ?: return
+        if (v == null || v.parent == null) return
+        try {
+            wmgr.removeView(v)
+        } catch (t: Throwable) {
+            try {
+                wmgr.removeViewImmediate(v)
+            } catch (ignored: Throwable) {
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 交互 --------------------------------------------------
+
+    private fun togglePanel() {
+        panelExpanded = !panelExpanded
+        if (panelExpanded) {
+            openPanelExtras()
+        }
+        pumpNow()
+    }
+
+    /** 展开面板时重建 UI 树并立即刷新玻璃清单与输出区。 */
+    private fun openPanelExtras() {
+        treeText?.text = buildTreeText()
+        outputText?.text = outputContent
+        lastGlassListAt = 0
+        panelScroll?.scrollTo(0, 0)
+    }
+
+    private fun onPickButton() {
+        panelExpanded = false
+        pendingPick = true
+        ballView?.pending = true
+        logThrottled("pick-arm", "debug overlay: pick armed, tap a control")
+        pumpNow()
+    }
+
+    private fun onCopyButton() {
+        if (pendingPick) {
+            pendingPick = false
+            ballView?.pending = false
+            pumpNow()
+        }
+        val text = outputContent
+        if (text.isEmpty()) {
+            logThrottled("copy-empty", "debug overlay: copy skipped, output empty")
+            return
+        }
+        val ctx = contextProvider?.invoke() ?: return
+        try {
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+            cm.setPrimaryClip(ClipData.newPlainText("lg-debug-output", text))
+            logThrottled("copy", "debug overlay: output copied to clipboard")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "debug overlay copy failed", t)
+        }
+    }
+
+    /** 待点窗口捕获一击：注册表优先，未命中走进程内 View 树兜底。 */
+    private fun handlePickTouch(x: Float, y: Float) {
+        pendingPick = false
+        ballView?.pending = false
+        val result = captureAt(x, y)
+        captureResult = result
+        outputContent = result.text
+        outputText?.text = result.text
+        frameView?.result = result
+        panelExpanded = true
+        openPanelExtras()
+        pumpNow()
+    }
+
+    private fun captureAt(x: Float, y: Float): CaptureResult {
+        val snap = snapshotProvider?.invoke() ?: emptyList()
+        val tol = PICK_TOLERANCE_DIP * density
+        var best: DebugElement? = null
+        var bestArea = Float.MAX_VALUE
+        for (e in snap) {
+            val r = e.region
+            if (r.left - tol <= x && x <= r.right + tol && r.top - tol <= y && y <= r.bottom + tol) {
+                val area = r.width() * r.height()
+                if (area < bestArea) {
+                    bestArea = area
+                    best = e
+                }
+            }
+        }
+        val hit = best
+        return if (hit != null) {
+            buildGlassResult(hit)
+        } else {
+            buildFallbackResult(x, y)
+        }
+    }
+
+    private fun buildFallbackResult(x: Float, y: Float): CaptureResult {
+        val entries = try {
+            enumerateWindows()
+        } catch (t: Throwable) {
+            return CaptureResult(
+                "[命中] 未命中任何控件（hitTest 失败：窗口枚举 ${t.javaClass.simpleName}: ${t.message}）",
+                null,
+                null,
+            )
+        }
+        var bestView: View? = null
+        var bestArea = Int.MAX_VALUE
+        for (entry in entries) {
+            val v = findDeepestAt(entry.decor, x, y) ?: continue
+            val area = v.width * v.height
+            if (area in 1 until bestArea) {
+                bestArea = area
+                bestView = v
+            }
+        }
+        val v = bestView ?: return CaptureResult("[命中] 未命中任何控件（hitTest 无可见控件命中）", null, null)
+        return buildViewResult(v)
+    }
+
+    // ------------------------------------------------------------ 输出组装 --------------------------------------------------
+
+    private fun buildGlassResult(e: DebugElement): CaptureResult {
+        val sb = StringBuilder()
+        val v = e.hostViewRef?.get()
+        val loc = IntArray(2)
+        if (v != null) {
+            try {
+                v.getLocationOnScreen(loc)
+            } catch (ignored: Throwable) {
+            }
+        }
+        // [命中]
+        sb.append("[命中] ").append(v?.javaClass?.name ?: e.hostViewName)
+        if (v != null) {
+            sb.append("  id=").append(idNameOf(v))
+            sb.append("  bounds=").append(loc[0]).append(',').append(loc[1])
+                .append(' ').append(v.width).append('×').append(v.height)
+            sb.append("  attach=").append(v.isAttachedToWindow)
+        } else {
+            sb.append("（宿主 View 已回收）")
+        }
+        sb.append('\n')
+        // [窗口]
+        appendWindowLine(sb, v)
+        // [父链]（绘制对象类父链，cap 12）
+        val chain = GlassRegistry.classChainOf(e.id)
+        sb.append("[父链] ").append(if (chain.isEmpty()) "—" else chain.joinToString(" → ")).append('\n')
+        // [背景]
+        sb.append("[背景] ").append(v?.background?.javaClass?.name ?: "null").append('\n')
+        sb.append("—— 以下仅玻璃元素 ——\n")
+        // [玻璃]
+        val r = e.region
+        sb.append("[玻璃] glassBox=").append(boxStr(r.left.toInt(), r.top.toInt(), r.width().toInt(), r.height().toInt()))
+        if (v != null) {
+            sb.append(" controlBox=").append(boxStr(loc[0], loc[1], v.width, v.height))
+        }
+        sb.append('\n')
+        // [预设]
+        val st = GlassRegistry.statusOf(e.id)
+        if (st == null) {
+            sb.append("[预设] ").append(GlassRegistry.lookupLineOf(e.id)).append('\n')
+        } else {
+            sb.append("[预设] card=").append(st.cardClass ?: "null")
+                .append(" hit=").append(st.status)
+                .append(" presets=").append(st.presetCount)
+                .append(" key=").append(st.hitKey ?: "null")
+                .append('\n')
+        }
+        // [链路]
+        sb.append("[链路] 挂点=").append(e.sourceTag.ifEmpty { "?" })
+            .append(" 渲染腿=").append(e.renderLeg ?: "（尚未渲染）")
+            .append(" 圆角覆盖=").append(GlassRegistry.cornerOverrideFor(e.id) ?: "null")
+            .append('\n')
+        // [黏连]（命中元素相关的桥对；无桥一行「无」）
+        val pairs = BlurDrawHook.debugBridgePairs().filter { it.aId == e.id || it.bId == e.id }
+        val bridgeBoxes = ArrayList<RectF>(pairs.size)
+        if (pairs.isEmpty()) {
+            sb.append("[黏连] 无\n")
+        } else {
+            for (p in pairs) {
+                val other = if (p.aId == e.id) "#${p.bId} ${p.bName}" else "#${p.aId} ${p.aName}"
+                sb.append("[黏连] ").append(p.kind)
+                    .append(" 对方=").append(other)
+                    .append(" gap=").append(if (p.gapPx < 0f) "—" else "${p.gapPx.toInt()}px")
+                    .append(" mode=").append(p.mode.toInt())
+                    .append(" k=").append(p.k)
+                    .append(" bridgeBox=").append(boxStr(p.bridgeBox.left.toInt(), p.bridgeBox.top.toInt(), p.bridgeBox.width().toInt(), p.bridgeBox.height().toInt()))
+                    .append('\n')
+                bridgeBoxes.add(RectF(p.bridgeBox))
+            }
+        }
+        val controlBox = if (v != null) {
+            RectF(
+                loc[0].toFloat(),
+                loc[1].toFloat(),
+                (loc[0] + v.width).toFloat(),
+                (loc[1] + v.height).toFloat(),
+            )
+        } else {
+            null
+        }
+        return CaptureResult(sb.toString(), RectF(r), controlBox, bridgeBoxes)
+    }
+
+    private fun buildViewResult(v: View): CaptureResult {
+        val loc = IntArray(2)
+        try {
+            v.getLocationOnScreen(loc)
+        } catch (ignored: Throwable) {
+        }
+        val sb = StringBuilder()
+        // [命中]
+        sb.append("[命中] ").append(v.javaClass.name)
+        sb.append("  id=").append(idNameOf(v))
+        sb.append("  bounds=").append(loc[0]).append(',').append(loc[1])
+            .append(' ').append(v.width).append('×').append(v.height)
+        sb.append("  attach=").append(v.isAttachedToWindow).append('\n')
+        // [窗口]
+        appendWindowLine(sb, v)
+        // [父链]（View 父链，cap 12）
+        sb.append("[父链] ").append(viewChain(v)).append('\n')
+        // [背景]
+        sb.append("[背景] ").append(v.background?.javaClass?.name ?: "null").append('\n')
+        val controlBox = RectF(
+            loc[0].toFloat(),
+            loc[1].toFloat(),
+            (loc[0] + v.width).toFloat(),
+            (loc[1] + v.height).toFloat(),
+        )
+        return CaptureResult(sb.toString(), null, controlBox)
+    }
+
+    private fun appendWindowLine(sb: StringBuilder, v: View?) {
+        if (v == null) return
+        val root = v.rootView ?: return
+        sb.append("[窗口] root=").append(root.javaClass.name)
+            .append(" type=").append(BlurDrawHook.reflectWindowType(root))
+            .append(" title=").append(truncate(BlurDrawHook.reflectWindowTitle(root)?.toString() ?: "—", TITLE_CAP))
+            .append('\n')
+    }
+
+    private fun viewChain(v: View): String {
+        val parts = ArrayList<String>(8)
+        var cur: View? = v
+        var depth = 0
+        while (cur != null && depth < PARENT_CHAIN_CAP) {
+            parts.add(cur.javaClass.name.substringAfterLast('.'))
+            cur = cur.parent as? View
+            depth++
+        }
+        return parts.joinToString(" → ")
+    }
+
+    private fun boxStr(l: Int, t: Int, w: Int, h: Int): String = "$l,$t ${w}×$h"
+
+    private fun truncate(s: String, cap: Int): String = if (s.length <= cap) s else s.substring(0, cap) + "…"
+
+    private fun idNameOf(v: View): String {
+        if (v.id == View.NO_ID) return "#-"
+        return try {
+            "#" + v.resources.getResourceEntryName(v.id)
+        } catch (t: Throwable) {
+            "#" + Integer.toHexString(v.id)
+        }
+    }
+
+    // ------------------------------------------------------------ 面板 --------------------------------------------------
+
+    private fun buildPanel(ctx: Context) {
+        val pad = (12 * density).toInt()
+        val root = LinearLayout(ctx)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(0xDD101418.toInt())
+        root.setPadding(pad, pad, pad, pad)
+
+        val buttons = LinearLayout(ctx)
+        buttons.orientation = LinearLayout.HORIZONTAL
+        buttons.addView(makeButton(ctx, "抓取屏幕控件") { onPickButton() })
+        buttons.addView(makeButton(ctx, "复制输出") { onCopyButton() })
+        root.addView(buttons)
+
+        val out = makeTextView(ctx, 11f)
+        outputText = out
+        root.addView(out)
+
+        root.addView(makeSectionLabel(ctx, "当前页面玻璃绘制清单"))
+        val list = makeTextView(ctx, 10f)
+        glassListText = list
+        root.addView(list)
+
+        val treeHeader = LinearLayout(ctx)
+        treeHeader.orientation = LinearLayout.HORIZONTAL
+        treeHeader.addView(makeSectionLabel(ctx, "整页 UI 树"))
+        treeHeader.addView(makeButton(ctx, "刷新树") { treeText?.text = buildTreeText() })
+        root.addView(treeHeader)
+        val tree = makeTextView(ctx, 10f)
+        treeText = tree
+        root.addView(tree)
+
+        val scroll = ScrollView(ctx)
+        scroll.isFillViewport = true
+        val scrollLp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        scroll.addView(root, scrollLp)
+        panelScroll = scroll
+    }
+
+    private fun makeButton(ctx: Context, label: String, onClick: () -> Unit): TextView {
+        return TextView(ctx).apply {
+            text = label
+            setTextColor(0xFF69F0AE.toInt())
+            textSize = 13f
+            val p = (10 * density).toInt()
+            setPadding(p, p / 2, p, p / 2)
+            val a = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
+            val bg = a.getResourceId(0, 0)
+            a.recycle()
+            if (bg != 0) setBackgroundResource(bg)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun makeSectionLabel(ctx: Context, label: String): TextView {
+        return TextView(ctx).apply {
+            text = label
+            setTextColor(0xFFB0BEC5.toInt())
+            textSize = 12f
+            val p = (6 * density).toInt()
+            setPadding(0, p, 0, p / 2)
+        }
+    }
+
+    private fun makeTextView(ctx: Context, sizeSp: Float): TextView {
+        return TextView(ctx).apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(0xFFE0E0E0.toInt())
+            textSize = sizeSp
+            val p = (4 * density).toInt()
+            setPadding(0, p, 0, p)
+        }
+    }
+
+    /** 玻璃绘制清单（1Hz 节流 + 内容哈希脏检查；超 3s 未见条目标 stale）。 */
+    private fun refreshGlassListIfDue() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastGlassListAt < GLASS_LIST_INTERVAL_MS) return
+        lastGlassListAt = now
         val snap = snapshotProvider?.invoke() ?: emptyList()
         val h = contentHash(snap)
-        if (h != lastHash) {
-            lastHash = h
-            cached = snap
-            labelCache.clear()
-            frameView?.elements = snap
-            frameView?.invalidate()
+        if (h == lastGlassHash) return
+        lastGlassHash = h
+        glassListText?.text = assembleGlassList(snap)
+    }
+
+    private fun assembleGlassList(snap: List<DebugElement>): String {
+        if (snap.isEmpty()) return "当前页面无玻璃绘制"
+        val now = SystemClock.uptimeMillis()
+        val sb = StringBuilder()
+        for (e in snap) {
+            val cls = GlassRegistry.classOf(e.id) ?: e.hostViewName
+            val st = GlassRegistry.statusOf(e.id)
+            sb.append(cls.substringAfterLast('.')).append(' ')
+                .append(e.region.left.toInt()).append(',').append(e.region.top.toInt()).append(' ')
+                .append(e.region.width().toInt()).append('×').append(e.region.height().toInt()).append(' ')
+                .append('[').append(e.sourceTag.ifEmpty { "?" }).append("] ")
+                .append("card=").append(st?.cardClass?.substringAfterLast('.') ?: "null").append(' ')
+                .append("hit=").append(st?.hitKey?.substringAfterLast('.') ?: "null")
+            if (now - e.lastSeenMs > STALE_MS) sb.append(" stale")
+            sb.append('\n')
         }
-        val target = panelTarget
-        if (panelShown && target != null) {
-            panelText?.text = assemblePanel(target)
-        }
+        return sb.toString()
     }
 
     /** 内容脏检查哈希：id/区域/身份/渲染腿（不含 lastSeenMs —— 它每帧都变，纳入会恒脏）。 */
@@ -203,354 +749,265 @@ internal object DebugOverlay {
         return h
     }
 
-    // ------------------------------------------------------------ 窗口三件 --------------------------------------------------
+    // ------------------------------------------------------------ UI 树 --------------------------------------------------
 
-    private fun resolveWindowManager(ctx: Context): android.view.WindowManager? {
+    /** 整页 UI 树文本（WindowManagerGlobal 反枚举；深度 cap 8、节点 cap 800；失败=一行原因）。 */
+    private fun buildTreeText(): String {
         return try {
-            val w = windowManager
-                ?: (ctx.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager)
-                    ?.also { windowManager = it }
-            density = ctx.resources.displayMetrics.density
-            w
+            val entries = enumerateWindows()
+            if (entries.isEmpty()) return "（未枚举到窗口）"
+            val sb = StringBuilder()
+            val counter = IntArray(1)
+            for ((i, entry) in entries.withIndex()) {
+                sb.append("[窗口").append(i + 1).append("] type=").append(entry.type)
+                    .append(" title=").append(truncate(entry.title ?: "—", TITLE_CAP))
+                    .append(" root=").append(entry.decor.javaClass.name.substringAfterLast('.'))
+                    .append('\n')
+                if (counter[0] >= TREE_MAX_NODES) {
+                    sb.append("…(truncated)\n")
+                    break
+                }
+                if (entry.decor is ViewGroup) {
+                    val decor = entry.decor as ViewGroup
+                    for (ci in 0 until decor.childCount) {
+                        if (counter[0] >= TREE_MAX_NODES) {
+                            sb.append("…(truncated)\n")
+                            break
+                        }
+                        appendTreeNode(sb, decor.getChildAt(ci), 1, counter)
+                    }
+                }
+            }
+            sb.toString()
+        } catch (t: Throwable) {
+            "UI 树读取失败：${t.javaClass.simpleName}: ${t.message}"
+        }
+    }
+
+    private fun appendTreeNode(sb: StringBuilder, v: View, depth: Int, counter: IntArray) {
+        if (counter[0] >= TREE_MAX_NODES || depth > TREE_MAX_DEPTH) return
+        counter[0]++
+        val indent = "  ".repeat(depth)
+        sb.append(indent).append(shortName(v)).append(' ').append(treeIdLabel(v)).append(' ')
+        val loc = IntArray(2)
+        try {
+            v.getLocationOnScreen(loc)
+        } catch (ignored: Throwable) {
+        }
+        sb.append(loc[0]).append(',').append(loc[1]).append(' ')
+            .append(v.width).append('×').append(v.height)
+        if (v.visibility != View.VISIBLE) sb.append(" [不可见]")
+        sb.append('\n')
+        if (v is ViewGroup && v.childCount > 0 && v.visibility != View.GONE) {
+            for (i in 0 until v.childCount) {
+                if (counter[0] >= TREE_MAX_NODES || depth + 1 > TREE_MAX_DEPTH) {
+                    sb.append(indent).append("  …(truncated)\n")
+                    return
+                }
+                appendTreeNode(sb, v.getChildAt(i), depth + 1, counter)
+            }
+        }
+    }
+
+    private fun shortName(v: View): String {
+        val simple = v.javaClass.simpleName
+        return if (simple.isEmpty()) v.javaClass.name.substringAfterLast('.') else simple
+    }
+
+    private fun treeIdLabel(v: View): String {
+        val id = if (v.id == View.NO_ID) {
+            "-"
+        } else {
+            try {
+                v.resources.getResourceEntryName(v.id)
+            } catch (t: Throwable) {
+                Integer.toHexString(v.id)
+            }
+        }
+        return "#$id@${Integer.toHexString(System.identityHashCode(v))}"
+    }
+
+    // ------------------------------------------------------------ 窗口枚举 / hitTest --------------------------------------------------
+
+    private class WindowEntry(val decor: View, val type: Int, val title: String?)
+
+    /** 反射 WindowManagerGlobal 枚举本进程全部窗口根（debug-only；调用方 try-catch 兜底）。 */
+    @Suppress("UNCHECKED_CAST")
+    private fun enumerateWindows(): List<WindowEntry> {
+        val cls = Class.forName("android.view.WindowManagerGlobal")
+        val inst = cls.getMethod("getInstance").invoke(null)
+        val views = cls.getDeclaredField("mViews").apply { isAccessible = true }
+            .get(inst) as? ArrayList<View> ?: return emptyList()
+        val params = try {
+            cls.getDeclaredField("mParams").apply { isAccessible = true }
+                .get(inst) as? ArrayList<WindowManager.LayoutParams>
         } catch (t: Throwable) {
             null
         }
-    }
-
-    private fun baseLayoutParams(): android.view.WindowManager.LayoutParams {
-        return android.view.WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            WINDOW_TYPE,
-            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT,
-        )
-    }
-
-    private fun attachFrameIfNeeded() {
-        if (frameView != null && frameView?.parent != null) return
-        val ctx = contextProvider?.invoke() ?: return
-        val wmgr = resolveWindowManager(ctx) ?: return
-        try {
-            if (frameView == null) frameView = FrameView(ctx)
-            val lp = baseLayoutParams()
-            lp.flags = lp.flags or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            wmgr.addView(frameView, lp)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay attach frame failed", t)
-            frameView = null
-        }
-    }
-
-    private fun removeFrame() {
-        removeViewSafe(frameView)
-        frameView = null
-    }
-
-    private fun beginPick() {
-        val ctx = contextProvider?.invoke() ?: return
-        val wmgr = resolveWindowManager(ctx) ?: return
-        try {
-            if (pickView == null) {
-                val v = PickView(ctx)
-                v.onPick = { x, y -> handlePick(x, y) }
-                pickView = v
-            }
-            val v = pickView ?: return
-            if (v.parent == null) {
-                val lp = baseLayoutParams()
-                wmgr.addView(v, lp)
-            }
-            picking = true
-            pickDeadlineMs = SystemClock.uptimeMillis() + PICK_TIMEOUT_MS
-        } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay begin pick failed", t)
-            endPick()
-        }
-    }
-
-    private fun endPick() {
-        picking = false
-        removeViewSafe(pickView)
-        pickView = null
-    }
-
-    private fun handlePick(x: Float, y: Float) {
-        val tol = PICK_TOLERANCE_DIP * density
-        var best: DebugElement? = null
-        var bestArea = Float.MAX_VALUE
-        for (e in cached) {
-            val r = e.region
-            if (r.left - tol <= x && x <= r.right + tol && r.top - tol <= y && y <= r.bottom + tol) {
-                val area = r.width() * r.height()
-                if (area < bestArea) {
-                    bestArea = area
-                    best = e
-                }
-            }
-        }
-        endPick()
-        val hit = best
-        if (hit != null) {
-            showPanel(hit)
-        } else {
-            dismissPanel()
-        }
-    }
-
-    private fun showPanel(e: DebugElement) {
-        val ctx = contextProvider?.invoke() ?: return
-        val wmgr = resolveWindowManager(ctx) ?: return
-        try {
-            if (panelRoot == null) buildPanelRoot(ctx)
-            val root = panelRoot ?: return
-            panelText?.text = assemblePanel(e)
-            panelTarget = e
-            if (!panelShown) {
-                val lp = android.view.WindowManager.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    WINDOW_TYPE,
-                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    PixelFormat.TRANSLUCENT,
-                )
-                lp.gravity = Gravity.BOTTOM
-                wmgr.addView(root, lp)
-                panelShown = true
-            }
-        } catch (t: Throwable) {
-            Lg.w(TAG, "debug overlay show panel failed", t)
-        }
-    }
-
-    private fun dismissPanel() {
-        panelTarget = null
-        removeViewSafe(panelRoot)
-        panelRoot = null
-        panelText = null
-        panelShown = false
-    }
-
-    private fun removeViewSafe(v: View?) {
-        val wmgr = windowManager ?: return
-        if (v == null || v.parent == null) return
-        try {
-            wmgr.removeView(v)
-        } catch (t: Throwable) {
-            try {
-                wmgr.removeViewImmediate(v)
-            } catch (ignored: Throwable) {
-            }
-        }
-    }
-
-    // ------------------------------------------------------------ 面板 --------------------------------------------------
-
-    private fun buildPanelRoot(ctx: Context) {
-        val pad = (12 * density).toInt()
-        val root = LinearLayout(ctx)
-        root.orientation = LinearLayout.VERTICAL
-        root.setBackgroundColor(0xDD101418.toInt())
-        root.setPadding(pad, pad, pad, pad)
-
-        val title = TextView(ctx)
-        title.text = "元素详情"
-        title.setTextColor(Color.WHITE)
-        title.textSize = 14f
-        root.addView(title)
-
-        val buttons = LinearLayout(ctx)
-        buttons.orientation = LinearLayout.HORIZONTAL
-        val pickAgain = TextView(ctx)
-        pickAgain.text = "再选一个"
-        pickAgain.setTextColor(0xFF69F0AE.toInt())
-        pickAgain.textSize = 13f
-        pickAgain.setPadding(0, pad / 2, pad * 2, pad / 2)
-        pickAgain.setOnClickListener {
-            dismissPanel()
-            beginPick()
-        }
-        buttons.addView(pickAgain)
-        val close = TextView(ctx)
-        close.text = "关闭"
-        close.setTextColor(Color.LTGRAY)
-        close.textSize = 13f
-        close.setPadding(0, pad / 2, 0, pad / 2)
-        close.setOnClickListener { dismissPanel() }
-        buttons.addView(close)
-        root.addView(buttons)
-
-        val scroll = ScrollView(ctx)
-        val text = TextView(ctx)
-        text.typeface = Typeface.MONOSPACE
-        text.setTextColor(0xFFE0E0E0.toInt())
-        text.textSize = 11f
-        text.setPadding(0, pad / 2, 0, 0)
-        scroll.addView(text)
-        root.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                (280 * density).toInt(),
-            ),
-        )
-        panelRoot = root
-        panelText = text
-    }
-
-    /** 详情面板文本（一期行集：身份 + 绘制链 + 视图 + 类名；档位链/每帧分支/注册时间属二期不显示）。 */
-    private fun assemblePanel(e: DebugElement): String {
-        val sb = StringBuilder()
-        sb.append("[身份] id=0x").append(Integer.toHexString(e.id))
-        sb.append(" 区域=").append(e.region.left.toInt()).append(',').append(e.region.top.toInt())
-        sb.append(' ').append(e.region.width().toInt()).append('×').append(e.region.height().toInt())
-        sb.append(" r=").append(e.cornerRadius.toInt()).append('(').append(e.cornerRadiusSource).append(')')
-        sb.append("\n\n[绘制链]\n")
-        sb.append("挂点: ").append(e.sourceTag.ifEmpty { "?" }).append('\n')
-        sb.append("链路: ").append(CHAIN_NOTES[e.sourceTag] ?: "未收录").append('\n')
-        sb.append("渲染腿: ").append(e.renderLeg ?: "（尚未渲染）").append('\n')
-        sb.append("预设: ").append(GlassRegistry.lookupLineOf(e.id)).append('\n')
-        sb.append("\n[视图]\n")
-        val v = e.hostViewRef?.get()
-        if (v == null) {
-            sb.append("宿主 View 已回收\n")
-        } else {
-            sb.append("类: ").append(v.javaClass.name).append('\n')
-            sb.append("id: ").append(idNameOf(v)).append('\n')
-            sb.append("hostViewName: ").append(e.hostViewName).append('\n')
-            sb.append("bounds: ").append(v.left).append(',').append(v.top).append(' ')
-                .append(v.width).append('×').append(v.height).append('\n')
-            sb.append("attach: ").append(v.isAttachedToWindow).append('\n')
-            sb.append("背景: ").append(v.background?.javaClass?.name ?: "null").append('\n')
-            val root = v.rootView
-            sb.append("窗口根: ").append(root?.javaClass?.name ?: "?").append('\n')
-            if (root != null) {
-                sb.append("窗口type: ").append(BlurDrawHook.reflectWindowType(root)).append('\n')
-                sb.append("窗口title: ").append(BlurDrawHook.reflectWindowTitle(root) ?: "—").append('\n')
-            }
-            sb.append("View父链:\n")
-            for (c in classChainOf(v.javaClass)) sb.append("  ").append(c).append('\n')
-        }
-        sb.append("\n[类名]\n")
-        val cls = GlassRegistry.classOf(e.id)
-        sb.append("绘制对象: ").append(cls ?: "（未登记）").append('\n')
-        val chain = GlassRegistry.classChainOf(e.id)
-        if (chain.isEmpty()) {
-            sb.append("父链: —\n")
-        } else {
-            sb.append("父链:\n")
-            for (c in chain) sb.append("  ").append(c).append('\n')
-        }
-        val st = GlassRegistry.statusOf(e.id)
-        sb.append("状态: ").append(st?.status ?: "UNBOUND").append('\n')
-        if (st != null) {
-            sb.append("卡片类: ").append(st.cardClass ?: "—").append('\n')
-            sb.append("命中键: ").append(st.hitKey ?: "—")
-                .append("（预设数 ").append(st.presetCount).append("）\n")
-        }
-        sb.append("圆角覆盖: ").append(GlassRegistry.cornerOverrideFor(e.id) ?: "—")
-        return sb.toString()
-    }
-
-    /** View 类的父链（cap 12 层；与绘制对象父链并列显示）。 */
-    private fun classChainOf(clazz: Class<*>): List<String> {
-        val out = ArrayList<String>(8)
-        var c: Class<*>? = clazz
-        var depth = 0
-        while (c != null && depth < 12) {
-            out.add(c.name)
-            c = c.superclass
-            depth++
+        val snapshot = ArrayList(views)
+        val out = ArrayList<WindowEntry>(snapshot.size)
+        for (i in snapshot.indices) {
+            val decor = snapshot[i] ?: continue
+            if (isOwnWindow(decor)) continue
+            val lp = params?.getOrNull(i)
+            val type = lp?.type ?: BlurDrawHook.reflectWindowType(decor)
+            out.add(WindowEntry(decor, type, lp?.title?.toString()))
         }
         return out
     }
 
-    private fun idNameOf(v: View): String {
-        if (v.id == View.NO_ID) return "—"
-        return try {
-            v.resources.getResourceEntryName(v.id)
-        } catch (t: Throwable) {
-            "#${Integer.toHexString(v.id)}"
+    private fun isOwnWindow(decor: View): Boolean {
+        return decor === ballView || decor === pickView || decor === panelScroll || decor === frameView
+    }
+
+    /** 屏幕坐标点在 decor 子树里找最深可见命中 View（无命中 null）。 */
+    private fun findDeepestAt(v: View, sx: Float, sy: Float): View? {
+        if (v.visibility != View.VISIBLE) return null
+        val loc = IntArray(2)
+        try {
+            v.getLocationOnScreen(loc)
+        } catch (ignored: Throwable) {
+            return null
         }
+        if (sx < loc[0] || sy < loc[1] || sx >= loc[0] + v.width || sy >= loc[1] + v.height) return null
+        if (v is ViewGroup) {
+            for (i in v.childCount - 1 downTo 0) {
+                findDeepestAt(v.getChildAt(i), sx, sy)?.let { return it }
+            }
+        }
+        return v
+    }
+
+    // ------------------------------------------------------------ 日志 --------------------------------------------------
+
+    /** 按 key 节流的 i 级日志（同 key 默认 2s 一条）。 */
+    private fun logThrottled(key: String, msg: String) {
+        val now = SystemClock.uptimeMillis()
+        val last = logThrottleMap[key]
+        if (last != null && now - last < LOG_THROTTLE_MS) return
+        logThrottleMap[key] = now
+        if (logThrottleMap.size > 64) logThrottleMap.clear()
+        Lg.i(TAG, msg)
     }
 
     // ------------------------------------------------------------ 视图 --------------------------------------------------
 
-    /** 框体窗内容：元素矩形（圆角贴合）+ 名称标签（labelCache 按 id 缓存，热路径零字符串分配）。 */
+    /** 框体窗内容：青=玻璃实际框、橙=控件实际框；无文字。 */
     private class FrameView(ctx: Context) : View(ctx) {
 
-        var elements: List<DebugElement> = emptyList()
+        var result: CaptureResult? = null
+            set(value) {
+                if (field !== value) {
+                    field = value
+                    invalidate()
+                }
+            }
 
-        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val glassPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 2f * resources.displayMetrics.density
-            color = 0xFF69F0AE.toInt()
+            color = COLOR_GLASS_BOX
         }
-        private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFF69F0AE.toInt()
-            textSize = 10f * resources.displayMetrics.density
-            setShadowLayer(2f, 0f, 0f, 0xCC000000.toInt())
+        private val controlPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * resources.displayMetrics.density
+            color = COLOR_CONTROL_BOX
+        }
+        private val bridgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * resources.displayMetrics.density
+            color = COLOR_BRIDGE_BOX
+            pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
         }
 
         override fun onDraw(canvas: Canvas) {
-            for (e in elements) {
-                val r = e.region
-                val rad = if (e.cornerRadius > 0f) {
-                    e.cornerRadius
-                } else {
-                    minOf(r.width(), r.height()) / 2f
-                }
-                canvas.drawRoundRect(r, rad, rad, strokePaint)
-                val label = labelFor(e)
-                val y = (r.top - 4f * resources.displayMetrics.density)
-                    .coerceAtLeast(textPaint.textSize)
-                canvas.drawText(label, r.left, y, textPaint)
-            }
-        }
-
-        private fun labelFor(e: DebugElement): String {
-            val cached = labelCache[e.id]
-            val cls = GlassRegistry.classOf(e.id)
-            val label = if (cls != null) GlassRegistry.classLabel(cls) else e.hostViewName
-            val cur = "$label·${e.hostViewName}"
-            if (cached != cur) labelCache[e.id] = cur
-            return cur
+            val r = result ?: return
+            r.controlBox?.let { canvas.drawRect(it, controlPaint) }
+            r.glassBox?.let { canvas.drawRect(it, glassPaint) }
+            for (b in r.bridgeBoxes) canvas.drawRect(b, bridgePaint)
         }
     }
 
-    /** 拾取窗：全屏可点、半透明提示层；命中测试在 handlePick。 */
+    /** 待点窗口：全屏透明、只捕获落点坐标（无遮罩无文字）。 */
     private class PickView(ctx: Context) : View(ctx) {
 
-        var onPick: ((Float, Float) -> Unit)? = null
+        var onTouch: ((Float, Float) -> Unit)? = null
 
-        private val tintPaint = Paint().apply { color = 0x22FF5252 }
-        private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = 13f * resources.displayMetrics.density
-            setShadowLayer(3f, 0f, 0f, 0xDD000000.toInt())
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                onTouch?.invoke(event.rawX, event.rawY)
+            }
+            return true
+        }
+    }
+
+    /** 悬浮球：可拖动、点击开合面板；待点状态变色。 */
+    private class BallView(ctx: Context) : View(ctx) {
+
+        var pending = false
+            set(value) {
+                if (field != value) {
+                    field = value
+                    invalidate()
+                }
+            }
+
+        var onTap: (() -> Unit)? = null
+        var onDragStart: (() -> Unit)? = null
+        var onDragMove: ((Float, Float) -> Unit)? = null
+
+        private val slopPx = DRAG_SLOP_DIP * resources.displayMetrics.density
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var dragging = false
+
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * resources.displayMetrics.density
+        }
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            textSize = 16f * resources.displayMetrics.density
+            textAlign = Paint.Align.CENTER
         }
 
         override fun onDraw(canvas: Canvas) {
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tintPaint)
-            canvas.drawText(
-                "点选一个元素查看详情（10 秒无操作自动退出）",
-                16f * resources.displayMetrics.density,
-                120f * resources.displayMetrics.density,
-                textPaint,
-            )
+            val cx = width / 2f
+            val cy = height / 2f
+            val rad = minOf(width, height) / 2f - strokePaint.strokeWidth
+            fillPaint.color = if (pending) 0xCCFF6D00.toInt() else 0x99000000.toInt()
+            strokePaint.color = if (pending) 0xFFFFD54F.toInt() else 0xFF69F0AE.toInt()
+            canvas.drawCircle(cx, cy, rad, fillPaint)
+            canvas.drawCircle(cx, cy, rad, strokePaint)
+            val baseline = cy - (textPaint.descent() + textPaint.ascent()) / 2f
+            canvas.drawText("调", cx, baseline, textPaint)
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> return true
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    dragging = false
+                    onDragStart?.invoke()
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (dragging || abs(dx) > slopPx || abs(dy) > slopPx) {
+                        dragging = true
+                        onDragMove?.invoke(dx, dy)
+                    }
+                    return true
+                }
                 MotionEvent.ACTION_UP -> {
-                    onPick?.invoke(event.x, event.y)
+                    if (!dragging) onTap?.invoke()
                     return true
                 }
             }
-            return super.onTouchEvent(event)
+            return true
         }
     }
 }
