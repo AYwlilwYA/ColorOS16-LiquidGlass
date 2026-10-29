@@ -27,6 +27,8 @@ import android.view.ViewParent
 import android.view.WindowManager
 import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.debug.DebugElement
+import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
@@ -697,6 +699,9 @@ object BlurDrawHook {
          *  开关（Prefs.KEY_UNIFIED_CORNER_ENABLE）另在渲染期读，与本标记是「与」关系：
          *  两者都真才重算圆角，任一为假即维持元素自身圆角。 */
         val unifiedScope: Boolean = false,
+        /** 注册链身份（map/swipe/capsule/capsule-shard/capsuleEar/mediaCarousel/notifCard/seedling；
+         *  调试悬浮窗挂点行用） */
+        val sourceTag: String = "",
     ) {
         /**
          * [doc/spec/99 clip∩bounds] 宿主 canvas 的 **clipBounds**（与 [autoBounds] 同坐标空间 =
@@ -724,6 +729,11 @@ object BlurDrawHook {
          */
         @Volatile
         var metaBall: MetaBallSnapshot? = null
+
+        /** 最近一次注册 hook 到达时间（uptimeMs；调试悬浮窗防过期框残留）。
+         *  稳态 region/bounds 不变时不换 entry → 各注册点在 previous 上同步刷新本值。 */
+        @Volatile
+        var lastSeenMs: Long = 0L
     }
 
     /**
@@ -1837,6 +1847,10 @@ object BlurDrawHook {
     /** 绘制宿主戳：NBV draw 栈内记录本帧 bgView，渲染侧消歧/补身份用（生命周期=一次 draw 栈）。 */
     private val drawHostStamp = ThreadLocal<WeakReference<View>>()
 
+    /** nbv 注册链 bgView 记忆：extImp 弱键 → 最近成功读到的 bgView 弱值。
+     *  getBgView 拿不到的帧用它回填宿主戳，渲染侧仍能认领 cardClass。 */
+    private val nbvLastBgView = WeakHashMap<Any, WeakReference<View>>()
+
     /**
      * [doc/spec/99 clip∩bounds] 注册键（posteffect drawable identityHashCode，与 [screenRegionMap] 同键空间）
      * → 宿主 canvas clipBounds 快照（宿主 View 本地坐标）。
@@ -1875,6 +1889,43 @@ object BlurDrawHook {
      * 普通 Map：不做 LRU 淘汰（任务 H2：性能优化已删除）。
      */
     private val appliedUniformsMap = ConcurrentHashMap<Int, AppliedKey>()
+
+    /** elementId → 最后一条渲染腿标识（调试悬浮窗绘制链段；仅值变时写，热路径零分配）。 */
+    private val renderLegMap = ConcurrentHashMap<Int, String>()
+
+    private const val RENDER_LEG_POSTEFFECT = "posteffect-drawBlurShader"
+    private const val RENDER_LEG_SEEDLING = "seedling-canvas"
+
+    /** 记录最后渲染腿（值未变则零写入）。 */
+    private fun markRenderLeg(id: Int, leg: String) {
+        if (renderLegMap[id] != leg) renderLegMap[id] = leg
+    }
+
+    /** 调试悬浮窗元素过期阈值（ms）：注册 hook 超过该时长未再到达 → 不进快照（防过期框残留）。 */
+    private const val DEBUG_ELEMENT_TTL_MS = 3000L
+
+    /** 调试悬浮窗只读快照（15Hz tick 调用；渲染热路径零参与）。 */
+    internal fun debugSnapshot(): List<DebugElement> {
+        val now = SystemClock.uptimeMillis()
+        val out = ArrayList<DebugElement>(screenRegionMap.size)
+        for ((id, e) in screenRegionMap) {
+            if (now - e.lastSeenMs > DEBUG_ELEMENT_TTL_MS) continue
+            out.add(
+                DebugElement(
+                    id = id,
+                    region = RectF(e.region),
+                    cornerRadius = e.cornerRadius,
+                    cornerRadiusSource = e.cornerRadiusSource,
+                    hostViewName = e.hostViewName,
+                    sourceTag = e.sourceTag,
+                    renderLeg = renderLegMap[id],
+                    lastSeenMs = e.lastSeenMs,
+                    hostViewRef = e.hostViewRef,
+                )
+            )
+        }
+        return out
+    }
 
     /**
      * 任务 G（问题 13）：已登记屏幕区域映射的宿主 View（WeakReference 防泄漏）。
@@ -2632,6 +2683,14 @@ object BlurDrawHook {
         // [spec/60 周期强制刷新] 启动文字周期强制刷新循环（幂等去重；开关全关 / 无活跃宿主时
         // tick 轻量跳过，唯一成本是几微秒空 tick）
         ensureTextForceRefreshLoop()
+        // [doc/spec/142] 悬浮调试窗：15Hz 轻量 tick（开关关 = 每 tick 仅一次 volatile 读；
+        // 开 = 快照 + 脏检查重绘）。只用普通 Paint，绝不碰 RuntimeShader。
+        DebugOverlay.ensureStarted(
+            contextProvider = ::resolveSystemUiContext,
+            snapshotProvider = ::debugSnapshot,
+            overlayEnabledProvider = { Prefs.debugOverlayEnabled(api) },
+            pickEnabledProvider = { Prefs.debugPickEnabled(api) },
+        )
         // [doc/spec/118] 预热全部停用：旧 GPU 预热白做（独立 GrContext）；真实窗口预热
         // 在真机把 SystemUI 打进重启循环（卸载恢复 2026-10-14），未定位前禁止复活。
         // shader 实例池保留（纯 CPU 构造，无 GPU 窗口）。
@@ -4280,8 +4339,12 @@ object BlurDrawHook {
             // [doc/spec/101] 统一界面圆角作用域（注册期判定）：本链注册的是胶囊/胶囊耳/媒体横幅
             //（logTag = capsule/capsule-shard/capsuleEar/mediaCarousel），全在排除清单 → 恒 false。
             unifiedScope = isUnifiedCornerScope(hostView, target, logTag),
+            sourceTag = logTag,
         )
         val previous = screenRegionMap[key]
+        val platformSeenMs = SystemClock.uptimeMillis()
+        entry.lastSeenMs = platformSeenMs
+        previous?.lastSeenMs = platformSeenMs
         // [doc/spec/100 方案2] metaball 黏连参数快照（每帧刷新；拿不到 = null → 原路径零变化）
         applyMetaBall(key, entry, previous, target)
         // [doc/spec/24 任务 B 2026-08-13] 内容变化检测：仅新元素首次出现（previous==null）触发整屏快照
@@ -4787,8 +4850,12 @@ object BlurDrawHook {
             // [doc/spec/101] 统一界面圆角作用域（注册期判定）：本链覆盖 shade 面板层元素（QS tile/
             // seekbar/卡片等，logTag="map"）与侧滑按钮（logTag="swipe"，排除清单兜底）。
             unifiedScope = isUnifiedCornerScope(hostView, target, logTag),
+            sourceTag = logTag,
         )
         val previous = screenRegionMap[key]
+        val coreSeenMs = SystemClock.uptimeMillis()
+        entry.lastSeenMs = coreSeenMs
+        previous?.lastSeenMs = coreSeenMs
         // [doc/spec/99] 每次绘制刷新 clip（父容器 clip 随动画/布局逐帧可能变）：map 快照 + 新 entry
         // 镜像 + 稳态仍存活的旧 entry 镜像（region/bounds 未变时不换 entry，此时只能刷 previous）。
         applyHostClip(key, entry, previous, hostClip)
@@ -5459,6 +5526,11 @@ object BlurDrawHook {
         }
     }
 
+    /** getBgView 拿不到时回填宿主戳：取同 extImp 实例最近一次成功读到的 bgView。 */
+    private fun restoreNbvHostStamp(extImp: Any) {
+        nbvLastBgView[extImp]?.get()?.let { drawHostStamp.set(WeakReference(it)) }
+    }
+
     /** hookBefore：bgView 屏幕位置 + posteffect drawable bounds → 注册通知卡片屏幕区域 */
     private fun recordNotificationCardRegion(chain: XposedInterface.Chain) {
         val extImp = try {
@@ -5471,9 +5543,19 @@ object BlurDrawHook {
         val bgView = try {
             mNbvGetBgView?.invoke(extImp) as? View
         } catch (t: Throwable) {
-            Lg.e(TAG, "nbv: getBgView failed", t); return
-        } ?: return
+            Lg.e(TAG, "nbv: getBgView failed", t)
+            restoreNbvHostStamp(extImp)
+            return
+        } ?: run {
+            logThrottled("nbv-null-bgview", Log.INFO) { "nbv: getBgView null, fallback stamp to last host" }
+            restoreNbvHostStamp(extImp)
+            return
+        }
         drawHostStamp.set(WeakReference(bgView))
+        val nbvPrevRef = nbvLastBgView[extImp]
+        if (nbvPrevRef?.get() !== bgView) {
+            nbvLastBgView[extImp] = WeakReference(bgView)
+        }
         // [doc/spec/99 clip∩bounds] 宿主 canvas clip：本 hook 的 arg0 就是 bgView 自己的 draw canvas，
         // 与 `region = loc + bounds` 反推出的 bounds **同坐标空间（bgView 本地）**，且在 proceed() 之前
         // 采集 = 与随后 BaseDrawable.draw→drawBlurShader 用的是同一块 canvas 同一状态。
@@ -5493,17 +5575,26 @@ object BlurDrawHook {
             mNbvGetViewBlurProxy?.invoke(extImp)
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: getViewBlurProxy failed", t); return
-        } ?: return
+        } ?: run {
+            logThrottled("nbv-null-proxy", Log.INFO) { "nbv: getViewBlurProxy null, skip registration" }
+            return
+        }
         val drawableArg = try {
             chain.getArg(1) as? Drawable
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: getArg(1) failed", t); null
-        } ?: return
+        } ?: run {
+            logThrottled("nbv-null-drawable-arg", Log.INFO) { "nbv: draw arg1 not Drawable, skip registration" }
+            return
+        }
         val blurDrawable = try {
             mViewProxyGetBlurDrawable?.invoke(proxy, drawableArg) as? Drawable
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: getBlurDrawable(Drawable) failed", t); return
-        } ?: return
+        } ?: run {
+            logThrottled("nbv-null-blurdrawable", Log.INFO) { "nbv: getBlurDrawable null, skip registration" }
+            return
+        }
         // 仅 PlatformBlurDrawable 内部 posteffect BlurDrawable（走我们管线）才注册；
         // BackgroundBlurDrawable（framework 自带）不触发 drawBlurShader hook，注册无意义
         if (mPlatformGetBlurDrawable == null || !mPlatformGetBlurDrawable!!.declaringClass.isInstance(blurDrawable)) {
@@ -5519,7 +5610,10 @@ object BlurDrawHook {
             mPlatformGetBlurDrawable?.invoke(blurDrawable)
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: PlatformBlurDrawable.getBlurDrawable() failed", t); return
-        } ?: return
+        } ?: run {
+            logThrottled("nbv-null-target", Log.INFO) { "nbv: PlatformBlurDrawable.getBlurDrawable null, skip registration" }
+            return
+        }
         val bounds = try {
             mGetBounds?.invoke(target) as? Rect
         } catch (t: Throwable) {
@@ -5559,8 +5653,12 @@ object BlurDrawHook {
             // [doc/spec/101] 统一界面圆角作用域（注册期判定）：通知卡片链。bgView 类名含
             // Notification → 白名单命中（heads-up 横幅卡同样走本链，按「通知卡片」纳入，见 spec/101 §5）。
             unifiedScope = isUnifiedCornerScope(bgView, target, "nbv"),
+            sourceTag = "notifCard",
         )
         val previous = screenRegionMap[key]
+        val notifSeenMs = SystemClock.uptimeMillis()
+        entry.lastSeenMs = notifSeenMs
+        previous?.lastSeenMs = notifSeenMs
         // 每帧重绑（幂等，同 clazz 只 touch）：动画态重建的 target 换实例后 cardClass 不丢
         GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
         // [doc/spec/99] 每次绘制都刷新 clip（父容器 clip 随动画/布局逐帧可能变）：
@@ -7240,8 +7338,12 @@ object BlurDrawHook {
             cornerRadius, "seedling-heuristic",
             cornerIsConic = true, cornerWeight = DEFAULT_CORNER_WEIGHT,
             hostViewRef = WeakReference(hostView),
+            sourceTag = "seedling",
         )
         val previous = screenRegionMap[id]
+        val seedlingSeenMs = SystemClock.uptimeMillis()
+        entry.lastSeenMs = seedlingSeenMs
+        previous?.lastSeenMs = seedlingSeenMs
         if (previous == null) {
             screenRegionMap[id] = entry
             if (screenRegionMap.size > 1024) screenRegionMap.clear()
@@ -8265,6 +8367,7 @@ object BlurDrawHook {
             cornerRadius = cornerRadius, cornerConicBlend = 1f, maskAlpha = 0f,
             lowResDiv = if (seedlingTier != null) seedlingWantDiv else 4,
         )
+        markRenderLeg(id, RENDER_LEG_SEEDLING)
         canvas.save()
         try {
             canvas.translate(offsetX, offsetY)
@@ -12009,6 +12112,11 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             // ignore
         }
+        try {
+            DebugOverlay.detach()
+        } catch (t: Throwable) {
+            // ignore
+        }
     }
 
     /**
@@ -12322,6 +12430,7 @@ object BlurDrawHook {
                 // [spec/127] 实际绑定的 uSourceLowRes 档位（1/16 或现状源；档位变 → 下帧全量重绑）
                 lowResDiv = boundLowResDiv,
             )
+            markRenderLeg(id, RENDER_LEG_POSTEFFECT)
             // [coord 诊断] refresh 重设 uniform 节流日志（每 64 次 + 距上次 ≥2s 打一条）
             refreshUniformCount++
             val coordRefreshNow = SystemClock.uptimeMillis()
@@ -12728,6 +12837,7 @@ object BlurDrawHook {
             // [spec/127] 实际绑定的 uSourceLowRes 档位（首帧构建时决定）
             lowResDiv = boundLowResDiv,
         )
+        markRenderLeg(region.id, RENDER_LEG_POSTEFFECT)
         return LiquidShaderBuild(shader, region.id)
     }
 
@@ -14748,7 +14858,7 @@ object BlurDrawHook {
 
     /** [2026-08-15] 反射读窗口根 View 的窗口标题（ViewRootImpl.getWindowAttributes().getTitle()）。失败 null。
      *  getTitle Method 缓存到 [mWindowGetTitleMethod]（reduce 每抓屏 getMethod 开销）。 */
-    private fun reflectWindowTitle(rootView: View): CharSequence? {
+    internal fun reflectWindowTitle(rootView: View): CharSequence? {
         return try {
             var m1 = mGetViewRootImpl
             if (m1 == null) {
@@ -14777,7 +14887,7 @@ object BlurDrawHook {
      *  [2026-08-13 captureDisplay 开始延迟优化] getViewRootImpl/getWindowAttributes/type 字段反射缓存
      *  （View.getViewRootImpl 基类方法 + framework 固定类），避免 resolveHeadsUpSfc 遍历每个宿主时反复
      *  getMethod/getField（无 heads-up 时每宿主一次反射）。 */
-    private fun reflectWindowType(rootView: View): Int {
+    internal fun reflectWindowType(rootView: View): Int {
         return try {
             var m1 = mGetViewRootImpl
             if (m1 == null) {

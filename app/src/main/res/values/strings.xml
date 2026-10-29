@@ -154,6 +154,10 @@
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">运行日志</string>
     <string name="settings_enable_logs_desc">关闭后 logcat 只保留错误日志。修改后需重启系统界面。</string>
+    <string name="settings_debug_overlay">调试悬浮窗</string>
+    <string name="settings_debug_overlay_desc">在屏幕上给每个玻璃效果元素框出位置并标注名称，排查时不用抓系统日志。</string>
+    <string name="settings_debug_pick">点选元素查看</string>
+    <string name="settings_debug_pick_desc">开启后点一下屏幕上的元素，查看它的渲染路径与类名详情。点选期间会短暂接管触摸。</string>
     <string name="settings_share_log">分享日志</string>
     <string name="settings_share_log_failed">分享失败：%1$s</string>
     <string name="settings_capture_include_all">含全部日志（默认只抓模块标签）</string>

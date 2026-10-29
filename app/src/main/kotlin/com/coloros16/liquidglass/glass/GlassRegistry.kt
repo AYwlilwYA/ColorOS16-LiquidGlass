@@ -267,6 +267,53 @@ object GlassRegistry {
     /** 按元素 identityHashCode 取卡片语义类（如通知卡/磁贴）；未登记或无语义类 → null。 */
     fun cardClassOf(elementId: Int): String? = bound[elementId]?.cardClass
 
+    /** 预设命中状态行（调试面板用）：status ∈ UNBOUND/HIT_CARD/HIT_CLASS/FALLBACK。
+     *  判据与 [overridesFor] 的 hit 逻辑同源；无副作用（不写审计表、不打日志）。 */
+    data class StatusRow(val status: String, val hitKey: String?, val cardClass: String?, val presetCount: Int)
+
+    fun statusOf(elementId: Int): StatusRow? {
+        val b = bound[elementId] ?: return null
+        val map = snapshotOverrides()
+        val hit = when {
+            b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
+            map.containsKey(b.name) -> b.name
+            else -> null
+        }
+        val status = when {
+            hit == null -> "FALLBACK"
+            hit == b.cardClass -> "HIT_CARD"
+            else -> "HIT_CLASS"
+        }
+        return StatusRow(status, hit, b.cardClass, map.size)
+    }
+
+    /** 绘制对象类的完整父链（沿 superclass 上溯，cap 12 层；调试面板用，零采集）。 */
+    fun classChainOf(elementId: Int): List<String> {
+        val b = bound[elementId] ?: return emptyList()
+        val out = ArrayList<String>(8)
+        var c: Class<*>? = b.clazz
+        var depth = 0
+        while (c != null && depth < 12) {
+            out.add(c.name)
+            c = c.superclass
+            depth++
+        }
+        return out
+    }
+
+    /** 与 preset-lookup 审计日志同源格式的行文本（调试面板用；无副作用）。 */
+    fun lookupLineOf(elementId: Int): String {
+        val b = bound[elementId] ?: return "id=$elementId UNBOUND"
+        val map = snapshotOverrides()
+        val hit = when {
+            b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
+            map.containsKey(b.name) -> b.name
+            else -> null
+        }
+        return "id=$elementId name=${b.name.substringAfterLast('.')} " +
+            "card=${b.cardClass?.substringAfterLast('.')} hit=$hit presets=${map.size}"
+    }
+
     /** 类全名 → 中文标签（语义来自各 hook mount 处的反编译确认）。 */
     private val CLASS_LABELS = mapOf(
         "com.oplus.posteffect.BlurDrawable" to "通用模糊背景（多卡共用）",
