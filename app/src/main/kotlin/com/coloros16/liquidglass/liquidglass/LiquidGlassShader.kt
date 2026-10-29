@@ -50,6 +50,7 @@ object LiquidGlassShader {
         uniform shader uSourceLowRes;    // 未模糊原图 1/4 降采样（高斯模糊采样用；消除全分辨率欠采样网格伪影）
         uniform vec4  uSourceRect;       // uSource 原图 srcRect（xy=原点, zw=尺寸）
         uniform vec4  uSourceLowResRect; // uSourceLowRes 低分辨率 srcRect（xy=原点, zw=尺寸）
+        uniform vec2  uSourceSize;       // uSource 位图像素尺寸；(0,0)=调用方未喂尺寸 → 越界判定只判负方向
         uniform vec2  uViewport;         // 面板绘制尺寸 px（fragCoord ∈ [0,W]×[0,H]，local 坐标）
         uniform float uCornerRadius;     // SDF 圆角半径 px（几何/折射/高光用，与模糊半径解耦）
         uniform float uCornerIsConic;    // 本体角 CONIC 开关（1=三次贝塞尔 sdBezierDistance + shader 内 1.5×半径；0=RBox 圆弧）
@@ -113,6 +114,14 @@ object LiquidGlassShader {
         // AGSL shader.eval 忽略 localMatrix，直接以 coord 为像素索引，故采样坐标须手动折算）
         float2 srcCoord(float2 c, float4 rect) {
             return rect.xy + (c / max(uViewport, float2(1.0))) * rect.zw;
+        }
+
+        // 采样坐标是否越出快照位图有效区：负方向恒判；正方向仅在 uSourceSize>0（Kotlin 已喂位图尺寸）时判
+        bool srcOutOfSource(float2 s) {
+            if (s.x < 0.0 || s.y < 0.0) return true;
+            if (uSourceSize.x > 0.0 && s.x > uSourceSize.x) return true;
+            if (uSourceSize.y > 0.0 && s.y > uSourceSize.y) return true;
+            return false;
         }
 
         float sdRoundedRect(float2 coord, float2 halfSize, float radius) {
@@ -653,6 +662,10 @@ object LiquidGlassShader {
             if (-sdRaw >= uRefractionHeight) {
                 // 2a. 内部：清晰透镜（Kyant 折射 shader 早退等价：content.eval(coord) 原样输出）。
                 //     uBlurRadius>0 时走可选轻模糊（采样 1/4 降采样图，5x5 高斯）。
+                if (srcOutOfSource(srcCoord(coord - uMaskOffset, uSourceRect))) {
+                    // 主采样坐标越出快照位图：不画玻璃透出底层，避免 CLAMP 钳到快照边缘行色
+                    return half4(0.0);
+                }
                 if (uBlurRadius > 0.01) {
                     glass = gaussianBlur(coord - uMaskOffset, uBlurRadius);
                 } else {
@@ -699,6 +712,10 @@ object LiquidGlassShader {
                     refrVec *= dispCap / dispMag;
                 }
                 float2 refractedCoord = (coord - uMaskOffset) + refrVec;
+                if (srcOutOfSource(srcCoord(refractedCoord, uSourceRect))) {
+                    // 主采样坐标越出快照位图：不画玻璃透出底层，避免 CLAMP 钳到快照边缘行色
+                    return half4(0.0);
+                }
                 // [2026-09-16 整元素模糊（B 方案）] uBlurRadius>0 时环带也走模糊采样，折射位移作用在
                 // 模糊图上 → 玻璃整体呈磨砂。原实现环带恒读 uSource（全分辨率清晰图）不读 uBlurRadius，
                 // 而环带宽度 = 短边一半、常占满细长元素（实测 1312x248 元素 refrH=124 = 半高，
@@ -1009,6 +1026,9 @@ object LiquidGlassShader {
         /** [doc/spec/112] 通知卡倾斜角 θ（弧度；0 = 关闭 = uTilt 置 0 恒等）。已含强度×动画进度，
          *  调用方按帧算好传入；同样只在末尾追加，既有调用方零改动（默认 0f = 逐像素零变化）。 */
         tiltRadians: Float = 0f,
+        /** uSource 快照位图像素尺寸（越界判定上界用）；默认 0f = 未喂 → shader 只判负方向。 */
+        sourceSizeX: Float = 0f,
+        sourceSizeY: Float = 0f,
     ) {
         if (source != null) {
             shader.setInputShader("uSource", source)
@@ -1083,6 +1103,8 @@ object LiquidGlassShader {
         } else {
             shader.setFloatUniform("uTilt", 0f, 0f, 0f, 0f)
         }
+        // uSourceSize 无条件下发（与 uMetaball* 同款「防残留」契约）：(0,0)=只判负方向
+        shader.setFloatUniform("uSourceSize", sourceSizeX, sourceSizeY)
     }
 
     /**

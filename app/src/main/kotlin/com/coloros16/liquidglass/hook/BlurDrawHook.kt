@@ -556,24 +556,25 @@ object BlurDrawHook {
     /** 音量条背景圆角 dimen（11dp）；资源读不到时按 dp 兜底折算。 */
     private const val DIMEN_VOLUME_ROW_RADIUS = "volume_vertical_row_radius"
     private const val VOLUME_CORNER_DP_FALLBACK = 11f
-    /** 音量面板去白底：展开面板背景类（mDialogView 宿主；expandPanel hook 用）。 */
+    /** 音量面板背景替换：展开面板宿主类（mDialogView 宿主；expandPanel hook 用）。 */
     private const val CLASS_VOLUME_DIALOG_VIEW = "com.oplus.systemui.volume.view.OplusVolumeDialogView"
     private const val METHOD_EXPAND_PANEL = "expandPanel"
     private const val METHOD_DISMISS_H = "dismissH"
-    /** 纯模糊替换失败时的面板圆角 dp 兜底。 */
-    private const val VOLUME_PANEL_CORNER_DP_FALLBACK = 24f
-    /** 面板纯模糊替换的模糊半径（px，对齐系统 getVolumePanelBackground 的 800）。 */
-    private const val VOLUME_PANEL_BLUR_RADIUS_PX = 800
     /** 音量条「出现」判定间隔（ms）：距上次绘制超过此值的首绘视为弹窗出现，触发即时抓屏。 */
     private const val VOLUME_APPEAR_GAP_MS = 600L
     /** 音量弹窗窗口根作为抓屏排除对象的活跃窗口（ms）：只在刚绘制过的时间窗内生效。 */
     private const val VOLUME_HOST_ACTIVE_MS = 1_500L
     /** 亮白填充开启时的进度填充色：白 80%（近不透明亮磨砂），盖住玻璃扭曲、边界清晰。 */
     private val VOLUME_FROSTED_PROGRESS_COLOR = 0xCCFFFFFF.toInt()
-    /** framework 纯模糊 drawable（已是纯模糊时不去重复替换）。 */
-    private const val CLASS_FRAMEWORK_BLUR_DRAWABLE = "com.android.internal.graphics.drawable.BackgroundBlurDrawable"
-    /** 面板去白底开关 TTL（ms）重读间隔。 */
+    /** 面板背景替换开关 TTL（ms）重读间隔。 */
     private const val VOLUME_PANEL_BACKDROP_TTL_MS = 500L
+    /** 展开面板黑遮罩色：黑 8%（透明度 0x14）。 */
+    private const val VOLUME_PANEL_MASK_COLOR = 0x14000000
+    /** 主线程同步抓屏源白名单：内容指纹 unchanged 也强制发布（关键 UI 事件补抓不被旧基准否决）。 */
+    private val SYNC_CAPTURE_FORCE_PUBLISH_SOURCES = setOf(
+        "volume-expand-main-thread",
+        "volume-appear-main-thread",
+    )
     /** 音量元素（音量条 / ···按钮）玻璃折射强度衰减系数：小面积元素强折射在快照上放大成扭曲倒影。 */
     private const val VOLUME_REFRACTION_DAMP = 0.25f
     /** 音量元素色散衰减系数（0 = 关闭彩虹边）。 */
@@ -591,6 +592,9 @@ object BlurDrawHook {
     private const val METHOD_FORCE_DISMISS = "forceDismiss"
     /** 菜单主体容器字段（public final RoundFrameLayout，玻璃背景装在它上面）。 */
     private const val FIELD_MENU_MAIN_WRAPPER = "mMainMenuWrapper"
+    /** 菜单主体容器类（attach 期系统 blur 盖玻璃，需 attach 后重装玻璃）。 */
+    private const val CLASS_ROUND_FRAME_LAYOUT = "com.coui.appcompat.poplist.RoundFrameLayout"
+    private const val METHOD_ON_ATTACHED = "onAttachedToWindow"
     /** 承载窗根 / 弹窗内容根类名片段（排除防自采样判据，纯 contains 零反射）。 */
     private const val CLASS_HINT_MENU_PANEL_VIEW = "NotificationMenuPanelView"
     private const val CLASS_HINT_MENU_POPUP_ROOT = "COUIPopupMenuRootView"
@@ -612,6 +616,8 @@ object BlurDrawHook {
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记（方形/长条设备卡背景绑定卡片语义类） ----
     /** 设备中心卡片 View 类名后缀（`com.oplus.deviceplugin.sdk` 的方形/长条设备卡）。 */
     private const val SUFFIX_DEVICE_CARD_VIEW = "DeviceCardView"
+    /** 分组展开/回收动画覆盖层 View 类名后缀（语义复用通知卡预设行）。 */
+    private const val SUFFIX_GROUP_OVERLAY_CONTAINER_VIEW = "GroupOverlayContainerView"
     /** 设备中心卡片 hook 重读/诊断节流间隔（ms）。 */
     private const val DEVICE_CARD_DIAG_TTL_MS = 2_000L
     /** attach 后模糊背景后插的重扫延迟（ms，两拍：背景插入通常发生在首帧布局后）。 */
@@ -2134,6 +2140,9 @@ object BlurDrawHook {
     // ---- [doc/spec/135] 长按菜单玻璃状态 ----
     /** COUIPopupListWindow.show hook 是否已挂（install 幂等） */
     private var notificationPopupMounted = false
+    /** RoundFrameLayout.onAttachedToWindow 玻璃重装 hook 是否已挂 */
+    @Volatile
+    private var roundFrameAttachMounted = false
     /** COUIPopupListWindow dismiss/forceDismiss hook 是否已挂（install 幂等） */
     private var notificationPopupDismissMounted = false
     /** 长按菜单玻璃开关缓存（TTL [NOTIFICATION_POPUP_GLASS_TTL_MS] 重读） */
@@ -2168,6 +2177,9 @@ object BlurDrawHook {
     private var volumeDialogViewField: Field? = null
     @Volatile
     private var volumeDialogViewFieldResolved = false
+    /** OplusVolumeDialogView.volumeDialog 字段缓存（dismissH 判「弹窗真隐藏」用，mount 期一次解析） */
+    @Volatile
+    private var volumeDialogInternalField: Field? = null
 
     // ---- [doc/spec/134 第二轮] 面板去白底（独立开关）+ ···按钮玻璃状态 ----
     /** 面板去白底开关缓存（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读） */
@@ -2643,7 +2655,7 @@ object BlurDrawHook {
         mountQsSeekBarActiveDrawable(api, classLoader)
         // [doc/spec/09] 音量条液态玻璃化（hook COUIVerticalSeekBar.draw 盖玻璃，默认关）
         mountVolumeSeekBarGlass(api, classLoader)
-        // [doc/spec/134] 音量面板去白底（expandPanel 后面板背景换纯模糊，独立开关，默认关）
+        // [doc/spec/134] 音量面板背景替换（expandPanel 后面板背景换黑遮罩，独立开关，默认关）
         mountVolumePanelBackdropBackground(api, classLoader)
         // 音量弹窗 dismissH：消失即清音量窗排除登记（volumeGlassHost + sfc 缓存）
         mountVolumeDialogDismiss(api, classLoader)
@@ -4714,6 +4726,8 @@ object BlurDrawHook {
             val name = cur.javaClass.name
             if (name.endsWith(SUFFIX_DEVICE_CARD_VIEW)) return name
             if (SEEKBAR_HOST_SUFFIXES.any { name.endsWith(it) }) return name
+            // 分组展开/回收动画覆盖层：复用通知卡预设行（返回自身类名则预设表无该行仍 miss）
+            if (name.endsWith(SUFFIX_GROUP_OVERLAY_CONTAINER_VIEW)) return CLASS_NBV_EXT_IMP
             cur = cur.parent as? View
             depth++
         }
@@ -4724,7 +4738,12 @@ object BlurDrawHook {
     private fun renderSideCardClass(): String? {
         val host = drawHostStamp.get()?.get() ?: return null
         hostSemanticCardClass(host)?.let { return it }
-        return if (host.javaClass.name.contains("NotificationBackgroundView")) CLASS_NBV_EXT_IMP else null
+        val name = host.javaClass.name
+        return if (name.contains("NotificationBackgroundView") || name.contains(SUFFIX_GROUP_OVERLAY_CONTAINER_VIEW)) {
+            CLASS_NBV_EXT_IMP
+        } else {
+            null
+        }
     }
 
     /**
@@ -5891,6 +5910,7 @@ object BlurDrawHook {
         } ?: Rect(0, 0, bgView.width, bgView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
             logThrottled("nbv-skip-empty-bounds", Log.INFO) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
+            restoreNbvHostStamp(extImp)
             return
         }
         // [Bug 5 方向确认 2026-08-13] 登记 bgView：卡片尺寸/位置变化 → invalidate 宿主 → 重录 draw →
@@ -7694,14 +7714,13 @@ object BlurDrawHook {
         }
     }
 
-    // ------------------------------------------------------------ [doc/spec/134] 音量面板去白底 ------------------------------------------------------------
+    // ------------------------------------------------------------ [doc/spec/134] 音量面板背景替换 ------------------------------------------------------------
 
     /**
-     * 音量面板去白底 —— hook `OplusVolumeDialogView.expandPanel()` after：展开面板背景
-     * （AutoBlurDrawable，「后面那层模糊」= 白/调色底 + 模糊）替换为纯跨窗口模糊 drawable
-     * （ViewRootManager 同款机制，无调色层）→ 发白底色消失、模糊保留。每次 expandPanel 都重放
-     * （关→开切换后下一次展开系统自动恢复原背景，expandPanel 内无条件 setBackground）。
-     * 独立开关 [KEY_VOLUME_PANEL_BACKDROP]；反射失败兜底 = 置空背景（不崩优先）。
+     * 音量面板背景替换 —— hook `OplusVolumeDialogView.expandPanel()` after：展开面板背景
+     * （AutoBlurDrawable，白/调色底 + 模糊）替换为半透明黑遮罩（[VOLUME_PANEL_MASK_COLOR]）。
+     * 每次 expandPanel 都重放（关→开切换后下一次展开系统自动恢复原背景，expandPanel 内无条件 setBackground）。
+     * 独立开关 [KEY_VOLUME_PANEL_BACKDROP]。
      */
     private fun mountVolumePanelBackdropBackground(api: XposedInterface, classLoader: ClassLoader) {
         if (volumePanelCleanMounted) return
@@ -7740,19 +7759,56 @@ object BlurDrawHook {
         }
     }
 
-    /** hook `OplusVolumeDialogView.dismissH(int)`：弹窗消失后清音量窗排除登记，排除即撤。 */
+    /**
+     * hook `OplusVolumeDialogView.dismissH(int)`：弹窗真正消失后清音量窗排除登记（volumeGlassHost + sfc 缓存）。
+     * 系统侧 dismissH 被触摸事件流高频调用（isShowing/isDismissing 早退保证无害），清理必须守卫：
+     * ①身份——thisObject 与登记宿主须同一弹窗窗口（rootView 引用比对）；②状态——宿主已 detach
+     * 或弹窗真隐藏（volumeDialog.isShowing=false；反射失败只留 attach 判）。早退路径不清。
+     */
     private fun mountVolumeDialogDismiss(api: XposedInterface, classLoader: ClassLoader) {
         if (volumeDismissMounted) return
         try {
             val clazz = hostForName(CLASS_VOLUME_DIALOG_VIEW, classLoader)
+            volumeDialogInternalField = try {
+                clazz.getDeclaredField("volumeDialog").apply { isAccessible = true }
+            } catch (t: Throwable) {
+                Lg.w(TAG, "volume-dialog: volumeDialog field unresolved, hidden-check degraded", t)
+                null
+            }
             val method = clazz.getMethod(METHOD_DISMISS_H, Int::class.javaPrimitiveType)
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     val result = chain.proceed()
-                    volumeGlassHost = null
-                    volumeSfcCache = null
-                    Lg.i(TAG, "volume-dialog: dismissH -> host/sfc cleared")
+                    try {
+                        val thisView = chain.getThisObject() as? View
+                        val host = volumeGlassHost?.get()
+                        val sameDialog = thisView != null && host != null &&
+                            try {
+                                thisView.rootView != null && thisView.rootView === host.rootView
+                            } catch (t: Throwable) {
+                                false
+                            }
+                        val hostDetached = host == null || !host.isAttachedToWindow
+                        val showing = try {
+                            val dialog = volumeDialogInternalField?.get(thisView)
+                            (dialog?.javaClass?.getMethod("isShowing")?.invoke(dialog) as? Boolean)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                        if (sameDialog && (hostDetached || showing == false)) {
+                            volumeGlassHost = null
+                            volumeSfcCache = null
+                            Lg.i(TAG, "volume-dialog: dismissH -> host/sfc cleared")
+                        } else {
+                            logThrottled("volume-dialog-dismiss-skip", Log.INFO) {
+                                "volume-dialog: dismissH ignored (sameDialog=$sameDialog " +
+                                    "hostDetached=$hostDetached showing=$showing)"
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "volume-dialog: dismissH guard error", t)
+                    }
                     result
                 }
             volumeDismissMounted = true
@@ -7788,7 +7844,7 @@ object BlurDrawHook {
         return cachedVolumePanelClean
     }
 
-    /** 面板去白底开关（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读，改动无需重启 SystemUI）。 */
+    /** 面板黑遮罩开关（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读，切换无需重启 SystemUI）。 */
     private fun volumePanelBackdropEnabled(): Boolean {
         val now = SystemClock.uptimeMillis()
         if (now - cachedVolumePanelBackdropAtMs > VOLUME_PANEL_BACKDROP_TTL_MS) {
@@ -7814,7 +7870,7 @@ object BlurDrawHook {
         return cachedVolumePanelBackdrop
     }
 
-    /** 展开面板背景替换为纯模糊：双通道取 mDialogView（控制器反射 / obj 即 View）→ ViewRootManager 纯 blur drawable；失败置空兜底。 */
+    /** 展开面板背景替换为黑遮罩：双通道取 mDialogView（控制器反射 / obj 即 View）→ 半透明黑 ColorDrawable。 */
     private fun applyVolumePanelClean(dialogViewObj: Any?) {
         if (dialogViewObj == null) {
             logVolumeDiag(
@@ -7841,57 +7897,18 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             null
         }
-        // 背景未建（current==null）也继续：创建纯模糊并设置，避免系统白底出现后无人接管
-        if (current != null && current.javaClass.name == CLASS_FRAMEWORK_BLUR_DRAWABLE) {
+        if (current is ColorDrawable && current.color == VOLUME_PANEL_MASK_COLOR) {
             logVolumeDiag(
                 "panel-clean-skip",
-                "volume-panel-backdrop: skip —— 背景已是纯模糊 ${current.javaClass.simpleName}",
+                "volume-panel-backdrop: skip —— 背景已是黑遮罩",
             )
             return
         }
-        val corner = resolveVolumePanelCornerPx(dialogViewObj, dialogViewGroup)
-        val replacement = createPureBlurDrawable(dialogViewGroup, corner)
-        if (replacement != null) {
-            dialogViewGroup.background = replacement
-            logVolumeDiag(
-                "panel-clean-ok",
-                "volume-panel-backdrop: 面板背景已替换为纯模糊 corner=$corner from=${current?.javaClass?.simpleName ?: "null"}",
-            )
-        } else {
-            dialogViewGroup.background = null
-            logVolumeDiag(
-                "panel-clean-fallback",
-                "volume-panel-backdrop: 纯模糊创建失败，面板背景置空（白底与模糊均消失）",
-            )
-        }
-    }
-
-    /** 面板圆角 px：反射控制器 getCornerRadius()，失败按 24dp 折算（density 取容器 resources）。 */
-    private fun resolveVolumePanelCornerPx(cornerHost: Any, fallbackView: View): Float {
-        val density = fallbackView.resources.displayMetrics.density
-        return try {
-            val m = cornerHost.javaClass.getMethod("getCornerRadius")
-            (m.invoke(cornerHost) as? Float)?.takeIf { it > 0f }
-                ?: VOLUME_PANEL_CORNER_DP_FALLBACK * density
-        } catch (t: Throwable) {
-            VOLUME_PANEL_CORNER_DP_FALLBACK * density
-        }
-    }
-
-    /** 纯跨窗口模糊 drawable：ViewRootManager（与系统音量条背景同机制）只设半径+圆角、零调色层。 */
-    private fun createPureBlurDrawable(blurView: View, cornerRadius: Float): Drawable? {
-        return try {
-            val cls = hostForName("com.oplus.view.ViewRootManager", blurView.context.classLoader)
-            val rm = cls.getConstructor(View::class.java).newInstance(blurView)
-            cls.getMethod("setBlurRadius", Int::class.javaPrimitiveType)
-                .invoke(rm, VOLUME_PANEL_BLUR_RADIUS_PX)
-            cls.getMethod("setCornerRadius", Float::class.javaPrimitiveType)
-                .invoke(rm, cornerRadius)
-            cls.getMethod("getBackgroundBlurDrawable").invoke(rm) as? Drawable
-        } catch (t: Throwable) {
-            Lg.w(TAG, "volume-panel-clean: createPureBlurDrawable failed", t)
-            null
-        }
+        dialogViewGroup.background = ColorDrawable(VOLUME_PANEL_MASK_COLOR)
+        logVolumeDiag(
+            "panel-clean-ok",
+            "volume-panel-backdrop: 面板背景已替换为黑遮罩 color=0x14000000 from=${current?.javaClass?.simpleName ?: "null"}",
+        )
     }
 
     /** OplusVolumeDialogView.mDialogView 字段缓存（private，walk 声明链）。 */
@@ -8257,8 +8274,53 @@ object BlurDrawHook {
                 }
             notificationPopupMounted = true
             Lg.i(TAG, "Notification popup glass mounted: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_4ARG(int,int,View,boolean)")
+            mountRoundFrameAttachReapply(api, classLoader)
         } catch (t: Throwable) {
             Lg.w(TAG, "Notification popup glass mount FAILED: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_4ARG", t)
+        }
+    }
+
+    /**
+     * hook `RoundFrameLayout.onAttachedToWindow()`：菜单卡 attach 期 COUI 的 applyBlurBackground
+     * 会用系统 blur drawable 盖掉刚装的玻璃（首帧 draw 之前）——attach 回调后对当前菜单桥宿主重装。
+     * 非本菜单实例（非桥宿主）零干预；已是玻璃则跳过（防重复包装）。
+     */
+    private fun mountRoundFrameAttachReapply(api: XposedInterface, classLoader: ClassLoader) {
+        if (roundFrameAttachMounted) return
+        try {
+            val clazz = hostForName(CLASS_ROUND_FRAME_LAYOUT, classLoader)
+            val method = clazz.getMethod(METHOD_ON_ATTACHED)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val wrapper = chain.getThisObject() as? View
+                        val host = menuBridgeHost?.get()
+                        if (wrapper != null && wrapper === host && notificationPopupGlassEnabled()) {
+                            val bg = try {
+                                wrapper.background
+                            } catch (t: Throwable) {
+                                null
+                            }
+                            if (bg !is NotificationPopupGlassDrawable) {
+                                val corner = resolveMenuCornerPx(wrapper)
+                                wrapper.background = NotificationPopupGlassDrawable(wrapper, bg, corner)
+                                logThrottled("menu-attach-reapply", Log.INFO) {
+                                    "notif-popup: glass reapplied on attach host=${wrapper.javaClass.simpleName} " +
+                                        "corner=$corner from=${bg?.javaClass?.simpleName ?: "null"}"
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "notif-popup: attach reapply error", t)
+                    }
+                    result
+                }
+            roundFrameAttachMounted = true
+            Lg.i(TAG, "RoundFrameLayout attach reapply mounted: $CLASS_ROUND_FRAME_LAYOUT#$METHOD_ON_ATTACHED()")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "RoundFrameLayout attach reapply mount FAILED: $CLASS_ROUND_FRAME_LAYOUT#$METHOD_ON_ATTACHED", t)
         }
     }
 
@@ -8630,6 +8692,8 @@ object BlurDrawHook {
             maskOffsetX = 0f,
             maskOffsetY = 0f,
             maskAlpha = 0f,  // 桌面流体云无 shade 遮罩（遮罩仅作用于 SystemUI 下拉）
+            sourceSizeX = source.width.toFloat(),
+            sourceSizeY = source.height.toFloat(),
         )
         appliedUniformsMap[id] = AppliedKey(
             frame = 0L, sourceBitmapId = System.identityHashCode(source),
@@ -12687,6 +12751,9 @@ object BlurDrawHook {
                 metaBalls = mbNow,
                 // [doc/spec/112] 通知卡倾斜角（0 = 恒等零变化；动画期每帧更新）
                 tiltRadians = tiltNow,
+                // 快照位图尺寸（越界判定上界）；null 快照帧传 0 = shader 只判负方向
+                sourceSizeX = bindBitmap?.width?.toFloat() ?: 0f,
+                sourceSizeY = bindBitmap?.height?.toFloat() ?: 0f,
             )
             appliedUniformsMap[id] = AppliedKey(
                 frame, sourceBitmapId, viewport, bindSrcRect, cg.maskRect,
@@ -13089,6 +13156,9 @@ object BlurDrawHook {
             metaBalls = mbNow,
             // [doc/spec/112] 通知卡倾斜角（0 = 恒等零变化）
             tiltRadians = tiltNow,
+            // 快照位图尺寸（越界判定上界）
+            sourceSizeX = bindBitmap.width.toFloat(),
+            sourceSizeY = bindBitmap.height.toFloat(),
         )
         // 记录已应用状态（R1：后续每帧 refresh 据此判断是否重设 uniform）
         appliedUniformsMap[region.id] = AppliedKey(
@@ -14398,15 +14468,23 @@ object BlurDrawHook {
             // fp==0 = 位图不可读（硬件位图等）→ 按「有变化」处理，保证不错过更新。
             val fp = snapshotContentFingerprint(bg.bitmap)
             if (fp != 0 && fp == lastSnapshotFingerprint) {
-                if (mainThreadSync) {
-                    logThrottled("sync-capture-unchanged", Log.INFO) {
-                        "bg-element: sync capture unchanged, frame dropped (source=$source)"
+                // 关键 UI 事件（音量展开/出现）的同步补抓不被指纹否决：脏基准滞留时
+                // 强制发布本帧（连 postInvalidateHosts），指纹去重只挡高频路径
+                if (mainThreadSync && source in SYNC_CAPTURE_FORCE_PUBLISH_SOURCES) {
+                    logThrottled("sync-capture-force-publish", Log.INFO) {
+                        "bg-element: sync capture force-published (source=$source, fingerprint unchanged)"
                     }
+                } else {
+                    if (mainThreadSync) {
+                        logThrottled("sync-capture-unchanged", Log.INFO) {
+                            "bg-element: sync capture unchanged, frame dropped (source=$source)"
+                        }
+                    }
+                    logThrottled("snapshot-unchanged", Log.DEBUG) {
+                        "bg-element: snapshot unchanged, frame dropped (no invalidate)"
+                    }
+                    return
                 }
-                logThrottled("snapshot-unchanged", Log.DEBUG) {
-                    "bg-element: snapshot unchanged, frame dropped (no invalidate)"
-                }
-                return
             }
             lastSnapshotFingerprint = fp
             // [spec/127 多尺度源] 帧发布链预构建 1/16 降采样档（worker 线程，渲染线程只取引用）
