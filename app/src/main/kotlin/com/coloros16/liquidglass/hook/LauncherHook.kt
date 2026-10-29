@@ -212,6 +212,22 @@ object LauncherHook {
     /** 卡片玻璃开关重读间隔（ms）。 */
     private const val CARD_GLASS_TTL_MS = 500L
 
+    // ---- 最近任务清除按钮玻璃（View 级渲染接管：该按钮全链零 blur，不走 posteffect 漏斗） ----
+    /** 最近任务清除钮面板容器（onFinishInflate 后读 public 字段 mClearAllBtn 捕获按钮实例）。 */
+    private const val CLASS_CLEAR_ALL_PANEL_VIEW = "com.oplus.quickstep.views.OplusClearAllPanelView"
+    /** 面板内清除钮字段（反编译实证 `public PressFeedbackButton mClearAllBtn`）。 */
+    private const val FIELD_CLEAR_ALL_BTN = "mClearAllBtn"
+    /** 按压反馈处理器（launcher 全库按钮共用；drawPressedColor = 平色 Paint 圆角矩形）。 */
+    private const val CLASS_PRESS_FEEDBACK_HANDLER = "com.android.launcher.togglebar.animation.PressFeedbackHandler"
+    /** 按压底色绘制方法（PressFeedbackButton.onDraw 先调它再画文字 → 在此盖玻璃不遮「清除」字样）。 */
+    private const val METHOD_DRAW_PRESSED_COLOR = "drawPressedColor"
+    /** handler 持有的宿主 View 私有字段（白名单判定：仅清除钮实例接管）。 */
+    private const val FIELD_PFH_HOST_VIEW = "mView"
+    /** 清除钮语义类（GlassRegistry 登记键，预设按「最近任务清除按钮」行命中）。 */
+    private const val CLASS_CLEAR_ALL_BUTTON = "com.android.launcher.views.PressFeedbackButton"
+    /** 清除钮玻璃开关重读间隔（ms）。 */
+    private const val CLEAR_ALL_BTN_GLASS_TTL_MS = 500L
+
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
     /** [doc/spec/42 2026-08-13] Launcher 抓屏「只抓壁纸层」UID 过滤：setUid 语义 = 只抓
@@ -393,6 +409,48 @@ object LauncherHook {
     @Volatile
     private var cachedCardGlassAtMs = 0L
 
+    // ---- PressFeedback 玻璃接管（白名单驱动共享机制：drawPressedColor 一次挂载，
+    //      按宿主白名单圈定接管范围；新宿主 = 白名单加条目 + 捕获挂点 + 开关行，零新绘制 hook） ----
+
+    /** 白名单条目：宿主捕获槽 + 预设登记类 + 玻璃开关。 */
+    private class PressGlassSlot(
+        /** 宿主身份标签（日志用） */
+        val name: String,
+        /** GlassRegistry 预设登记键（按组件行命中） */
+        val cardClass: String,
+        /** 本条目玻璃开关（TTL volatile 各自缓存） */
+        val enabled: () -> Boolean,
+    ) {
+        /** 捕获的宿主 View（该宿主捕获挂点写入；WeakReference 防泄漏） */
+        @Volatile
+        var hostRef: WeakReference<View>? = null
+
+        /** 命中判定：拦截到的按压宿主是否本条目捕获的实例（引用身份比较）。 */
+        fun matches(view: View): Boolean = hostRef?.get() === view
+    }
+
+    /** 清除钮条目（白名单第一条目；宿主 = OplusClearAllPanelView.btn_clear）。 */
+    private val clearAllBtnSlot = PressGlassSlot(
+        name = "clear-all-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { clearAllBtnGlassEnabled() },
+    )
+
+    /** 白名单表：drawPressedColor 拦截逐条匹配，未命中 → 原绘制。 */
+    private val pressGlassSlots = listOf(clearAllBtnSlot)
+
+    /** PressFeedbackHandler.mView 私有字段（白名单判定反射）。 */
+    private var mPfhHostViewField: Field? = null
+    /** PressFeedbackHandler.getMRadius()（平色圆角；解析失败回退 min(w,h)/2）。 */
+    private var mPfhGetRadius: Method? = null
+    /** PressFeedback 玻璃绘制专用 Paint（每帧绑定 shader，finally 清空防残留到其他绘制）。 */
+    private val pressGlassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    /** 清除钮玻璃开关缓存（TTL 见 [CLEAR_ALL_BTN_GLASS_TTL_MS]，热路径不每帧读 Prefs）。 */
+    @Volatile
+    private var cachedClearAllBtnGlass = false
+    @Volatile
+    private var cachedClearAllBtnGlassAtMs = 0L
+
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
     private val shaderCache = ConcurrentHashMap<Int, RuntimeShader>()
@@ -569,6 +627,8 @@ object LauncherHook {
         mountPageIndicatorGlass(api, classLoader)
         // [doc/spec/78] 桌面卡片/分组卡片/小组件背景玻璃化（Launcher 侧此前唯一未映射的模糊产生点）
         mountCardBlurGlass(api, classLoader)
+        // PressFeedback 平色家族玻璃接管（白名单驱动；当前条目：最近任务清除钮）
+        mountPressFeedbackGlass(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
         // [doc/spec/83] 开/关/文件夹动画的壁纸缩放信号（镜像折算玻璃采样窗）
@@ -2112,6 +2172,164 @@ object LauncherHook {
         } else if (previous.region != region) {
             screenRegionMap[key] = entry
             // 位置/尺寸更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
+        }
+    }
+
+    // ------------------------------------------------------------ PressFeedback 玻璃接管（白名单驱动共享机制）
+
+    /**
+     * PressFeedback 平色家族玻璃接管 —— 共享挂点。按钮背景是 PressFeedbackHandler 的平色
+     * Paint 圆角矩形/圆形（全链零 blur，不走 posteffect 漏斗）→ 必须 View 级接管。
+     * handler 被 launcher 全库按钮共用（widget 面板等）→ **必须 [pressGlassSlots] 白名单圈定**，
+     * 未命中一律原绘制。玻璃绘制/bounds 跟随/快照失效回落全部收在共享路径
+     * [drawPressGlassOnCanvas]；新宿主接入 = 白名单加 [PressGlassSlot] 条目 + 该宿主的
+     * 捕获挂点 + 开关行，零新绘制 hook。任何解析/绘制失败只回退系统平色，不崩 Launcher。
+     */
+    private fun mountPressFeedbackGlass(api: XposedInterface, classLoader: ClassLoader) {
+        // ① 各宿主捕获挂点（按钮实例就绪时点 → 写入白名单槽）
+        mountClearAllBtnCapture(api)
+        // ② 共享拦截：drawPressedColor 白名单命中 → 玻璃顶掉平色（不 proceed）；未命中原样
+        try {
+            val handlerCls = hostForName(CLASS_PRESS_FEEDBACK_HANDLER)
+            mPfhHostViewField = handlerCls.getDeclaredField(FIELD_PFH_HOST_VIEW).apply { isAccessible = true }
+            mPfhGetRadius = handlerCls.getMethod(METHOD_GET_M_RADIUS)
+            val method = handlerCls.getDeclaredMethod(METHOD_DRAW_PRESSED_COLOR, Canvas::class.java)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    var glassDrawn = false
+                    try {
+                        val view = mPfhHostViewField?.get(chain.getThisObject()) as? View
+                        if (view != null) {
+                            val slot = pressGlassSlots.firstOrNull { it.matches(view) }
+                            if (slot != null && slot.enabled()) {
+                                val canvas = chain.getArgs()?.getOrNull(0) as? Canvas
+                                if (canvas != null) {
+                                    val radius = try {
+                                        (mPfhGetRadius?.invoke(chain.getThisObject()) as? Float) ?: 0f
+                                    } catch (t: Throwable) {
+                                        0f
+                                    }
+                                    glassDrawn = drawPressGlassOnCanvas(canvas, view, radius, slot)
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "launcher press-glass: drawPressedColor intercept error", t)
+                    }
+                    if (!glassDrawn) chain.proceed()
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_PRESSED_COLOR(Canvas) (press-feedback glass whitelist)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_PRESSED_COLOR, press-feedback glass disabled", t)
+        }
+    }
+
+    /** 清除钮捕获挂点：面板 onFinishInflate 后读 public 字段 mClearAllBtn 写入白名单槽。
+     *  挂失败只禁清除钮条目（共享拦截照挂，供其他条目使用）。 */
+    private fun mountClearAllBtnCapture(api: XposedInterface) {
+        try {
+            val panel = hostForName(CLASS_CLEAR_ALL_PANEL_VIEW)
+            val field = panel.getField(FIELD_CLEAR_ALL_BTN)
+            val method = panel.getMethod("onFinishInflate")
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val btn = field.get(chain.getThisObject()) as? View
+                        if (btn != null) {
+                            clearAllBtnSlot.hostRef = WeakReference(btn)
+                            Lg.i(TAG, "launcher press-glass: ${clearAllBtnSlot.name} captured (${btn.javaClass.name})")
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher press-glass: read mClearAllBtn failed", t)
+                    }
+                    result
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_CLEAR_ALL_PANEL_VIEW#onFinishInflate (${clearAllBtnSlot.name} capture)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_CLEAR_ALL_PANEL_VIEW#onFinishInflate, ${clearAllBtnSlot.name} glass disabled", t)
+        }
+    }
+
+    /** 清除钮玻璃开关（TTL [CLEAR_ALL_BTN_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
+    private fun clearAllBtnGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedClearAllBtnGlassAtMs > CLEAR_ALL_BTN_GLASS_TTL_MS) {
+            cachedClearAllBtnGlassAtMs = now
+            cachedClearAllBtnGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read clear_all_btn_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedClearAllBtnGlass
+    }
+
+    /** 在按压宿主的 onDraw canvas 上画液态玻璃（坐标系 = 按钮局部坐标，无需平移）。
+     *  返回 true = 已画玻璃（拦截侧跳过原平色）；false = 任一门控/快照失败，回退原平色（零黑屏）。
+     *  每帧全量重绑 uniform（单个小按钮，成本可忽略）。 */
+    private fun drawPressGlassOnCanvas(canvas: Canvas, btn: View, handlerRadius: Float, slot: PressGlassSlot): Boolean {
+        if (isPowerSaveGlassOff()) return false
+        if (!slot.enabled()) return false
+        if (!Prefs.glassEnabled(api)) return false
+        val w = btn.width
+        val h = btn.height
+        if (w <= 0 || h <= 0) return false
+        if (!btn.isAttachedToWindow) return false
+        val id = System.identityHashCode(btn)
+        GlassRegistry.bind(id, btn, slot.cardClass)
+        registerHostView(btn)
+        val loc = IntArray(2)
+        try {
+            btn.getLocationOnScreen(loc)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher press-glass: ${slot.name} getLocationOnScreen failed", t)
+            return false
+        }
+        val region = RectF(
+            loc[0].toFloat(),
+            loc[1].toFloat(),
+            (loc[0] + w).toFloat(),
+            (loc[1] + h).toFloat(),
+        )
+        val renderSource = resolveRenderSource(id, region)
+        if (renderSource == null) {
+            logRenderMode(id, "BLUR", "no snapshot source")
+            return false
+        }
+        val corner = if (handlerRadius > 0f) handlerRadius else minOf(w, h) / 2f
+        val params = buildParams(w.toFloat(), h.toFloat(), corner, elementId = id)
+        val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
+        shaderOwnerSet.add(shader)
+        if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        val tier = LowResTier.tierShaderOf(renderSource.source, renderSource.srcRect, wantDiv)
+        LiquidGlassShader.setUniforms(
+            shader, params, sourceShader, tier?.shader ?: sourceShader,
+            sourceRect = renderSource.srcRect,
+            lowResSourceRect = tier?.lowResSrcRect ?: renderSource.srcRect,
+        )
+        return try {
+            canvas.save()
+            try {
+                pressGlassPaint.shader = shader
+                canvas.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), corner, corner, pressGlassPaint)
+            } finally {
+                pressGlassPaint.shader = null
+                canvas.restore()
+            }
+            logRenderMode(id, "GLASS")
+            true
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher press-glass: ${slot.name} draw failed", t)
+            logRenderMode(id, "BLUR", "draw failed")
+            false
         }
     }
 

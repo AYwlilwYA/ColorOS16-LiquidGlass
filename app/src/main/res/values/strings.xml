@@ -290,6 +290,8 @@
     <string name="settings_assistant_screen_glass_desc">给速览（负一屏）的卡片和控件加玻璃效果。</string>
     <string name="settings_gallery_shader_probe">相册采样范围探针（实验）</string>
     <string name="settings_gallery_shader_probe_desc">临时替换相册背景模糊做诊断：元素边缘出现红色环＝模糊取到了元素外面的背景（可以做真折射），绿色环＝只取到元素内的内容。开启后相册背景会变清晰并带一圈色环，关掉即恢复原模糊。</string>
+    <string name="settings_clear_all_btn_glass">最近任务清除按钮</string>
+    <string name="settings_clear_all_btn_glass_desc">把最近任务页底部的「清除全部」按钮变成液态玻璃。开启后立即生效，无需重启桌面。</string>
 
     <!-- 组件位置描述（类清单/管理对话框里「在哪里的」一句话） -->
     <string name="loc_blur_drawable">通知中心与控制中心的多类卡片共用背景</string>
@@ -321,6 +323,7 @@
     <string name="loc_smart_sidebar">智能侧边栏的主面板</string>
     <string name="loc_vertical_seekbar">竖向滑条（音量条等）</string>
     <string name="loc_horizontal_seekbar">横向滑条</string>
+    <string name="loc_clear_all_button">最近任务页底部的清除全部按钮</string>
 
     <!-- iOS 动态倾斜 / 透视（doc/spec/65，2026-09-16，实验性） -->
     <string name="cat_tilt">倾斜与透视</string>
