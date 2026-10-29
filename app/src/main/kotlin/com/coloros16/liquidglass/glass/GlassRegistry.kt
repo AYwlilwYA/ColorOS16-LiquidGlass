@@ -264,6 +264,9 @@ object GlassRegistry {
     /** 按元素 identityHashCode 取类全名；未登记 → null（渲染侧回落全局参数）。 */
     fun classOf(elementId: Int): String? = bound[elementId]?.name
 
+    /** 按元素 identityHashCode 取卡片语义类（如通知卡/磁贴）；未登记或无语义类 → null。 */
+    fun cardClassOf(elementId: Int): String? = bound[elementId]?.cardClass
+
     /** 类全名 → 中文标签（语义来自各 hook mount 处的反编译确认）。 */
     private val CLASS_LABELS = mapOf(
         "com.oplus.posteffect.BlurDrawable" to "通用模糊背景（多卡共用）",

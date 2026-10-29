@@ -583,7 +583,8 @@ object BlurDrawHook {
     // ---- [doc/spec/135] 通知长按菜单玻璃 + 承载窗排除 ----
     /** 长按菜单窗口类（菜单卡本体，独立 PopupWindow）。 */
     private const val CLASS_COUI_POPUP_LIST_WINDOW = "com.coui.appcompat.poplist.COUIPopupListWindow"
-    private const val METHOD_SHOW_VIEW_BOOL = "show"
+    /** show 真身（show(View,boolean) 全体只有一行委托到这里，挂它单点覆盖全部重载）。 */
+    private const val METHOD_SHOW_4ARG = "show"
     private const val METHOD_DISMISS = "dismiss"
     private const val METHOD_FORCE_DISMISS = "forceDismiss"
     /** 菜单主体容器字段（public final RoundFrameLayout，玻璃背景装在它上面）。 */
@@ -599,6 +600,12 @@ object BlurDrawHook {
     private const val NOTIFICATION_POPUP_HOST_ACTIVE_MS = 5_000L
     /** 菜单桥默认 blendShape（px）：系统长按路径只写 blendRange=1（1px 无可见桥），本侧合成取 demo 基准。 */
     private const val MENU_BRIDGE_BLEND_SHAPE_PX = 30f
+
+    // ---- [doc/spec/141] 通用邻近黏连一期 ----
+    /** 邻近触发阈值（vp）：间隙 < 此值互注合成伴球；常量不进 Prefs（二期按控件开关另行）。 */
+    private const val PROXIMITY_BRIDGE_GAP_VP = 60f
+    /** 邻近扫描活跃通知卡元素上限：超过则跳过扫描 + 一次性节流诊断（对数 ≤120，微秒级）。 */
+    private const val MAX_PROXIMITY_ACTIVE = 16
 
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记（方形/长条设备卡背景绑定卡片语义类） ----
     /** 设备中心卡片 View 类名后缀（`com.oplus.deviceplugin.sdk` 的方形/长条设备卡）。 */
@@ -5083,6 +5090,128 @@ object BlurDrawHook {
         }
     }
 
+    /**
+     * [doc/spec/141 一期] 通用邻近黏连：对 screenRegionMap 内活跃通知卡两两测方向感知支撑间隙
+     * （demo support() 公式：(hw−r)·|ux|+(hh−r)·|uy|+r），类对白名单命中且间隙 < 60vp →
+     * 互注合成伴球（快照 copy 零污染、只追加不改系统参数、k=30）。
+     *
+     * 白名单一期只认通知卡对（hostViewName==NOTIF_CARD_HOST_NAME 且 GlassRegistry.cardClassOf
+     * 同值）；跨类一律不黏。菜单↔克隆卡对由 applyMenuBridge 显式注入，克隆卡在自身与候选两侧
+     * 均跳过（防重复伴球）。
+     * 注入守卫：目标 entry.metaBall 非 null（系统 metaball 底座，含 spec/103 sticky hold）——
+     * 静置通知卡 blendRange=0 无底座且 drawable bounds 无扩充区，桥区必被 viewport 绘制裁掉
+     * （spec/100 §11.7 同语义），跳过 + 节流诊断，不硬造。
+     */
+    private fun applyProximityBridge(
+        key: Int,
+        entry: RegionEntry,
+        previous: RegionEntry?,
+        bgView: View,
+        region: RectF,
+    ) {
+        val vpW = entry.autoBounds.width().toFloat()
+        val vpH = entry.autoBounds.height().toFloat()
+        if (vpW < 1f || vpH < 1f) return
+        // 只对通知卡链生效（调用点即通知卡注册链；宿主名再验一道防误伤同名扩展）
+        if (entry.hostViewName != NOTIF_CARD_HOST_NAME) return
+        // 白名单（spec/141 §一.3）：同 cardClass 才互黏；自身未绑语义类 → 不扫
+        val selfCardClass = GlassRegistry.cardClassOf(key) ?: return
+        // 克隆卡（承载窗内）伴球位归 applyMenuBridge 独有，跳过防重复注入
+        val rootName = try {
+            bgView.rootView.javaClass.name
+        } catch (t: Throwable) {
+            ""
+        }
+        if (rootName.contains(CLASS_HINT_MENU_PANEL_VIEW)) return
+        // 收集活跃通知卡条目（弱引用存活 + 非退化 region），超上限跳过扫描
+        val active = ArrayList<Pair<Int, RegionEntry>>(MAX_PROXIMITY_ACTIVE + 1)
+        for ((k, e) in screenRegionMap) {
+            if (k == key) continue
+            if (e.hostViewName != NOTIF_CARD_HOST_NAME) continue
+            // 白名单（spec/141 §一.3）：候选与自身同 cardClass 才可互注
+            if (GlassRegistry.cardClassOf(k) != selfCardClass) continue
+            val eView = e.hostViewRef?.get() ?: continue
+            if (e.region.width() <= 0f || e.region.height() <= 0f) continue
+            // 克隆卡（承载窗内）伴球位归 applyMenuBridge 独有：候选侧同样排除
+            val eRoot = try {
+                eView.rootView.javaClass.name
+            } catch (t: Throwable) {
+                ""
+            }
+            if (eRoot.contains(CLASS_HINT_MENU_PANEL_VIEW)) continue
+            active.add(k to e)
+            if (active.size > MAX_PROXIMITY_ACTIVE) {
+                logThrottled("proximity-bridge", Log.INFO) {
+                    "proximity-bridge: active cards > $MAX_PROXIMITY_ACTIVE, scan skipped"
+                }
+                return
+            }
+        }
+        if (active.isEmpty()) return
+        val thresholdPx = PROXIMITY_BRIDGE_GAP_VP * bgView.resources.displayMetrics.density
+        val selfCx = region.left + vpW * 0.5f
+        val selfCy = region.top + vpH * 0.5f
+        val selfHw = vpW * 0.5f
+        val selfHh = vpH * 0.5f
+        val selfR = minOf(entry.cornerRadius, selfHw, selfHh).coerceAtLeast(0f)
+        var merged: MetaBallSnapshot? = null
+        for ((otherKey, other) in active) {
+            val oRegion = other.region
+            val oHw = oRegion.width() * 0.5f
+            val oHh = oRegion.height() * 0.5f
+            val oCx = oRegion.left + oHw
+            val oCy = oRegion.top + oHh
+            val dx = oCx - selfCx
+            val dy = oCy - selfCy
+            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+            // 方向感知支撑距离（demo support() 同式）；重叠（dist=0）视为贴死 → 必黏
+            val gap = if (dist < 0.01f) {
+                -minOf(selfHw, selfHh)
+            } else {
+                val ux = dx / dist
+                val uy = dy / dist
+                val oR = minOf(other.cornerRadius, oHw, oHh).coerceAtLeast(0f)
+                val supportSelf = (selfHw - selfR) * kotlin.math.abs(ux) +
+                    (selfHh - selfR) * kotlin.math.abs(uy) + selfR
+                val supportOther = (oHw - oR) * kotlin.math.abs(ux) +
+                    (oHh - oR) * kotlin.math.abs(uy) + oR
+                dist - supportSelf - supportOther
+            }
+            if (gap >= thresholdPx) continue
+            val snap = merged ?: entry.metaBall
+            if (snap == null) {
+                logThrottled("proximity-bridge", Log.INFO) {
+                    "proximity-bridge: near pair (gap=${gap.toInt()}px) but no metaball base, " +
+                        "skip id=$key other=$otherKey"
+                }
+                continue
+            }
+            // 邻居中心折算进本 viewport 局部坐标（MbBall 语义：相对 viewport 中心）；只追加伴球
+            val oW = oRegion.width()
+            val oH = oRegion.height()
+            val posX = oCx - region.left - vpW * 0.5f
+            val posY = oCy - region.top - vpH * 0.5f
+            val ball = MbBall(posX, posY, oW * 0.5f, oH * 0.5f, MENU_BRIDGE_BLEND_SHAPE_PX)
+            val companions = (snap.companions + ball).take(2)
+            merged = snap.copy(companions = companions)
+            // 系统快照伴球已满 2 颗（take(2) 封顶丢新球）→ 不算注入命中
+            if (companions.lastOrNull() !== ball) {
+                logThrottled("proximity-bridge", Log.DEBUG) {
+                    "proximity-bridge: id=$key other=$otherKey gap=${gap.toInt()}px " +
+                        "slots full (2 companions), ball dropped"
+                }
+                continue
+            }
+            logThrottled("proximity-bridge", Log.DEBUG) {
+                "proximity-bridge: id=$key <- other=$otherKey gap=${gap.toInt()}px " +
+                    "ball=pos(${posX.toInt()},${posY.toInt()}) half(${(oW / 2).toInt()}x${(oH / 2).toInt()})"
+            }
+        }
+        val result = merged ?: return
+        entry.metaBall = result
+        if (previous != null && previous !== entry) previous.metaBall = result
+    }
+
     // ------------------------------------------------------------ 强制透明诊断档：背景 scrim（决策 7）
 
     /**
@@ -5441,6 +5570,8 @@ object BlurDrawHook {
         applyMetaBall(key, entry, previous, target)
         // [doc/spec/135] 长按菜单黏连桥：菜单在屏时把菜单卡注入克隆卡 metaball 快照（内部自判条件）
         applyMenuBridge(key, entry, previous, bgView, region)
+        // [doc/spec/141 一期] 通用邻近黏连：同 cardClass 近邻通知卡互注合成伴球（内部自判条件）
+        applyProximityBridge(key, entry, previous, bgView, region)
         // [性能·日志节流] 映射变化才写表；coord 明细只在首次注册打（追踪器重录时每帧回调不刷屏）
         // [doc/spec/24 任务 B 2026-08-13] 内容变化检测：仅新卡片首次出现（previous==null）触发整屏快照
         // 重抓；位置/尺寸更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手，滚动无需
@@ -7310,34 +7441,25 @@ object BlurDrawHook {
         return cachedVolumePanelBackdrop
     }
 
-    /** 展开面板背景替换为纯模糊：mDialogView → ViewRootManager 纯 blur drawable；失败置空兜底。 */
+    /** 展开面板背景替换为纯模糊：双通道取 mDialogView（控制器反射 / obj 即 View）→ ViewRootManager 纯 blur drawable；失败置空兜底。 */
     private fun applyVolumePanelClean(dialogViewObj: Any?) {
-        val dv = dialogViewObj as? View ?: run {
+        if (dialogViewObj == null) {
             logVolumeDiag(
                 "panel-clean-skip",
-                "volume-panel-backdrop: skip —— dialogViewObj 非 View obj=${dialogViewObj?.javaClass?.name}",
+                "volume-panel-backdrop: skip —— dialogViewObj 为 null",
             )
             return
         }
+        val dv = dialogViewObj as? View
         val dialogViewGroup = try {
-            val f = volumeDialogViewField(dv.javaClass) ?: run {
-                logVolumeDiag(
-                    "panel-clean-skip",
-                    "volume-panel-backdrop: skip —— mDialogView 字段解析失败 cls=${dv.javaClass.name}",
-                )
-                return
-            }
-            f.get(dv) as? android.view.ViewGroup
+            val f = volumeDialogViewField(dialogViewObj.javaClass)
+            (f?.get(dialogViewObj) as? android.view.ViewGroup) ?: (dv as? android.view.ViewGroup)
         } catch (t: Throwable) {
-            logVolumeDiag(
-                "panel-clean-skip",
-                "volume-panel-backdrop: skip —— mDialogView 读取失败 ${t.javaClass.simpleName}",
-            )
-            return
+            null
         } ?: run {
             logVolumeDiag(
                 "panel-clean-skip",
-                "volume-panel-backdrop: skip —— mDialogView 非 ViewGroup 或为 null",
+                "volume-panel-backdrop: skip —— mDialogView 解析失败 obj=${dialogViewObj.javaClass.name} dv=${dv?.javaClass?.name ?: "null"}",
             )
             return
         }
@@ -7354,7 +7476,7 @@ object BlurDrawHook {
             )
             return
         }
-        val corner = resolveVolumePanelCornerPx(dv)
+        val corner = resolveVolumePanelCornerPx(dialogViewObj, dialogViewGroup)
         val replacement = createPureBlurDrawable(dialogViewGroup, corner)
         if (replacement != null) {
             dialogViewGroup.background = replacement
@@ -7371,14 +7493,15 @@ object BlurDrawHook {
         }
     }
 
-    /** 面板圆角 px：反射 OplusVolumeDialogView.getCornerRadius()，失败按 24dp 折算。 */
-    private fun resolveVolumePanelCornerPx(dialogView: View): Float {
+    /** 面板圆角 px：反射控制器 getCornerRadius()，失败按 24dp 折算（density 取容器 resources）。 */
+    private fun resolveVolumePanelCornerPx(cornerHost: Any, fallbackView: View): Float {
+        val density = fallbackView.resources.displayMetrics.density
         return try {
-            val m = dialogView.javaClass.getMethod("getCornerRadius")
-            (m.invoke(dialogView) as? Float)?.takeIf { it > 0f }
-                ?: VOLUME_PANEL_CORNER_DP_FALLBACK * dialogView.resources.displayMetrics.density
+            val m = cornerHost.javaClass.getMethod("getCornerRadius")
+            (m.invoke(cornerHost) as? Float)?.takeIf { it > 0f }
+                ?: VOLUME_PANEL_CORNER_DP_FALLBACK * density
         } catch (t: Throwable) {
-            VOLUME_PANEL_CORNER_DP_FALLBACK * dialogView.resources.displayMetrics.density
+            VOLUME_PANEL_CORNER_DP_FALLBACK * density
         }
     }
 
@@ -7743,7 +7866,11 @@ object BlurDrawHook {
                 Lg.w(TAG, "notif-popup: field $FIELD_MENU_MAIN_WRAPPER not found, glass degraded")
                 null
             }
-            val method = clazz.getMethod(METHOD_SHOW_VIEW_BOOL, View::class.java, Boolean::class.javaPrimitiveType)
+            val method = clazz.getMethod(
+                METHOD_SHOW_4ARG,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                View::class.java, Boolean::class.javaPrimitiveType,
+            )
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
@@ -7756,9 +7883,9 @@ object BlurDrawHook {
                     result
                 }
             notificationPopupMounted = true
-            Lg.i(TAG, "Notification popup glass mounted: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_VIEW_BOOL(View,boolean)")
+            Lg.i(TAG, "Notification popup glass mounted: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_4ARG(int,int,View,boolean)")
         } catch (t: Throwable) {
-            Lg.e(TAG, "Notification popup glass mount FAILED: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_VIEW_BOOL", t)
+            Lg.w(TAG, "Notification popup glass mount FAILED: $CLASS_COUI_POPUP_LIST_WINDOW#$METHOD_SHOW_4ARG", t)
         }
     }
 
@@ -7889,12 +8016,25 @@ object BlurDrawHook {
     private fun renderNotificationPopupGlass(canvas: Canvas, host: View, cornerPx: Float) {
         val w = host.width
         val h = host.height
-        if (w <= 0 || h <= 0) return
-        if (host.alpha <= 0.01f || !host.isShown) return
+        if (w <= 0 || h <= 0) {
+            logThrottled("notif-popup-draw", Log.INFO) {
+                "notif-popup: draw skip —— size ${w}x${h}"
+            }
+            return
+        }
+        if (host.alpha <= 0.01f || !host.isShown) {
+            logThrottled("notif-popup-draw", Log.INFO) {
+                "notif-popup: draw skip —— alpha=${host.alpha} shown=${host.isShown}"
+            }
+            return
+        }
         val loc = IntArray(2)
         try {
             host.getLocationOnScreen(loc)
         } catch (t: Throwable) {
+            logThrottled("notif-popup-draw", Log.INFO) {
+                "notif-popup: draw skip —— getLocationOnScreen ${t.javaClass.simpleName}"
+            }
             return
         }
         val screenRegion = RectF(
@@ -7915,7 +8055,13 @@ object BlurDrawHook {
         val orig: Drawable?,
         private val cornerPx: Float,
     ) : Drawable() {
+        private var drawLogged = false
+
         override fun draw(canvas: Canvas) {
+            if (!drawLogged) {
+                drawLogged = true
+                Lg.i(BlurDrawHook.TAG, "notif-popup: drawable draw invoked host=${host.javaClass.simpleName} ${host.width}x${host.height} alpha=${host.alpha} shown=${host.isShown}")
+            }
             if (BlurDrawHook.notificationPopupGlassEnabled()) {
                 try {
                     BlurDrawHook.renderNotificationPopupGlass(canvas, host, cornerPx)
@@ -7923,6 +8069,8 @@ object BlurDrawHook {
                 } catch (t: Throwable) {
                     Lg.e(BlurDrawHook.TAG, "notif-popup: glass draw failed", t)
                 }
+            } else {
+                logThrottled("notif-popup-draw", Log.INFO) { "notif-popup: draw —— switch off, orig background" }
             }
             orig?.let {
                 it.setBounds(bounds)
@@ -8056,8 +8204,14 @@ object BlurDrawHook {
     ) {
         // [spec/85 省电模式] 省电开启 → 不画 canvas 玻璃（覆盖 CardBackgroundView / Simple Banner 等
         // 所有走本函数的注入点）
-        if (isPowerSaveGlassOff()) return
-        if (w <= 0 || h <= 0) return
+        if (isPowerSaveGlassOff()) {
+            logThrottled("seedling-draw-skip", Log.INFO) { "seedling-card: draw skip —— power-save id=$id" }
+            return
+        }
+        if (w <= 0 || h <= 0) {
+            logThrottled("seedling-draw-skip", Log.INFO) { "seedling-card: draw skip —— size ${w}x${h} id=$id" }
+            return
+        }
         GlassRegistry.bind(id, host)
         val entry = screenRegionMap[id] ?: run {
             logThrottled("seedling-nomap", Log.WARN, 500L) { "seedling-card: ABORT no region map id=$id" }
@@ -9005,6 +9159,16 @@ object BlurDrawHook {
      *  worker 退出，停止语义不变。 */
     private fun isSimpleBannerHostActive(): Boolean {
         val host = simpleBannerActiveHost?.get() ?: return false
+        return try {
+            host.isAttachedToWindow
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** 音量弹窗宿主活跃：dismissH 清 volumeGlassHost 即停（不留 TTL，防静置面板期误停持续抓）。 */
+    private fun isVolumeHostActive(): Boolean {
+        val host = volumeGlassHost?.get() ?: return false
         return try {
             host.isAttachedToWindow
         } catch (t: Throwable) {
@@ -10336,13 +10500,14 @@ object BlurDrawHook {
                 if (isKeyguardLockedNow() && !isHeadsUpHostActive() && !panelExpansionActive) {
                     logThrottled("lg-batt-periodic-lock-skip", Log.DEBUG) { "lg-batt: periodic lock-screen skip" }
                 } else {
-                    // 瞬态场景：heads-up 横幅 / 流体云展开卡 / simple-banner 活跃期间绕过兜底判定无条件抓屏，
+                    // 瞬态场景：heads-up 横幅 / 流体云展开卡 / simple-banner / 音量弹窗 活跃期间绕过兜底判定无条件抓屏，
                     // 并以高频（continuousCaptureIntervalMs = panel_capture_hz）续跑本 Runnable。
-                    // 这三种玻璃悬浮在内容之上、底层随时在变，内容变化信号对它们不可靠（横幅不走
+                    // 这几种玻璃悬浮在内容之上、底层随时在变，内容变化信号对它们不可靠（横幅不走
                     // onBlurReady）→ 静止期零抓屏会冻结背景。抓屏照旧高频，下游由内容指纹比对挡无效帧。
                     forceCaptureScene = isHeadsUpHostActive() ||
                         isCardBackgroundHostActive() ||
-                        isSimpleBannerHostActive()
+                        isSimpleBannerHostActive() ||
+                        isVolumeHostActive()
                     if (forceCaptureScene) {
                         // 面板自身在渲染时让路（面板有它自己的抓屏通道覆盖），其余一律强制抓；
                         // 区域级抓屏开关开 → 只抓瞬态元素并集 bbox（存独立缓冲），否则整屏
@@ -13852,6 +14017,11 @@ object BlurDrawHook {
             // fp==0 = 位图不可读（硬件位图等）→ 按「有变化」处理，保证不错过更新。
             val fp = snapshotContentFingerprint(bg.bitmap)
             if (fp != 0 && fp == lastSnapshotFingerprint) {
+                if (mainThreadSync) {
+                    logThrottled("sync-capture-unchanged", Log.INFO) {
+                        "bg-element: sync capture unchanged, frame dropped (source=$source)"
+                    }
+                }
                 logThrottled("snapshot-unchanged", Log.DEBUG) {
                     "bg-element: snapshot unchanged, frame dropped (no invalidate)"
                 }
@@ -13867,11 +14037,21 @@ object BlurDrawHook {
             }
             val exclTag = if (shade?.isValid == true) "excl shade" else "force full"
             logThrottled("snapshot-captured", Log.INFO) { "bg-element: snapshot captured ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()} ($exclTag, source=$source)" }
+            if (mainThreadSync) {
+                logThrottled("sync-capture-ok", Log.INFO) {
+                    "bg-element: sync capture ok ${bg.bitmap.width}x${bg.bitmap.height} $exclTag (source=$source)"
+                }
+            }
             postInvalidateHosts()
         } else {
             // capture 失败 → 「失败重试」开关决定：开=有界重试（320ms×3 后短暂冷却）；关=静默等下次事件。
             // 区域模式保留上一帧区域快照，下一 tick 自然重试。
             if (mainThreadSync) diagFirstLog("fail-capture", " source=$source")
+            if (mainThreadSync) {
+                logThrottled("sync-capture-fail", Log.INFO) {
+                    "bg-element: sync capture failed —— bg null (source=$source, realShadeValid=$realShadeValid)"
+                }
+            }
             if (regionBBox != null) {
                 logThrottled("region-capture-fail", Log.DEBUG) { "bg-element: region capture failed, keep previous region snapshot" }
             } else if (bgCaptureRetryEnabled()) {
