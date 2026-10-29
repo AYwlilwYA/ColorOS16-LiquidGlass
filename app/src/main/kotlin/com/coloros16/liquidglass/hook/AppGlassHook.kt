@@ -179,7 +179,7 @@ object AppGlassHook {
                 }
                 if (view != null) {
                     registerElement(view, view.javaClass.name, "A")
-                    if (probeEnabled()) {
+                    if (switchKey == Prefs.KEY_GALLERY_GLASS && probeEnabled()) {
                         val probe = try {
                             AppGlassProbeShader.createEffect(view.width, view.height)
                         } catch (t: Throwable) {
