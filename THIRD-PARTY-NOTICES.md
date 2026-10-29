@@ -35,3 +35,12 @@
 ## 其他依赖
 
 项目通过 Gradle 依赖的第三方库（AndroidX、Material Components、Kotlin 标准库、LibXposed API 等）遵循各自许可证，其声明随依赖产物分发。
+
+
+## Android Developers / AOSP · GPU 位图快照
+
+通知粒子功能中 HardwareRenderer、ImageReader、HardwareBuffer 的资源使用顺序参考
+[Android Developers 的加速图像迁移示例](https://developer.android.com/guide/topics/renderscript/migrate)。
+示例代码依据 [Android 站点许可](https://developer.android.com/license) 按 Apache License 2.0 提供；
+副本见 licenses/Apache-2.0.txt。相关实现位于 ParticleDissolveHook.kt，修改日期 2026-10-29，
+新增取消、排队上限与通知窗口生命周期处理。粒子流场与碎化 AGSL 为本次独立实现，继续按项目 GPLv3 分发。

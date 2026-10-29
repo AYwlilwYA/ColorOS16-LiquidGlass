@@ -1,0 +1,25 @@
+{
+  "upstreamBase": "10d40ce4ac1543f97e5ebbb7bbdd2f8ef6b45030",
+  "releaseAndDebugBuild": true,
+  "unitTestsPassed": 4,
+  "lintErrors": 159,
+  "sameBaseLintErrors": 159,
+  "newLintErrors": 0,
+  "originalGpuBlurUnchanged": true,
+  "cpuBlurIntroduced": false,
+  "physicalDeviceTested": false,
+  "referenceVideoBundled": false,
+  "gpuProbe": {
+    "scaledSnapshotCoordinates": true,
+    "coverage": "[64325, 46085, 11981, 0]",
+    "escapedPixels": 1894,
+    "shaderCompiled": true,
+    "zeroProgressIdentity": true,
+    "endTransparent": true,
+    "detachReleasesOverlay": true,
+    "hardwareSnapshot": true,
+    "cancelReleasesOverlay": true,
+    "completionReleasesOverlay": true,
+    "physicalDeviceTested": false
+  }
+}
