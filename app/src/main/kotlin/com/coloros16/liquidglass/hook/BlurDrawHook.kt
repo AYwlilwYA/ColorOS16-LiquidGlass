@@ -3571,6 +3571,8 @@ object BlurDrawHook {
         val weight: Float?,
         /** 我们最后一次写入的统一半径（判定「系统是否又改过」与跳过重复写） */
         var lastWritten: Float,
+        /** 本影子对应写入是否为按类圆角覆盖（覆盖删除 / 总开关关时单条还原的判据） */
+        var fromOverride: Boolean = false,
     )
 
     /** [doc/spec/106] 共享 pathProvider 影子（QS 磁贴 StdQSResPool.tileOutline 全磁贴共用一个实例）：
@@ -3600,6 +3602,13 @@ object BlurDrawHook {
     /** [doc/spec/106] 写穿重入防护：getBlurDrawable(PlatformStatic) 会 ensureBlurDrawable，其创建回调里
      *  又会跑一次 applyConfigToPlatformBlur（同线程重入）→ 直接短路 */
     private val unifiedCornerWriting = ThreadLocal.withInitial { false }
+
+    /** [doc/spec/143] 覆盖写穿是否有活跃影子：false = 本会话从未写过覆盖 → 还原检查零成本跳过 */
+    @Volatile
+    private var overrideShadowActive = false
+
+    /** [doc/spec/143] 元素 id → 上次写穿的覆盖半径：注册期每帧快判，命中 = 零反射跳过写穿核心 */
+    private val overrideCornerWritten = ConcurrentHashMap<Int, Float>()
 
     /**
      * [doc/spec/101] 统一界面圆角作用域白名单判定（**注册期算一次**，写入 [RegionEntry.unifiedScope]）。
@@ -3828,6 +3837,45 @@ object BlurDrawHook {
      *          调用方需在 proceed 之后强制重建一次 path，否则磁贴模糊层仍按旧圆角画。
      */
     private fun applyUnifiedCornerToProxy(vbp: Any): Boolean {
+        // [doc/spec/143] 覆盖写穿 Layer B：显式类级圆角覆盖优先，不读统一圆角开关、不设锁屏门。
+        // desired 走 [resolveUnifiedCornerRadius] 同函数（写侧与 shader 永远同值）；覆盖已删 /
+        // 总开关关 → 先单条还原影子再落原逻辑（§六）。ov==null 且无覆盖影子时本段只多一次
+        // target 解析 + 覆盖表查询（applyConfig 期成本，spec/143 §七）。
+        val targetB = resolveProxyPostEffectDrawable(vbp)
+        if (targetB != null) {
+            val ovB = GlassRegistry.cornerOverrideFor(System.identityHashCode(targetB))
+            if (ovB != null) {
+                if (Prefs.glassEnabled(api)) {
+                    val viewB = try {
+                        mViewBlurProxyViewField?.get(vbp) as? View
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    if (viewB != null) {
+                        val boundsB = resolveProxyCornerBounds(targetB, viewB)
+                        val wB = boundsB.width().toFloat()
+                        val hB = boundsB.height().toFloat()
+                        if (wB > 0f && hB > 0f) {
+                            val idB = System.identityHashCode(targetB)
+                            val entryB = screenRegionMap[idB] ?: RegionEntry(
+                                RectF(0f, 0f, wB, hB),
+                                boundsB,
+                                viewB.javaClass.name,
+                                ovB,
+                                "override",
+                                unifiedScope = isUnifiedCornerScope(viewB, targetB, "map"),
+                            )
+                            val desiredB = resolveUnifiedCornerRadius(entryB, ovB, idB, wB, hB)
+                            if (desiredB > 0f) return applyCornerWriteThrough(vbp, desiredB, "layerB")
+                        }
+                    }
+                } else {
+                    restoreCornerOverrideShadow(vbp)
+                }
+            } else if (overrideShadowActive) {
+                restoreCornerOverrideShadow(vbp)
+            }
+        }
         // 门 1：开关。OFF → 只做 OFF 边沿回写；从未写穿时 [restoreUnifiedCornerIfApplied]
         // 第一行布尔判断即返回 = 纯 return（零新分配、零新日志，spec/101 §七 回归保证第 1 条）。
         if (!Prefs.unifiedCornerEnabled(api)) {
@@ -3953,6 +4001,222 @@ object BlurDrawHook {
         }
     }
 
+    /** [doc/spec/143] 覆盖写穿核心（Layer A/B 共用）：desired 已由调用方按
+     *  [resolveUnifiedCornerRadius] 算好（写侧与 shader 永远同值），本函数只负责
+     *  采影子 + 写穿 + 重跑，幂等沿用 shadow.lastWritten。
+     *  @return true = 本次改了系统圆角（Layer B 供 mount hook proceed 后 invalidatePath；Layer A 忽略返回值） */
+    private fun applyCornerWriteThrough(vbp: Any, desired: Float, pathTag: String): Boolean {
+        if (unifiedCornerWriting.get() == true) {
+            logThrottled("lg-143-reenter", Log.DEBUG) {
+                "corner-override: re-entrant call short-circuited path=$pathTag"
+            }
+            return false
+        }
+        unifiedCornerWriting.set(true)
+        try {
+            // [doc/spec/108 M1] 反射未全量解析 → 一个字节都不写（宁可不生效，也不留半拉子状态）
+            if (mBlurConfigSetCornerRadius == null || mBlurConfigSetLeftTopCornerRadius == null ||
+                mBlurConfigSetRightTopCornerRadius == null || mBlurConfigSetLeftBottomCornerRadius == null ||
+                mBlurConfigSetRightBottomCornerRadius == null || mBlurConfigCornerRadiusField == null
+            ) {
+                logThrottled("lg-143-noreflect", Log.WARN) {
+                    "corner-override: write reflection not fully resolved, nothing written path=$pathTag"
+                }
+                return false
+            }
+            val cfg = try {
+                mViewBlurProxyBlurConfigField?.get(vbp)
+            } catch (t: Throwable) {
+                null
+            }
+            if (cfg == null) {
+                logThrottled("lg-143-nocfg", Log.WARN) {
+                    "corner-override: BlurConfig field null, skip path=$pathTag (fieldResolved=${mViewBlurProxyBlurConfigField != null})"
+                }
+                return false
+            }
+            val view = try {
+                mViewBlurProxyViewField?.get(vbp) as? View
+            } catch (t: Throwable) {
+                null
+            }
+            if (view == null) {
+                logThrottled("lg-143-noview", Log.WARN) {
+                    "corner-override: host View null, skip path=$pathTag (fieldResolved=${mViewBlurProxyViewField != null})"
+                }
+                return false
+            }
+            val target = resolveProxyPostEffectDrawable(vbp)
+            val bounds = resolveProxyCornerBounds(target, view)
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            if (w <= 0f || h <= 0f) {
+                logThrottled("lg-143-nobounds", Log.WARN) {
+                    "corner-override: invalid bounds $bounds, skip path=$pathTag (${view.javaClass.name})"
+                }
+                return false
+            }
+            val elementId = System.identityHashCode(target)
+            val key = System.identityHashCode(cfg)
+            val curLeftTop = reflectFloatGetter(mBlurConfigGetLeftTopCornerRadius, cfg)
+            val existing = unifiedCornerShadow[key]
+            if (existing != null && curLeftTop == existing.lastWritten) {
+                // 系统没再改过圆角：只在 desired 变了（覆盖值改 / 元素尺寸变化改 cap）时重写
+                if (desired == existing.lastWritten) {
+                    existing.fromOverride = true
+                    return false
+                }
+                logThrottled("lg-143-rewrite", Log.INFO) {
+                    "corner-override: radius change ${existing.lastWritten} -> $desired path=$pathTag (${view.javaClass.name})"
+                }
+                existing.fromOverride = true
+                writeUnifiedCornerToConfig(cfg, desired, existing)
+                existing.lastWritten = desired
+                unifiedCornerApplied = true
+                overrideShadowActive = true
+                overrideCornerWritten[elementId] = desired
+                applyBlurConfigAndInvalidate(vbp)
+                return true
+            }
+            // 首次写穿 / 系统又改过圆角 → 重新采集原值（沿用旧影子会把系统的新原值弄丢）
+            val info = if (existing != null) {
+                restoreUnifiedCornerIfApplied()
+                cornerRadiusCache.remove(System.identityHashCode(vbp))
+                resolveCornerRadiusUncached(vbp, bounds, view)
+            } else {
+                resolveCornerRadius(vbp, bounds, view)
+            }
+            if (info.radius <= 0f || info.source == "default") {
+                // 读不到可信原值（反射链全挂 / 兜底默认值）→ 不写
+                logThrottled("lg-143-noown", Log.WARN) {
+                    "corner-override: no trustworthy own radius (src=${info.source}), skip path=$pathTag (${view.javaClass.name})"
+                }
+                return false
+            }
+            val shadow = captureUnifiedCornerShadow(key, cfg, vbp, info, curLeftTop, desired, fromOverride = true)
+            logThrottled("lg-143-write", Log.INFO) {
+                "corner-override: write-through path=$pathTag own=${info.radius}(${info.source}) -> $desired cap=${minOf(w, h) / 2f} w=${w.toInt()}h=${h.toInt()}"
+            }
+            writeUnifiedCornerToConfig(cfg, desired, shadow)
+            unifiedCornerApplied = true
+            overrideShadowActive = true
+            overrideCornerWritten[elementId] = desired
+            applyBlurConfigAndInvalidate(vbp)
+            return true
+        } catch (t: Throwable) {
+            logThrottled("lg-143-error", Log.WARN) {
+                "corner-override: write failed path=$pathTag ${t.javaClass.simpleName}"
+            }
+            return false
+        } finally {
+            unifiedCornerWriting.set(false)
+        }
+    }
+
+    /** [doc/spec/143] 写后重跑：applyBlurConfig 让系统按新 config 重建，invalidatePath 兜共享 pathProvider。 */
+    private fun applyBlurConfigAndInvalidate(vbp: Any) {
+        val apply = mViewProxyApplyBlurConfig
+        if (apply == null) {
+            logThrottled("lg-143-apply-null", Log.WARN) {
+                "corner-override: applyBlurConfig reflection unresolved, config written but not re-applied"
+            }
+        } else {
+            try {
+                apply.invoke(vbp)
+            } catch (t: Throwable) {
+                logThrottled("lg-143-apply", Log.WARN) {
+                    "corner-override: re-applyBlurConfig failed ${t.javaClass.simpleName}"
+                }
+            }
+        }
+        try {
+            mViewProxyInvalidatePath?.invoke(vbp)
+        } catch (t: Throwable) {
+            // 部分 blurType 无 posteffect path，失败无害
+        }
+    }
+
+    /** [doc/spec/143 §六] 单条还原：覆盖删除 / 总开关关时把该 config 的系统原值写回并重跑。 */
+    private fun restoreCornerOverrideShadow(vbp: Any) {
+        if (!overrideShadowActive) return
+        if (unifiedCornerWriting.get() == true) {
+            logThrottled("lg-143-restore-reenter", Log.DEBUG) {
+                "corner-override: restore re-entrant call short-circuited"
+            }
+            return
+        }
+        unifiedCornerWriting.set(true)
+        try {
+            val cfg = try {
+                mViewBlurProxyBlurConfigField?.get(vbp)
+            } catch (t: Throwable) {
+                null
+            }
+            if (cfg == null) return
+            val key = System.identityHashCode(cfg)
+            val sh = unifiedCornerShadow[key]
+            if (sh == null || !sh.fromOverride) return
+            val cfgRestoreReady = mBlurConfigSetLeftTopCornerRadius != null &&
+                mBlurConfigSetRightTopCornerRadius != null &&
+                mBlurConfigSetLeftBottomCornerRadius != null &&
+                mBlurConfigSetRightBottomCornerRadius != null &&
+                mBlurConfigCornerRadiusField != null
+            if (!cfgRestoreReady) {
+                logThrottled("lg-143-restore-noreflect", Log.WARN) {
+                    "corner-override: restore reflection not fully resolved, shadow kept key=$key"
+                }
+                return
+            }
+            // 四角可能不等 → 逐角回写 + cornerRadius 字段精修
+            mBlurConfigSetLeftTopCornerRadius?.invoke(cfg, sh.leftTop)
+            mBlurConfigSetRightTopCornerRadius?.invoke(cfg, sh.rightTop)
+            mBlurConfigSetLeftBottomCornerRadius?.invoke(cfg, sh.leftBottom)
+            mBlurConfigSetRightBottomCornerRadius?.invoke(cfg, sh.rightBottom)
+            mBlurConfigCornerRadiusField?.setFloat(cfg, sh.cornerRadius)
+            if (sh.cornerParamsRadius > 0f) {
+                try {
+                    val cp = mBlurConfigGetGradientStrokeCornerParam?.invoke(cfg)
+                    if (cp != null) mCornerParamsSetRadius?.invoke(cp, sh.cornerParamsRadius)
+                } catch (t: Throwable) {
+                    // CONIC 还原失败无害：主体四角已还原
+                }
+            }
+            unifiedCornerShadow.remove(key)
+            val target = resolveProxyPostEffectDrawable(vbp)
+            if (target != null) overrideCornerWritten.remove(System.identityHashCode(target))
+            overrideShadowActive = unifiedCornerShadow.values.any { it.fromOverride }
+            if (unifiedCornerShadow.isEmpty() && unifiedProviderShadow.isEmpty()) unifiedCornerApplied = false
+            logThrottled("lg-143-restore", Log.INFO) {
+                "corner-override: single shadow restored key=$key own=${sh.cornerRadius}"
+            }
+            applyBlurConfigAndInvalidate(vbp)
+        } catch (t: Throwable) {
+            logThrottled("lg-143-restore-fail", Log.WARN) {
+                "corner-override: restore failed ${t.javaClass.simpleName}"
+            }
+        } finally {
+            unifiedCornerWriting.set(false)
+        }
+    }
+
+    /** [doc/spec/143 §5.3 Layer A] 注册期补写：覆盖值改后 ≤1s 收敛（注册链每次 draw 都跑）。 */
+    private fun applyCornerOverrideAtRegister(proxy: Any, elementId: Int, entry: RegionEntry, w: Float, h: Float, pathTag: String) {
+        val ov = GlassRegistry.cornerOverrideFor(elementId)
+        if (ov != null) {
+            if (!Prefs.glassEnabled(api)) return
+            val desired = resolveUnifiedCornerRadius(entry, ov, elementId, w, h)
+            if (desired <= 0f) return
+            val cached = overrideCornerWritten[elementId]
+            if (cached != null && desired == cached) return  // 每帧零反射快判
+            val wrote = applyCornerWriteThrough(proxy, desired, pathTag)
+            logThrottled("lg-143-reg", Log.INFO) {
+                "corner-override: register write path=$pathTag id=$elementId ov=$ov desired=$desired wrote=$wrote"
+            }
+        } else if (overrideShadowActive) {
+            restoreCornerOverrideShadow(proxy)
+        }
+    }
+
     /** [doc/spec/106] 登记影子（写穿前的系统原值）。超限先清死条目，仍超则全量回写后清表。 */
     private fun captureUnifiedCornerShadow(
         key: Int,
@@ -3961,6 +4225,7 @@ object BlurDrawHook {
         info: CornerInfo,
         leftTop: Float,
         written: Float,
+        fromOverride: Boolean = false,
     ): UnifiedCornerShadow {
         if (unifiedCornerShadow.size >= UNIFIED_CORNER_SHADOW_MAX) {
             unifiedCornerShadow.entries.removeAll { it.value.cfgRef.get() == null }
@@ -3996,6 +4261,7 @@ object BlurDrawHook {
                 null
             },
             lastWritten = written,
+            fromOverride = fromOverride,
         )
         unifiedCornerShadow[key] = shadow
         return shadow
@@ -4160,6 +4426,9 @@ object BlurDrawHook {
         }
         unifiedCornerShadow.clear()
         unifiedProviderShadow.clear()
+        // [doc/spec/143] 覆盖影子随全量还原一并作废，否则快判缓存恒命中 → 永久错位
+        overrideShadowActive = false
+        overrideCornerWritten.clear()
         logThrottled("lg-ucorner-restore", Log.INFO) {
             "unified-corner: switch OFF, restored $restoredConfigs BlurConfig + $restoredProviders pathProvider" +
                 " to system originals (failed cfg=$failedConfigs) (spec/108 m5)"
@@ -4852,6 +5121,7 @@ object BlurDrawHook {
             unifiedScope = isUnifiedCornerScope(hostView, target, logTag),
             sourceTag = logTag,
         )
+        applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-$logTag")
         val previous = screenRegionMap[key]
         val coreSeenMs = SystemClock.uptimeMillis()
         entry.lastSeenMs = coreSeenMs
@@ -5661,6 +5931,7 @@ object BlurDrawHook {
         previous?.lastSeenMs = notifSeenMs
         // 每帧重绑（幂等，同 clazz 只 touch）：动画态重建的 target 换实例后 cardClass 不丢
         GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
+        applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-nbv")
         // [doc/spec/99] 每次绘制都刷新 clip（父容器 clip 随动画/布局逐帧可能变）：
         // map 快照 + 新 entry 镜像 + 稳态仍存活的旧 entry 镜像（region/bounds 未变时不换 entry）。
         applyHostClip(key, entry, previous, hostClip)

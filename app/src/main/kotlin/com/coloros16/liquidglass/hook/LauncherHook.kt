@@ -125,6 +125,7 @@ object LauncherHook {
     private const val FIELD_MBG_VIEW = "mBgView"
     private const val FIELD_MRADIUS = "mRadius"
     private const val CLASS_LAYER_BLUR_DRAWABLE = "com.android.launcher3.uioverrides.states.blurdrawable.LayerBlurDrawable"
+    private const val CLASS_ITEM_INFO = "com.android.launcher3.model.data.ItemInfo"
     /** LayerBlurDrawable 私有字段（反编译 L62：`private final BlurDrawable mBlurDrawable`），
      *  与 drawBlurShader 的 this 同一实例。用字段反射避免 Kotlin getter 名歧义。 */
     private const val FIELD_MBLUR_DRAWABLE = "mBlurDrawable"
@@ -371,6 +372,24 @@ object LauncherHook {
     private var mGetFrivRadius: Method? = null
     private var mLayerCls: Class<*>? = null
     private var mLayerBlurInnerField: Field? = null
+
+    // [doc/spec/143] 桌面覆盖写穿：LayerBlurDrawable.setCornerRadius 四参写口
+    //（名字优先，17.3.12 按形状指纹；解析/调用失败只禁写口，不崩不劣化）
+    private var mLayerSetCornerRadius: Method? = null
+    /** 写口失败后置 true，后续注册零反射直接跳过 */
+    private var launcherCornerWriteDisabled = false
+
+    /** [doc/spec/143] 桌面覆盖写穿影子：元素 id → 写穿前系统原角 / 我们最后写入值 */
+    private class LauncherCornerShadow(
+        val layerRef: WeakReference<Any>,
+        /** 写穿前系统原角（= 注册期 resolvedCorner） */
+        val original: Float,
+        /** 我们最后一次写入的角（幂等比对） */
+        var lastWritten: Float,
+    )
+
+    private val launcherCornerShadow = ConcurrentHashMap<Int, LauncherCornerShadow>()
+    private const val LAUNCHER_CORNER_SHADOW_MAX = 32
 
     // [doc/spec/66] Dock 借壳反射（解析失败只禁 Dock 玻璃，不影响文件夹）
     private var mCreateBlurDrawable: Method? = null
@@ -667,6 +686,41 @@ object LauncherHook {
             Lg.i(TAG, "LauncherHook resolved OplusPreviewBackground/LayerBlurDrawable fields (folder icon map)")
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook resolve folder icon fields failed, folder icon map disabled", t)
+        }
+        // [doc/spec/143] 覆盖写穿写口：LayerBlurDrawable.setCornerRadius(float, boolean, ItemInfo, boolean)。
+        // 名字优先；17.3.12 R8 混淆时按形状指纹扫描（float, boolean, 非primitive, boolean）→ void；仍失败只禁写口。
+        try {
+            val layerCls = mLayerCls ?: Class.forName(CLASS_LAYER_BLUR_DRAWABLE, false, classLoader)
+            val itemInfoCls = Class.forName(CLASS_ITEM_INFO, false, classLoader)
+            val byName = try {
+                layerCls.getMethod(
+                    "setCornerRadius",
+                    Float::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+                    itemInfoCls, Boolean::class.javaPrimitiveType,
+                )
+            } catch (t: Throwable) {
+                null
+            }
+            mLayerSetCornerRadius = byName ?: layerCls.methods.firstOrNull { m ->
+                val ps = m.parameterTypes
+                ps.size == 4 &&
+                    ps[0] == Float::class.javaPrimitiveType &&
+                    ps[1] == Boolean::class.javaPrimitiveType &&
+                    !ps[2].isPrimitive &&
+                    ps[3] == Boolean::class.javaPrimitiveType &&
+                    m.returnType == Void.TYPE
+            }
+            if (mLayerSetCornerRadius != null) {
+                Lg.i(
+                    TAG,
+                    "LauncherHook resolved LayerBlurDrawable.setCornerRadius " +
+                        "(${if (byName != null) "by-name" else "by-fingerprint"}) (corner write-through)",
+                )
+            } else {
+                Lg.w(TAG, "LauncherHook setCornerRadius not found by name or fingerprint, corner write-through disabled")
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "LauncherHook resolve setCornerRadius failed, corner write-through disabled", t)
         }
         // 闭合文件夹图标常态映射反射（FolderRoundImageView.onDraw → imageDrawable → 内层 BlurDrawable）
         try {
@@ -1491,7 +1545,7 @@ object LauncherHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
-        registerBlurRegion(inner, sw, resolveDockCornerPx(sw))
+        registerBlurRegion(inner, sw, resolveDockCornerPx(sw), blurLayerForCorner = drawable)
     }
 
     /** [doc/spec/66] Dock 玻璃圆角 px：系统 `createBlurDrawable`（`OplusHotseat:203`）取
@@ -1586,6 +1640,7 @@ object LauncherHook {
         registerBlurRegion(
             inner, indicator, corner,
             hostName = "PageIndicator", cardClass = CLASS_OPLUS_PAGE_INDICATOR,
+            blurLayerForCorner = layer,
         )
     }
 
@@ -1667,6 +1722,7 @@ object LauncherHook {
             registerBlurRegion(
                 inner, target, readCardCornerPx(target),
                 hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+                blurLayerForCorner = target.background,
             )
             return
         }
@@ -1720,6 +1776,7 @@ object LauncherHook {
                     registerBlurRegion(
                         innerNow, v, readCardCornerPx(v),
                         hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+                        blurLayerForCorner = v.background,
                     )
                 } catch (t: Throwable) {
                     Lg.e(TAG, "launcher card: deferred map failed", t)
@@ -2123,13 +2180,15 @@ object LauncherHook {
 
     /** 公共注册：内层 BlurDrawable → screenRegionMap（region = hostView 屏幕位置 + 尺寸，corner = 圆角）。
      *  [hostName] 标识宿主来源，用于日志与 RegionEntry.hostViewName（默认 FolderIcon 保持既有调用点行为）。
-     *  [cardClass] 该元素所属的卡片语义类（问小布/桌面卡片），随 bind 登记供预设按组件命中。 */
+     *  [cardClass] 该元素所属的卡片语义类（问小布/桌面卡片），随 bind 登记供预设按组件命中。
+     *  [blurLayerForCorner] LayerBlurDrawable 实例（覆盖写穿写口；不传 = 该宿主不参与写穿）。 */
     private fun registerBlurRegion(
         inner: Any,
         hostView: View,
         corner: Float,
         hostName: String = "FolderIcon",
         cardClass: String? = null,
+        blurLayerForCorner: Any? = null,
     ) {
         if (!hostView.isAttachedToWindow) {
             logCardDiag("$hostName-not-attached", "coord: $hostName 跳过 —— 宿主 ${hostView.javaClass.name} 未 attach")
@@ -2156,6 +2215,7 @@ object LauncherHook {
         val key = System.identityHashCode(inner)
         GlassRegistry.bind(key, inner, cardClass)
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
+        applyLauncherCornerWrite(blurLayerForCorner, key, resolvedCorner, bw.toFloat(), bh.toFloat(), "$hostName")
         registerHostView(hostView)
         val entry = RegionEntry(region, Rect(0, 0, bw, bh), hostName, resolvedCorner)
         val previous = screenRegionMap[key]
@@ -2173,6 +2233,83 @@ object LauncherHook {
             screenRegionMap[key] = entry
             // 位置/尺寸更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
         }
+    }
+
+    /** [doc/spec/143 §5.3] 桌面 Layer A 覆盖写穿：ov 非空且总开关开 → desired 写进
+     *  LayerBlurDrawable.setCornerRadius（内部写 mBlurDrawable path 圆角）；ov 空 / 总开关关
+     *  且此前写过 → 影子回写系统原值。desired 对齐渲染侧 cap 公式（短边一半封顶）。
+     *  任何解析/调用失败只禁写口，不崩不劣化（玻璃角照变、容器不跟 = 现状）。 */
+    private fun applyLauncherCornerWrite(
+        layer: Any?,
+        id: Int,
+        resolvedCorner: Float,
+        w: Float,
+        h: Float,
+        hostTag: String,
+    ) {
+        val ov = GlassRegistry.cornerOverrideFor(id)
+        val existing = launcherCornerShadow[id]
+        if (ov == null || !Prefs.glassEnabled(api)) {
+            if (existing != null) restoreLauncherCornerShadow(id, existing, hostTag)
+            return
+        }
+        if (layer == null || launcherCornerWriteDisabled) return
+        val method = mLayerSetCornerRadius
+        if (method == null) {
+            launcherCornerWriteDisabled = true
+            Lg.w(TAG, "launcher corner-write: setCornerRadius unresolved, write-through disabled")
+            return
+        }
+        val desired = ov.coerceAtMost(minOf(w, h) / 2f)
+        if (existing != null && existing.lastWritten == desired) return
+        try {
+            // 对齐系统 tag 路径形态（CardBackgroundBlurManager mask=8：isFolder=false、itemInfo=null、isHotseat=false）
+            method.invoke(layer, desired, false, null, false)
+        } catch (t: Throwable) {
+            launcherCornerWriteDisabled = true
+            Lg.w(TAG, "launcher corner-write: setCornerRadius invoke failed, write-through disabled", t)
+            return
+        }
+        if (existing != null) {
+            existing.lastWritten = desired
+        } else {
+            if (launcherCornerShadow.size >= LAUNCHER_CORNER_SHADOW_MAX) restoreAllLauncherCorners()
+            launcherCornerShadow[id] = LauncherCornerShadow(WeakReference(layer), resolvedCorner, desired)
+        }
+        Lg.i(TAG, "launcher corner-write: $hostTag id=$id own=$resolvedCorner -> $desired")
+    }
+
+    /** [doc/spec/143 §六] 单条还原：影子回写系统原值（layer 已被 GC 时只清影子）。 */
+    private fun restoreLauncherCornerShadow(id: Int, shadow: LauncherCornerShadow, hostTag: String) {
+        val layer = shadow.layerRef.get()
+        val method = mLayerSetCornerRadius
+        if (layer != null && method != null) {
+            try {
+                method.invoke(layer, shadow.original, false, null, false)
+                Lg.i(TAG, "launcher corner-write: $hostTag id=$id restored -> ${shadow.original}")
+            } catch (t: Throwable) {
+                Lg.w(TAG, "launcher corner-write: $hostTag id=$id restore invoke failed", t)
+            }
+        }
+        launcherCornerShadow.remove(id)
+    }
+
+    /** [doc/spec/143 §六] 影子表满：先全量回写再清（防「写穿值滞留系统、还原依据被丢」）。 */
+    private fun restoreAllLauncherCorners() {
+        if (launcherCornerShadow.isEmpty()) return
+        Lg.i(TAG, "launcher corner-write: shadow table full (${launcherCornerShadow.size}), restore-all then clear")
+        for ((id, sh) in launcherCornerShadow) {
+            val layer = sh.layerRef.get()
+            val method = mLayerSetCornerRadius
+            if (layer != null && method != null) {
+                try {
+                    method.invoke(layer, sh.original, false, null, false)
+                } catch (t: Throwable) {
+                    Lg.w(TAG, "launcher corner-write: restore-all id=$id failed", t)
+                }
+            }
+        }
+        launcherCornerShadow.clear()
     }
 
     // ------------------------------------------------------------ PressFeedback 玻璃接管（白名单驱动共享机制）
