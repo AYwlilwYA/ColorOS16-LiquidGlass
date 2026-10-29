@@ -1,7 +1,6 @@
 package com.coloros16.liquidglass.hook
 
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -30,6 +29,7 @@ import android.widget.TextView
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
+import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
@@ -136,18 +136,8 @@ object BlurDrawHook {
      *  （覆盖进出 blend 状态的 1~3 帧空窗；真退出最多多残留这么久） */
     private const val MB_STICKY_HOLD_MS = 120L
 
-    /**
-     * σ_viewport（=0.807×blurRadius，视口 px）三档降采样源选择（texel = 2×tier 视口 px，抓屏 0.5 scale）。
-     * 金发姑娘带：texel ∈ [0.83σ, 1.33σ] 且 tap 间距 ≤0.7 纹理 px——texel 偏细则核在纹理空间过窄
-     * （亚 texel 文字笔画残留小点），偏粗则 tap 间距 ≥1（晶格点阵）。
-     * /4 texel=8vp：σ<10；/8 texel=16vp：10≤σ<20；/16 texel=32vp：σ≥20。
-     * 缺 /8 档时 σ≈13（半径 16）卡在 /4 间距 0.95 与 /16 σ_texel=0.4 两头坏。
-     */
-    private fun lowResTierOf(sigmaViewport: Float): Int = when {
-        sigmaViewport < 10f -> 4
-        sigmaViewport < 20f -> 8
-        else -> 16
-    }
+    /** σ 分档（三档语义见 [LowResTier.tierOf]）。 */
+    private fun lowResTierOf(sigmaViewport: Float): Int = LowResTier.tierOf(sigmaViewport)
     private const val METHOD_GET_BOUNDS = "getBounds"
     private const val METHOD_GET_PAINT = "getPaint"
     // ---- [M1 方案 A] 统一注册入口：ContinuousBlurDrawable.addBlurDrawable() 场景判定 ----
@@ -1516,7 +1506,7 @@ object BlurDrawHook {
      * - [shaderCache] / [appliedUniformsMap] 按 drawable identityHashCode 键控；省电切换会让系统
      *   销毁重建 blur drawable → GC 后 identityHashCode 可能复用 → 陈旧条目套到新元素上。
      * - [geometryCache] / [cornerRadiusCache] / [lastRenderScreenRegion] / [ambiguousUntil] /
-     *   [lowResBitmapCache] / [screenSnapshot] 同理（快照在省电期间已冻结为旧帧）。
+     *   [LowResTier] 降采样缓存 / [screenSnapshot] 同理（快照在省电期间已冻结为旧帧）。
      *
      * 复位路径（关闭与开启双向都执行；调用方须先把 [powerSaveMeasuredAt] 置 0 并实测一次，
      * 否则抓屏门控可能拿旧状态误判）：
@@ -1532,12 +1522,7 @@ object BlurDrawHook {
             cornerRadiusCache.clear()
             lastRenderScreenRegion.clear()
             ambiguousUntil.clear()
-            lowResBitmapCache = null
-            lowResBitmapSourceId = 0
-            lowRes8BitmapCache = null
-            lowRes8BitmapSourceId = 0
-            lowRes16BitmapCache = null
-            lowRes16BitmapSourceId = 0
+            LowResTier.clear()
             screenSnapshot = null
             lastSnapshotFingerprint = 0
             postInvalidateHosts()
@@ -1817,29 +1802,6 @@ object BlurDrawHook {
             shaderOwnerSet.clear()
         }
     }
-
-    /** 降采样(1/4)原图缓存：按全分辨率源位图 identityHashCode 复用（防每 drawable 重复缩放） */
-    @Volatile
-    private var lowResBitmapCache: Bitmap? = null
-
-    @Volatile
-    private var lowResBitmapSourceId: Int = 0
-
-    /** 1/8 降采样源缓存（σ_viewport 中档的 uSourceLowRes）：抓屏帧发布链预构建，渲染线程只取引用 */
-    @Volatile
-    private var lowRes8BitmapCache: Bitmap? = null
-
-    /** [lowRes8BitmapCache] 对应的源位图 identityHashCode（与 screenSnapshot.bitmap 同实例才命中） */
-    @Volatile
-    private var lowRes8BitmapSourceId: Int = 0
-
-    /** 1/16 降采样源缓存（σ_viewport 高档的 uSourceLowRes）：抓屏帧发布链预构建，渲染线程只取引用 */
-    @Volatile
-    private var lowRes16BitmapCache: Bitmap? = null
-
-    /** [lowRes16BitmapCache] 对应的源位图 identityHashCode（与 screenSnapshot.bitmap 同实例才命中） */
-    @Volatile
-    private var lowRes16BitmapSourceId: Int = 0
 
     /** drawable(identityHashCode) → 屏幕区域 + 局部 bounds（AutoBlurDrawable.draw hook 建立，bounds 供兜底匹配） */
     private val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
@@ -2431,6 +2393,7 @@ object BlurDrawHook {
             // 避免兜底 true 意外开启刷屏日志）。
             false
         }
+        LowResTier.logEnabled = moduleLogEnabled
         // [spec/21 文字反转取色] install 时读取并缓存；false 时不挂 QsColorUtil/TextView hook（走系统原逻辑）。
         // 改动需重启 SystemUI 生效（同 KEY_ENABLE_LOGS 模式）。
         textContrastEnabled = try {
@@ -7792,10 +7755,13 @@ object BlurDrawHook {
         }
         val shader = obtainShader(id, metaball = entry.metaBall != null)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
+        // σ 分档三档源：命中绑档位 shader + 折算 rect，miss 回退现状源（本函数每帧全量重绑，无轻量分支）
+        val seedlingWantDiv = lowResTierOf(0.807f * params.blurRadius)
+        val seedlingTier = buildLowResTierShader(source, srcRect, seedlingWantDiv)
         LiquidGlassShader.setUniforms(
-            shader, params, sourceShader, sourceShader,
+            shader, params, sourceShader, seedlingTier?.shader ?: sourceShader,
             sourceRect = srcRect,
-            lowResSourceRect = srcRect,
+            lowResSourceRect = seedlingTier?.lowResSrcRect ?: srcRect,
             debugCoord = 0f,
             maskRect = null,
             maskCornerRadius = 0f,
@@ -7809,6 +7775,7 @@ object BlurDrawHook {
             viewport = viewport, srcRect = srcRect, maskRect = null,
             cornerIsConic = entry.cornerIsConic, cornerWeight = entry.cornerWeight,
             cornerRadius = cornerRadius, cornerConicBlend = 1f, maskAlpha = 0f,
+            lowResDiv = if (seedlingTier != null) seedlingWantDiv else 4,
         )
         canvas.save()
         try {
@@ -11748,39 +11715,28 @@ object BlurDrawHook {
             }
             // 源位图未变（仅 srcRect 变）→ lowResShader=null：uSourceLowRes 保留上次绑定（与 sourceShader
             // 同实例，同一坐标空间），setUniforms 仍更新 uSourceRect/uSourceLowResRect → 跟手无需重建。
-            // 源/档位变时按 σ 档重绑：8/16 档缓存 miss（未预构建/实例不匹配）→ 回退现状源。
+            // 源/档位变时按 σ 档重绑：档位缓存 miss（未预构建/实例不匹配）→ 回退现状源并记实际档 4
+            //（下帧 want≠4 → lowResTierChanged → 重试，直到预构建就绪）。
             val lowResShader: Shader?
             val lowResSrcRect: RectF
             var boundLowResDiv = 4
-            if (wantLowResDiv >= 8 && (sourceBitmapChanged || lowResTierChanged)) {
-                val tier = buildLowResTierShader(bindBitmap!!, bindSrcRect, wantLowResDiv)
+            if (bindBitmap != null && (sourceBitmapChanged || lowResTierChanged)) {
+                val tier = buildLowResTierShader(bindBitmap, bindSrcRect, wantLowResDiv)
                 if (tier != null) {
                     lowResShader = tier.shader
                     lowResSrcRect = tier.lowResSrcRect
                     boundLowResDiv = wantLowResDiv
                 } else {
-                    lowResShader = sourceShader ?: LiquidGlassShader.createSourceBitmapShader(bindBitmap!!)
-                    lowResSrcRect = bindSrcRect
-                    // miss 也按 want 记账：回退绑定用全分辨率 rect 自洽，避免 stored≠want 每帧全量重绑
-                    boundLowResDiv = wantLowResDiv
-                }
-            } else if (wantLowResDiv == 4 && (sourceBitmapChanged || lowResTierChanged)) {
-                if (cg.isElementSource && bindBitmap != null) {
                     lowResShader = sourceShader ?: LiquidGlassShader.createSourceBitmapShader(bindBitmap)
                     lowResSrcRect = bindSrcRect
-                } else if (bindBitmap != null) {
-                    val lowResResult = buildLowResShader(bindBitmap, bindSrcRect)
-                    lowResShader = lowResResult?.shader
-                    lowResSrcRect = lowResResult?.lowResSrcRect ?: bindSrcRect
-                } else {
-                    lowResShader = null
-                    lowResSrcRect = bindSrcRect
+                    boundLowResDiv = 4
                 }
             } else {
-                // 源与档位均未变：shader 保留上次绑定；rect 按【已绑档位】折算（8/16 档 ÷ 实际缩放比）
+                // 源与档位均未变（或无位图）：shader 保留上次绑定；rect 按【已绑档位】折算
+                //（÷ 实际缩放比；缓存 miss → 现状 rect 自洽）
                 lowResShader = null
-                lowResSrcRect = if ((applied?.lowResDiv ?: 4) >= 8 && bindBitmap != null) {
-                    lowResDivRectOf(bindBitmap, bindSrcRect, applied!!.lowResDiv) ?: bindSrcRect
+                lowResSrcRect = if (applied != null && bindBitmap != null) {
+                    lowResDivRectOf(bindBitmap, bindSrcRect, applied.lowResDiv) ?: bindSrcRect
                 } else {
                     bindSrcRect
                 }
@@ -12207,28 +12163,23 @@ object BlurDrawHook {
         val bindBitmap = source
         val bindSrcRect = srcRect
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(bindBitmap)
-        // uSourceLowRes：整屏快照（已 0.5 降采样）直接作 lowRes（uSourceLowResRect = uSourceRect = 元素区域折算
-        // 坐标，二者一致）；[spec/127] σ_viewport 按 4/8/16 三档换预构建降采样源（texel≈σ，GPU 同帧根除点阵）。
-        // 失败 → null，setUniforms 回退全分辨率源（等效旧行为），液态玻璃渲染不中断
-        val lowResShader: Shader?
+        // uSourceLowRes：σ_viewport 按 4/8/16 三档换预构建降采样源（texel≈σ，GPU 同帧根除点阵）。
+        // 档位缓存 miss → 回退全分辨率源（等效旧行为），液态玻璃渲染不中断；miss 记实际档 4
+        //（下帧 want≠4 → 重试，直到预构建就绪）。
+        val sigmaViewport = 0.807f * params.blurRadius
+        val wantDiv = lowResTierOf(sigmaViewport)
+        val tier = buildLowResTierShader(bindBitmap, bindSrcRect, wantDiv)
+        val lowResShader: Shader
         val lowResSrcRect: RectF
-        var boundLowResDiv = 4
-        if (renderSource.isElementSource) {
-            val sigmaViewport = 0.807f * params.blurRadius
-            val wantDiv = lowResTierOf(sigmaViewport)
-            val tier = if (wantDiv >= 8) buildLowResTierShader(bindBitmap, bindSrcRect, wantDiv) else null
-            if (tier != null) {
-                lowResShader = tier.shader
-                lowResSrcRect = tier.lowResSrcRect
-            } else {
-                lowResShader = sourceShader
-                lowResSrcRect = bindSrcRect
-            }
+        var boundLowResDiv: Int
+        if (tier != null) {
+            lowResShader = tier.shader
+            lowResSrcRect = tier.lowResSrcRect
             boundLowResDiv = wantDiv
         } else {
-            val lowResShaderResult = buildLowResShader(bindBitmap, bindSrcRect)
-            lowResShader = lowResShaderResult?.shader
-            lowResSrcRect = lowResShaderResult?.lowResSrcRect ?: bindSrcRect
+            lowResShader = sourceShader
+            lowResSrcRect = bindSrcRect
+            boundLowResDiv = 4
         }
         // uDebugCoord 实验开关：coord 决定性实验用。0=玻璃正常渲染；1=直接输出红/绿周期调试网格（不走玻璃管线）。
         // 正常关闭，需复测 coord 空间时临时开 1f。uDebugCoord 分支保留在 LiquidGlassShader.kt 供后续实验。
@@ -12748,159 +12699,16 @@ object BlurDrawHook {
         val regionId: Int,
     )
 
-    /** buildLowResShader 结果：低分辨率 BitmapShader + 对应低分辨率 srcRect（全分辨率 srcRect ÷ scale）。 */
-    private data class LowResShaderResult(
-        val shader: BitmapShader,
-        val lowResSrcRect: RectF,
-    )
+    /** 档位降采样 shader（三档语义与缓存见 [LowResTier]）。 */
+    private fun buildLowResTierShader(source: Bitmap, srcRect: RectF, tier: Int): LowResTier.Result? =
+        LowResTier.tierShaderOf(source, srcRect, tier)
 
-    /**
-     * σ 分档（spec/127 多尺度源）的 uSourceLowRes：取抓屏发布链预构建的 8/16 降采样位图
-     * （[prebuildLowResChain]）。srcCoord 折算链通用：rect ÷ 实际缩放比（source.width/low.width），
-     * 无写死比例。缓存未命中（tier=4 / 源位图实例不匹配 / 未预构建）→ null，调用方回退现状源。
-     */
-    private fun buildLowResTierShader(source: Bitmap, srcRect: RectF, tier: Int): LowResShaderResult? {
-        val low = tierBitmapOf(source, tier) ?: return null
-        return try {
-            val scaleX = source.width.toFloat() / low.width
-            val scaleY = source.height.toFloat() / low.height
-            LowResShaderResult(
-                shader = LiquidGlassShader.createLowResSourceBitmapShader(low),
-                lowResSrcRect = RectF(
-                    srcRect.left / scaleX,
-                    srcRect.top / scaleY,
-                    srcRect.right / scaleX,
-                    srcRect.bottom / scaleY,
-                ),
-            )
-        } catch (t: Throwable) {
-            Lg.e(TAG, "render: buildLowResTierShader failed", t)
-            null
-        }
-    }
+    /** 已绑档位时按当前 srcRect 折算低分辨率 rect（轻量 uniform 分支用；缓存 miss → null）。 */
+    private fun lowResDivRectOf(source: Bitmap, srcRect: RectF, tier: Int): RectF? =
+        LowResTier.divRectOf(source, srcRect, tier)
 
-    /** 按档位（8/16）取预构建缓存（源实例不匹配 → null；tier=4 无预构建 → null）。 */
-    private fun tierBitmapOf(source: Bitmap, tier: Int): Bitmap? {
-        val id = System.identityHashCode(source)
-        return when (tier) {
-            8 -> lowRes8BitmapCache?.takeIf { lowRes8BitmapSourceId == id }
-            16 -> lowRes16BitmapCache?.takeIf { lowRes16BitmapSourceId == id }
-            else -> null
-        }
-    }
-
-    /** 已绑 8/16 档时按当前 srcRect 折算低分辨率 rect（轻量 uniform 分支用；缓存 miss → null）。 */
-    private fun lowResDivRectOf(source: Bitmap, srcRect: RectF, tier: Int): RectF? {
-        val low = tierBitmapOf(source, tier) ?: return null
-        val scaleX = source.width.toFloat() / low.width
-        val scaleY = source.height.toFloat() / low.height
-        return RectF(srcRect.left / scaleX, srcRect.top / scaleY, srcRect.right / scaleX, srcRect.bottom / scaleY)
-    }
-
-    /**
-     * 抓屏帧发布链预构建 8/16 两档降采样源：对快照逐级 1/2 ×3/×4（等效 mipmap 区域平均）。
-     * 三档 texel≈σ 选档（[lowResTierOf]）：σ≥20 档 /16（texel=32vp）、10≤σ<20 档 /8（texel=16vp）、
-     * σ<10 用现状 /4。挂 worker 抓屏线程，渲染线程只取引用零缩放；中间产物 /2、/4 回收，
-     * /8、/16 入缓存不回收（可能仍被已绑 shader 引用）。
-     */
-    private fun prebuildLowResChain(source: Bitmap) {
-        try {
-            var cur = source
-            var step = 0
-            var eight: Bitmap? = null
-            while (step < 4) {
-                val nw = (cur.width / 2).coerceAtLeast(1)
-                val nh = (cur.height / 2).coerceAtLeast(1)
-                if (nw >= cur.width && nh >= cur.height) break
-                val next = Bitmap.createScaledBitmap(cur, nw, nh, true)
-                if (cur !== source && cur !== eight && next !== cur) cur.recycle()
-                cur = next
-                step++
-                if (step == 3) eight = cur
-            }
-            if (step >= 4) {
-                val e = eight
-                if (e != null && e !== cur) {
-                    lowRes8BitmapCache = e
-                    lowRes8BitmapSourceId = System.identityHashCode(source)
-                }
-                lowRes16BitmapCache = cur
-                lowRes16BitmapSourceId = System.identityHashCode(source)
-                if (moduleLogEnabled) {
-                    Lg.i(TAG, "render: lowRes chain prebuilt /8=${e?.width}x${e?.height} /16=${cur.width}x${cur.height} (src ${source.width}x${source.height})")
-                }
-            }
-        } catch (t: Throwable) {
-            Lg.e(TAG, "render: prebuildLowResChain failed", t)
-        }
-    }
-
-    /** 构造 uSourceLowRes 降采样输入（1/4 原图 + 单位矩阵）及低分辨率 srcRect。失败返回 null（不中断渲染）。 */
-    private fun buildLowResShader(source: Bitmap, srcRect: RectF): LowResShaderResult? {
-        val lowRes = try {
-            getLowResBitmap(source)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "render: getLowResBitmap failed", t)
-            null
-        } ?: return null
-        return try {
-            val scaleX = source.width.toFloat() / lowRes.width
-            val scaleY = source.height.toFloat() / lowRes.height
-            // 低分辨率 srcRect：全分辨率 srcRect ÷ 缩放比（AGSL 侧 srcCoord 用 uSourceLowResRect 折算）
-            LowResShaderResult(
-                shader = LiquidGlassShader.createLowResSourceBitmapShader(lowRes),
-                lowResSrcRect = RectF(
-                    srcRect.left / scaleX,
-                    srcRect.top / scaleY,
-                    srcRect.right / scaleX,
-                    srcRect.bottom / scaleY,
-                ),
-            )
-        } catch (t: Throwable) {
-            Lg.e(TAG, "render: createLowResSourceBitmapShader failed", t)
-            null
-        }
-    }
-
-    /**
-     * 取 1/4 降采样原图（`Bitmap.createScaledBitmap(w/4, h/4, true)`）。
-     * 按源位图实例缓存：帧变更（onBlurReady 新原图 → 新 Bitmap 实例）自动重建。
-     */
-    private fun getLowResBitmap(source: Bitmap): Bitmap? {
-        val id = System.identityHashCode(source)
-        lowResBitmapCache?.let { cached ->
-            if (lowResBitmapSourceId == id) return cached
-        }
-        return try {
-            // [doc/spec/68] 逐级 1/2 降采样（等效 mipmap）：一次 4× 双线性只取邻近 2×2 源像素，
-            // **不是区域平均** → 2~4px 的细笔画（文字/图标细节）被随机采样成孤立点
-            // （用户反馈「点状文字」的根因）。分两次各降一半、每级双线性都做一次平均
-            // → 等效 4×4 区域平均，走样大幅减少。仅在快照更新时执行一次，**零渲染开销**。
-            var cur = source
-            // [doc/spec/68] 降采样级数 **1/4**（逐级 1/2 两次）—— 用户指定。
-            // 三轮真机实证记录（供后续调参参考）：
-            //   1/4 + 5×5 → 明显网格；1/8 + 5×5 → 更重的方块；1/2 + 7×7 → 网格依旧。
-            // 结论：网格感主因在 **shader 侧高斯核形状**（σ 相对覆盖范围过大、只覆盖 ±1.33σ，
-            // 核边缘权重 0.41 ≈ 方框模糊），不在降采样级别 → 降采样回到内存/开销最优的 1/4。
-            repeat(2) {
-                val nw = (cur.width / 2).coerceAtLeast(1)
-                val nh = (cur.height / 2).coerceAtLeast(1)
-                if (nw >= cur.width && nh >= cur.height) return@repeat   // 已无法再降
-                val next = Bitmap.createScaledBitmap(cur, nw, nh, true)
-                // 回收中间产物（不回收源快照；尺寸相同时 createScaledBitmap 会返回同一对象，须判等）
-                if (cur !== source && next !== cur) cur.recycle()
-                cur = next
-            }
-            cur.also {
-                lowResBitmapCache = it
-                lowResBitmapSourceId = id
-                Lg.i(TAG, "render: lowRes bitmap created ${it.width}x${it.height} (src ${source.width}x${source.height}, 2-step)")
-            }
-        } catch (t: Throwable) {
-            Lg.e(TAG, "render: createScaledBitmap(1/4 x2) failed", t)
-            null
-        }
-    }
+    /** 抓屏帧发布链预构建三档降采样源（挂 worker 线程，渲染线程只取引用零缩放）。 */
+    private fun prebuildLowResChain(source: Bitmap) = LowResTier.prebuild(source)
 
     /**
      * [2026-08-13 滑动延迟修复] buildParams 材质参数（Prefs 派生字段）时间节流缓存。
