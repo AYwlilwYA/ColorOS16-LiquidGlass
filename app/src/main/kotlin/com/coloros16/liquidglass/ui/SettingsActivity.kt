@@ -1341,7 +1341,7 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchCardGlass, Prefs.KEY_CARD_GLASS_ENABLE, Prefs.DEFAULT_CARD_GLASS_ENABLE)
     }
 
-    /** 其他组件：音量条 + 相册 / 计算器 / 智能侧边栏的组件级玻璃开关。 */
+    /** 其他组件：音量条 + 相册 / 计算器 / 智能侧边栏 / 速览的组件级玻璃开关。 */
     private fun bindComponents(view: View) {
         bindGlassSwitch(view, R.id.switchVolumeSeekBarGlass, Prefs.KEY_VOLUME_SEEKBAR_GLASS, Prefs.DEFAULT_VOLUME_SEEKBAR_GLASS)
         bindGlassSwitch(view, R.id.switchVolumePanelClean, Prefs.KEY_VOLUME_PANEL_CLEAN, Prefs.DEFAULT_VOLUME_PANEL_CLEAN)
@@ -1349,6 +1349,7 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchGalleryGlass, Prefs.KEY_GALLERY_GLASS, Prefs.DEFAULT_GALLERY_GLASS)
         bindGlassSwitch(view, R.id.switchCalculatorGlass, Prefs.KEY_CALCULATOR_GLASS, Prefs.DEFAULT_CALCULATOR_GLASS)
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchAssistantScreenGlass, Prefs.KEY_ASSISTANT_SCREEN_GLASS, Prefs.DEFAULT_ASSISTANT_SCREEN_GLASS)
         bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
     }
 

@@ -432,6 +432,11 @@ object Prefs {
     /** 智能侧边栏玻璃化默认值（false = 不干预） */
     const val DEFAULT_SMART_SIDEBAR_GLASS = false
 
+    /** 速览（负一屏）玻璃化（卡片/控件背景模糊）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_ASSISTANT_SCREEN_GLASS = "assistant_screen_glass_enable"
+    /** 速览（负一屏）玻璃化默认值（false = 不干预） */
+    const val DEFAULT_ASSISTANT_SCREEN_GLASS = false
+
     /** 相册背景采样范围探针（实验）：把 A 族视图背景 RenderEffect 临时替换为越界采样染色探针，
      * 肉眼判定 shader input 是否含节点外像素（折射环带可行性）。默认 **false**；
      * 开启时相册原模糊观感被探针覆盖（主体透传=清晰背景 + 边缘色环）。改动即时生效（TTL 500ms 重读）。 */

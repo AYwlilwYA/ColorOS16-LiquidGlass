@@ -54,12 +54,14 @@ object AppGlassHook {
         XposedEntry.PACKAGE_GALLERY to Prefs.KEY_GALLERY_GLASS,
         XposedEntry.PACKAGE_CALCULATOR to Prefs.KEY_CALCULATOR_GLASS,
         XposedEntry.PACKAGE_SMART_SIDEBAR to Prefs.KEY_SMART_SIDEBAR_GLASS,
+        XposedEntry.PACKAGE_ASSISTANT_SCREEN to Prefs.KEY_ASSISTANT_SCREEN_GLASS,
     )
 
     private val SWITCH_DEFAULTS = mapOf(
         Prefs.KEY_GALLERY_GLASS to Prefs.DEFAULT_GALLERY_GLASS,
         Prefs.KEY_CALCULATOR_GLASS to Prefs.DEFAULT_CALCULATOR_GLASS,
         Prefs.KEY_SMART_SIDEBAR_GLASS to Prefs.DEFAULT_SMART_SIDEBAR_GLASS,
+        Prefs.KEY_ASSISTANT_SCREEN_GLASS to Prefs.DEFAULT_ASSISTANT_SCREEN_GLASS,
     )
 
     private var api: XposedInterface? = null

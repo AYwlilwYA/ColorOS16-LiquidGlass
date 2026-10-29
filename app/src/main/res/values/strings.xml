@@ -283,6 +283,8 @@
     <string name="settings_calculator_glass_desc">把计算器的对话框与弹出菜单背景模糊接管成液态玻璃。</string>
     <string name="settings_smart_sidebar_glass">智能侧边栏液态玻璃</string>
     <string name="settings_smart_sidebar_glass_desc">把智能侧边栏面板与卡片的背景模糊接管成液态玻璃。</string>
+    <string name="settings_assistant_screen_glass">速览（负一屏）玻璃</string>
+    <string name="settings_assistant_screen_glass_desc">给速览（负一屏）的卡片和控件加玻璃效果。</string>
     <string name="settings_gallery_shader_probe">相册采样范围探针（实验）</string>
     <string name="settings_gallery_shader_probe_desc">临时替换相册背景模糊做诊断：元素边缘出现红色环＝模糊取到了元素外面的背景（可以做真折射），绿色环＝只取到元素内的内容。开启后相册背景会变清晰并带一圈色环，关掉即恢复原模糊。</string>
 
