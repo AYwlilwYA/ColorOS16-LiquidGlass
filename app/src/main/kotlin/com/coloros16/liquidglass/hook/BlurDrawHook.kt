@@ -268,6 +268,8 @@ object BlurDrawHook {
     /** [doc/spec/105 P1-4] 上次真正做了主线程同步首帧的时刻（uptimeMillis；0 = 还没做过） */
     @Volatile
     private var lastMainSyncFirstFrameAt = 0L
+    /** 审计日志每 id 最小打印间隔（ms） */
+    private const val AUDIT_PER_ID_INTERVAL_MS = 1000L
     /** [2026-08-13 用户要求「通知持续期间必须一直抓屏」] heads-up 活跃期间**不间断**抓屏间隔毫秒。
      *  通知是瞬态场景（持续数秒），持续抓屏可接受；间隔 50ms ≈ 20Hz（captureDisplay 同步 Binder 自身
      *  20-50ms 耗时叠加，实际 ~10-14Hz），覆盖通知内容/入场动画每一帧变化。worker 线程执行（主线程仅首帧
@@ -571,9 +573,6 @@ object BlurDrawHook {
     private const val VOLUME_HOST_ACTIVE_MS = 1_500L
     /** 亮白填充开启时的进度填充色：白 80%（近不透明亮磨砂），盖住玻璃扭曲、边界清晰。 */
     private val VOLUME_FROSTED_PROGRESS_COLOR = 0xCCFFFFFF.toInt()
-    /** 进度顶边高光：白 70%，高度 2.5dp。 */
-    private val VOLUME_HIGHLIGHT_COLOR = 0xB3FFFFFF.toInt()
-    private const val VOLUME_HIGHLIGHT_HEIGHT_DP = 2.5f
     /** framework 纯模糊 drawable（已是纯模糊时不去重复替换）。 */
     private const val CLASS_FRAMEWORK_BLUR_DRAWABLE = "com.android.internal.graphics.drawable.BackgroundBlurDrawable"
     /** 面板去白底开关 TTL（ms）重读间隔。 */
@@ -585,10 +584,6 @@ object BlurDrawHook {
     /** ···按钮容器布局 id / 白底 drawable 名（attach 时按名解析，装玻璃背景）。 */
     private const val RES_MORE_ROW_STREAM_LL = "more_row_stream_ll"
     private const val RES_APP_ADJUST_BG = "systemui_icon_volume_app_adjust_bg"
-    /** 音量图标尺寸 dimen（图标垫底定位用）与图标距底固定边距（vertical_volume_row.xml 硬编码 20dp）。 */
-    private const val DIMEN_VOLUME_ICON_WIDTH = "volume_row_icon_width"
-    private const val DIMEN_VOLUME_ICON_HEIGHT = "volume_row_icon_height"
-    private const val VOLUME_ICON_BOTTOM_MARGIN_DP = 20f
 
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记（方形/长条设备卡背景绑定卡片语义类） ----
     /** 设备中心卡片 View 类名后缀（`com.oplus.deviceplugin.sdk` 的方形/长条设备卡）。 */
@@ -2078,11 +2073,6 @@ object BlurDrawHook {
     private var volumeProgressColorField: Field? = null
     @Volatile
     private var volumeProgressColorResolved = false
-    /** COUIVerticalSeekBar.mProgressRect 字段缓存（进度顶边高光定位用） */
-    @Volatile
-    private var volumeProgressRectField: Field? = null
-    @Volatile
-    private var volumeProgressRectResolved = false
     /** drawActiveTrack(Canvas) 方法缓存（玻璃覆盖进度后重绘用） */
     @Volatile
     private var volumeDrawActiveTrackMethod: Method? = null
@@ -2093,11 +2083,8 @@ object BlurDrawHook {
     private var volumeDialogViewField: Field? = null
     @Volatile
     private var volumeDialogViewFieldResolved = false
-    /** 进度顶边高光画笔（一次初始化） */
-    @Volatile
-    private var volumeHighlightPaint: Paint? = null
 
-    // ---- [doc/spec/134 第二轮] 面板去白底（独立开关）+ ···按钮玻璃 + 图标垫底状态 ----
+    // ---- [doc/spec/134 第二轮] 面板去白底（独立开关）+ ···按钮玻璃状态 ----
     /** 面板去白底开关缓存（TTL [VOLUME_PANEL_BACKDROP_TTL_MS] 重读） */
     @Volatile
     private var cachedVolumePanelBackdrop = false
@@ -2113,14 +2100,6 @@ object BlurDrawHook {
     /** 已装玻璃背景的 ···按钮容器（seekbar 路径顺带 invalidate，开关切换即时可见） */
     @Volatile
     private var volumeMoreBtnHost: WeakReference<View>? = null
-    /** 音量图标尺寸 px（dimen 一次解析缓存；0 = 未解析） */
-    @Volatile
-    private var volumeIconWidthPx = 0
-    @Volatile
-    private var volumeIconHeightPx = 0
-    /** 图标垫底画笔（一次初始化；半透明暗底） */
-    @Volatile
-    private var volumeIconBackingPaint: Paint? = null
 
     // ---- [doc/spec/78 补齐] 设备中心卡片组件登记状态 ----
     /** 设备卡 View.onAttachedToWindow hook 是否已挂（install 幂等） */
@@ -2138,8 +2117,8 @@ object BlurDrawHook {
     /** 语义派生未命中的 AutoBlur 宿主类审计（每类节流一条，定位设备卡/滑杆真实宿主类名） */
     private val semanticMissAudit = ConcurrentHashMap.newKeySet<String>()
 
-    /** 预设模糊半径生效审计（每元素一条：预设覆盖值 vs 全局值） */
-    private val presetBlurAudit = ConcurrentHashMap.newKeySet<Int>()
+    /** 预设模糊半径生效审计（每 id 每秒最多一条：预设覆盖值 vs 全局值） */
+    private val presetBlurAudit = ConcurrentHashMap<Int, Long>()
 
     /** attach 期审计：类名含 Card/Device/Seek 的 View（ClassValue 每类只算一次，命中才记） */
     private val attachAuditSeen = ConcurrentHashMap.newKeySet<String>()
@@ -5337,6 +5316,8 @@ object BlurDrawHook {
             unifiedScope = isUnifiedCornerScope(bgView, target, "nbv"),
         )
         val previous = screenRegionMap[key]
+        // 每帧重绑（幂等，同 clazz 只 touch）：动画态重建的 target 换实例后 cardClass 不丢
+        GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
         // [doc/spec/99] 每次绘制都刷新 clip（父容器 clip 随动画/布局逐帧可能变）：
         // map 快照 + 新 entry 镜像 + 稳态仍存活的旧 entry 镜像（region/bounds 未变时不换 entry）。
         applyHostClip(key, entry, previous, hostClip)
@@ -5348,7 +5329,6 @@ object BlurDrawHook {
         // 每帧重抓整屏 → 通知卡滚动 CPU 热点排序 #1 消除）
         if (previous == null) {
             screenRegionMap[key] = entry
-            GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
             Lg.i(
                 TAG,
                 "coord: notif-map id=$key view=NotificationBackgroundView bgView=${bgView.javaClass.simpleName} " +
@@ -7034,7 +7014,7 @@ object BlurDrawHook {
      * mInactiveTrackDrawable）→ `drawActiveTrack` 白色进度填充。玻璃若画在 proceed **之前**会被
      * 自绘轨道整体盖掉（compact 小条无玻璃的根因）——因此玻璃改画在 proceed **之后**盖住轨道；
      * 玻璃采样的是真实背景、不含量进度信息，随后重绘 `drawActiveTrack` 把进度（与 thumb）放回玻璃之上，
-     * 进度始终可读；[Prefs.KEY_VOLUME_PANEL_CLEAN] 开启时进度改半透明亮磨砂填充并加顶边高光。
+     * 进度始终可读；[Prefs.KEY_VOLUME_PANEL_CLEAN] 开启时进度改半透明亮磨砂填充。
      *
      * 开关 [KEY_VOLUME_SEEKBAR_GLASS] 默认 false，TTL 500ms 重读；两开关都关时零额外开销（只查 volatile）。
      */
@@ -7077,9 +7057,7 @@ object BlurDrawHook {
                                 noteVolumeAppearance(v)
                                 renderVolumeSeekBarGlass(canvas, v)
                                 redrawActiveTrack(canvas, v)
-                                drawVolumeIconBacking(canvas, v)
                             }
-                            if (clean) drawProgressHighlight(canvas, v)
                         } catch (t: Throwable) {
                             Lg.e(TAG, "volume-seekbar: post-draw error", t)
                         }
@@ -7118,6 +7096,18 @@ object BlurDrawHook {
                         }
                     } catch (t: Throwable) {
                         Lg.e(TAG, "volume-panel-backdrop: apply error", t)
+                    }
+                    // 展开后面板背景刚被系统重置 → 同步补抓一帧，防玻璃采到展开前的旧快照
+                    try {
+                        triggerFirstFrameCaptureWithBurst(
+                            burstStop = { false },
+                            logTag = "volume-expand",
+                            pauseDuringPanelExpansion = false,
+                            mainThreadSyncFirstFrame = true,
+                            bypassMainSyncDedup = true,
+                        )
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "volume-expand: first-frame capture error", t)
                     }
                     result
                 }
@@ -7182,26 +7172,55 @@ object BlurDrawHook {
 
     /** 展开面板背景替换为纯模糊：mDialogView → ViewRootManager 纯 blur drawable；失败置空兜底。 */
     private fun applyVolumePanelClean(dialogViewObj: Any?) {
-        val dv = dialogViewObj as? View ?: return
+        val dv = dialogViewObj as? View ?: run {
+            logVolumeDiag(
+                "panel-clean-skip",
+                "volume-panel-backdrop: skip —— dialogViewObj 非 View obj=${dialogViewObj?.javaClass?.name}",
+            )
+            return
+        }
         val dialogViewGroup = try {
-            val f = volumeDialogViewField(dv.javaClass) ?: return
+            val f = volumeDialogViewField(dv.javaClass) ?: run {
+                logVolumeDiag(
+                    "panel-clean-skip",
+                    "volume-panel-backdrop: skip —— mDialogView 字段解析失败 cls=${dv.javaClass.name}",
+                )
+                return
+            }
             f.get(dv) as? android.view.ViewGroup
         } catch (t: Throwable) {
-            null
-        } ?: return
+            logVolumeDiag(
+                "panel-clean-skip",
+                "volume-panel-backdrop: skip —— mDialogView 读取失败 ${t.javaClass.simpleName}",
+            )
+            return
+        } ?: run {
+            logVolumeDiag(
+                "panel-clean-skip",
+                "volume-panel-backdrop: skip —— mDialogView 非 ViewGroup 或为 null",
+            )
+            return
+        }
         val current = try {
             dialogViewGroup.background
         } catch (t: Throwable) {
             null
         }
-        if (current == null || current.javaClass.name == CLASS_FRAMEWORK_BLUR_DRAWABLE) return
+        // 背景未建（current==null）也继续：创建纯模糊并设置，避免系统白底出现后无人接管
+        if (current != null && current.javaClass.name == CLASS_FRAMEWORK_BLUR_DRAWABLE) {
+            logVolumeDiag(
+                "panel-clean-skip",
+                "volume-panel-backdrop: skip —— 背景已是纯模糊 ${current.javaClass.simpleName}",
+            )
+            return
+        }
         val corner = resolveVolumePanelCornerPx(dv)
         val replacement = createPureBlurDrawable(dialogViewGroup, corner)
         if (replacement != null) {
             dialogViewGroup.background = replacement
             logVolumeDiag(
                 "panel-clean-ok",
-                "volume-panel-backdrop: 面板背景已替换为纯模糊 corner=$corner from=${current.javaClass.simpleName}",
+                "volume-panel-backdrop: 面板背景已替换为纯模糊 corner=$corner from=${current?.javaClass?.simpleName ?: "null"}",
             )
         } else {
             dialogViewGroup.background = null
@@ -7256,6 +7275,10 @@ object BlurDrawHook {
                         }
                     }
                     volumeDialogViewFieldResolved = true
+                    if (volumeDialogViewField == null) {
+                        // 解析失败会随 resolved 缓存永久静默，这里一次性留下失败现场
+                        Lg.w(TAG, "volume-panel-backdrop: mDialogView field unresolved in ${cls.name}")
+                    }
                 }
             }
         }
@@ -7330,61 +7353,6 @@ object BlurDrawHook {
         return volumeDrawActiveTrackMethod
     }
 
-    /** 进度顶边高光：mProgressRect 顶部 2.5dp 白亮条，clip 到圆角进度形内（胶囊角不外溢）。 */
-    private fun drawProgressHighlight(canvas: Canvas, seekbar: View) {
-        val rect = try {
-            val f = progressRectField(seekbar.javaClass) ?: return
-            f.get(seekbar) as? Rect ?: return
-        } catch (t: Throwable) {
-            return
-        }
-        if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) return
-        val paint = volumeHighlightPaint(seekbar.resources.displayMetrics.density)
-        val r = resolveVolumeCornerPx(seekbar)
-            .coerceAtMost(minOf(rect.width(), rect.height()) / 2f)
-        val path = android.graphics.Path().apply {
-            addRoundRect(RectF(rect), r, r, android.graphics.Path.Direction.CW)
-        }
-        canvas.save()
-        try {
-            canvas.clipPath(path)
-            canvas.drawRect(
-                rect.left.toFloat(), rect.top.toFloat(),
-                rect.right.toFloat(), rect.top + paint.strokeWidth, paint,
-            )
-        } finally {
-            canvas.restore()
-        }
-    }
-
-    /** COUIVerticalSeekBar.mProgressRect 字段解析（public Rect，一次解析缓存）。 */
-    private fun progressRectField(cls: Class<*>): Field? {
-        if (!volumeProgressRectResolved) {
-            synchronized(this) {
-                if (!volumeProgressRectResolved) {
-                    volumeProgressRectField = try {
-                        cls.getField("mProgressRect")
-                    } catch (t: Throwable) {
-                        null
-                    }
-                    volumeProgressRectResolved = true
-                }
-            }
-        }
-        return volumeProgressRectField
-    }
-
-    /** 高光画笔（一次初始化；strokeWidth = 2.5dp）。 */
-    private fun volumeHighlightPaint(density: Float): Paint {
-        volumeHighlightPaint?.let { return it }
-        return Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = VOLUME_HIGHLIGHT_COLOR
-            strokeWidth = VOLUME_HIGHLIGHT_HEIGHT_DP * density
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-        }.also { volumeHighlightPaint = it }
-    }
-
     /**
      * 弹窗出现判定 + 宿主登记：距上次绘制 > [VOLUME_APPEAR_GAP_MS] 的首绘视为音量弹窗出现，
      * **当帧主线程同步抓首帧**（[triggerFirstFrameCaptureWithBurst] mainThreadSyncFirstFrame=true，
@@ -7405,6 +7373,7 @@ object BlurDrawHook {
                 logTag = "volume-appear",
                 pauseDuringPanelExpansion = false,
                 mainThreadSyncFirstFrame = true,
+                bypassMainSyncDedup = true,
             )
             Lg.i(TAG, "volume-seekbar: appearance (gap ${now - last}ms) -> sync first-frame capture id=$id")
         }
@@ -7509,7 +7478,7 @@ object BlurDrawHook {
         Lg.i(TAG, msg)
     }
 
-    // ------------------------------------------------------------ [doc/spec/134 第二轮] ···展开按钮玻璃 + 图标垫底 ------------------------------------------------------------
+    // ------------------------------------------------------------ [doc/spec/134 第二轮] ···展开按钮玻璃 ------------------------------------------------------------
 
     /**
      * ···展开按钮去白上玻璃 —— 按钮本体是 `AlphaOptimizedImageButton`（R.id.more_row_stream，
@@ -7611,42 +7580,6 @@ object BlurDrawHook {
             source = "volume-more-btn", cornerRadiusOverride = resolveVolumeCornerPx(host),
         )
         drawSeedlingGlassOnCanvas(canvas, host, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
-    }
-
-    /**
-     * 图标垫底：玻璃/亮白进度之上、音量图标（后续兄弟 View 绘制）之下，画小圆角半透明暗底，
-     * 保证图标在亮白磨砂进度上依旧可读。图标位姿按布局推算：水平居中、距底 20dp + 图标高一半
-     * （vertical_volume_row.xml volume_row_icon 硬编码 margin）。
-     */
-    private fun drawVolumeIconBacking(canvas: Canvas, seekbar: View) {
-        val density = seekbar.resources.displayMetrics.density
-        if (volumeIconWidthPx <= 0 || volumeIconHeightPx <= 0) {
-            try {
-                val res = seekbar.resources
-                val pkg = seekbar.context.packageName
-                val wId = res.getIdentifier(DIMEN_VOLUME_ICON_WIDTH, "dimen", pkg)
-                val hId = res.getIdentifier(DIMEN_VOLUME_ICON_HEIGHT, "dimen", pkg)
-                if (wId > 0) volumeIconWidthPx = res.getDimensionPixelSize(wId)
-                if (hId > 0) volumeIconHeightPx = res.getDimensionPixelSize(hId)
-            } catch (t: Throwable) {
-            }
-            if (volumeIconWidthPx <= 0 || volumeIconHeightPx <= 0) return
-        }
-        val w = seekbar.width.toFloat()
-        val h = seekbar.height.toFloat()
-        val pad = 4f * density
-        val cx = w / 2f
-        val cy = h - VOLUME_ICON_BOTTOM_MARGIN_DP * density - volumeIconHeightPx / 2f
-        val halfW = volumeIconWidthPx / 2f + pad
-        val halfH = volumeIconHeightPx / 2f + pad
-        val paint = volumeIconBackingPaint ?: Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0x40000000
-            style = Paint.Style.FILL
-        }.also { volumeIconBackingPaint = it }
-        val r = minOf(halfW, halfH)
-        canvas.drawRoundRect(
-            RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH), r, r, paint,
-        )
     }
 
     // ------------------------------------------------------------ [doc/spec/78 补齐] 设备中心卡片组件登记 ------------------------------------------------------------
@@ -13001,8 +12934,14 @@ object BlurDrawHook {
             val m = readMaterialParams()
             // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
             val ov = GlassRegistry.overridesFor(elementId)
-            if (elementId != 0 && presetBlurAudit.size <= 128 && presetBlurAudit.add(elementId)) {
-                Lg.i(TAG, "preset-blur: id=$elementId ovBlur=${ov?.get(Prefs.KEY_BLUR_RADIUS)} global=${m.blurRadius}")
+            if (elementId != 0) {
+                val nowMs = SystemClock.uptimeMillis()
+                val prevAuditMs = presetBlurAudit[elementId] ?: 0L
+                if (nowMs - prevAuditMs >= AUDIT_PER_ID_INTERVAL_MS) {
+                    if (presetBlurAudit.size > 512) presetBlurAudit.clear()
+                    presetBlurAudit[elementId] = nowMs
+                    Lg.i(TAG, "preset-blur: id=$elementId ovBlur=${ov?.get(Prefs.KEY_BLUR_RADIUS)} global=${m.blurRadius}")
+                }
             }
             fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
             LiquidGlassShader.Params(
@@ -13191,12 +13130,15 @@ object BlurDrawHook {
      * @param logTag 日志前缀（panel-first=下拉首帧 / heads-up=通知首帧）。
      * @param mainThreadSyncFirstFrame true=首帧在调用点（主线程）同步 [captureSnapshotImmediate] 立即替换
      *  缓冲区（什么都不等）；false=触发入队 worker 异步抓首帧。
+     * @param bypassMainSyncDedup true=跳过 [MAIN_SYNC_FIRST_FRAME_WINDOW_MS] 去重窗直走主线程同步抓屏
+     *  （单发门控场景用；同步分支照常刷新 [lastMainSyncFirstFrameAt]，其他触发点降级语义不受影响）。
      */
     private fun triggerFirstFrameCaptureWithBurst(
         burstStop: () -> Boolean,
         logTag: String,
         pauseDuringPanelExpansion: Boolean,
         mainThreadSyncFirstFrame: Boolean = false,
+        bypassMainSyncDedup: Boolean = false,
     ) {
         // 静态模式 → 首帧同步与连抓都不执行（零抓屏，快照冻结为现有值）
         if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
@@ -13210,7 +13152,7 @@ object BlurDrawHook {
             // **取舍（必须真机复测）**：被降级的那次首帧背景**可能晚 1-2 帧**（worker 抓完
             // postInvalidateHosts 才上屏）；换来的是主线程不再连续扛多次 20-50ms 同步 Binder。
             val now = SystemClock.uptimeMillis()
-            if (now - lastMainSyncFirstFrameAt < MAIN_SYNC_FIRST_FRAME_WINDOW_MS) {
+            if (!bypassMainSyncDedup && now - lastMainSyncFirstFrameAt < MAIN_SYNC_FIRST_FRAME_WINDOW_MS) {
                 diagFirstLog("main-thread-dedup", " logTag=$logTag gap=${now - lastMainSyncFirstFrameAt}ms")
                 logThrottled("lg-first-main-dedup", Log.INFO) {
                     "lg-first: sync first frame deduped in ${MAIN_SYNC_FIRST_FRAME_WINDOW_MS}ms window, " +

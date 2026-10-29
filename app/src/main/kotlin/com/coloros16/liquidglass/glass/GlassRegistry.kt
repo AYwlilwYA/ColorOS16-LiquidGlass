@@ -206,8 +206,11 @@ object GlassRegistry {
     /** 预设解析缓存 TTL（毫秒），渲染热路径按此周期才重读一次。 */
     private const val PRESET_TTL_MS = 500L
 
-    /** 已审计过预设查表的元素（每元素一条，定位绑定类/命中键） */
-    private val lookupAudit = ConcurrentHashMap.newKeySet<Int>()
+    /** 审计日志每 id 最小打印间隔（毫秒）。 */
+    private const val AUDIT_PER_ID_INTERVAL_MS = 1000L
+
+    /** 预设查表审计（每 id 每秒最多一条，定位绑定类/命中键） */
+    private val lookupAudit = ConcurrentHashMap<Int, Long>()
 
     /** 预设查表时未绑定的元素 id（每元素一条，抓注册 id 与渲染 id 错配） */
     private val unboundAudit = ConcurrentHashMap.newKeySet<Int>()
@@ -231,11 +234,24 @@ object GlassRegistry {
             touch(cur.name)
             return
         }
-        if (bound.size >= BIND_MAP_MAX) bound.clear()
+        if (bound.size >= BIND_MAP_MAX) evictBoundBeforeInsert()
         val name = clazz.name
         bound[id] = Bound(clazz, name, cardClass)
         touch(name)
         if (cardClass != null) touch(cardClass)
+    }
+
+    /** 水位淘汰：优先删无卡片语义的条目保住高价值条目；无可删才整表清空兜底。 */
+    private fun evictBoundBeforeInsert() {
+        val toRemove = ArrayList<Int>()
+        for ((id, b) in bound) {
+            if (b.cardClass == null) toRemove.add(id)
+        }
+        if (toRemove.isEmpty()) {
+            bound.clear()
+        } else {
+            for (id in toRemove) bound.remove(id)
+        }
     }
 
     /** mount 期按类名静态登记（无实例）：进清单并恒驻（不受 24h 未出现清理）。 */
@@ -401,7 +417,11 @@ object GlassRegistry {
             return null
         }
         val map = snapshotOverrides()
-        if (lookupAudit.size <= 128 && lookupAudit.add(elementId)) {
+        val auditNowMs = SystemClock.uptimeMillis()
+        val auditPrevMs = lookupAudit[elementId] ?: 0L
+        if (auditNowMs - auditPrevMs >= AUDIT_PER_ID_INTERVAL_MS) {
+            if (lookupAudit.size > 512) lookupAudit.clear()
+            lookupAudit[elementId] = auditNowMs
             val hit = when {
                 b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
                 map.containsKey(b.name) -> b.name
