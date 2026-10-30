@@ -777,13 +777,19 @@ object LiquidGlassShader {
                 // 静止（blend=1）掩码 CONIC（cc=1.5×uMaskCornerRadius，对齐系统 spec/12）；中间线性渐混，
                 // 本体≡掩码形状全程一致 → 消除"本体 CONIC blend 但掩码恒 CONIC"的形状冲突（生硬切开+边缘闪）。
                 float cc = 1.5 * uMaskCornerRadius;   // CONIC corner = 1.5 × notification_corner_radius（=96）
-                float blend = clamp(uCornerConicBlend, 0.0, 1.0);
-                float sdArc = sdRoundedRect(coord - maskCenter, maskHalf, uMaskCornerRadius);
-                if (blend <= 0.001) {
-                    sdMask = sdArc;
+                float maskMinHalf = min(maskHalf.x, maskHalf.y);
+                if (cc >= maskMinHalf) {
+                    // cc 超短边一半时 bezier squircle 数学退化（角区判定失效向内啃）——与本体 mbShapeSDF 同款守卫，退化为短边封顶胶囊
+                    sdMask = sdRoundedRect(coord - maskCenter, maskHalf, maskMinHalf);
                 } else {
-                    float sdConic = sdBezierDistance(coord - maskCenter, maskHalf, cc, uMaskWeight);
-                    sdMask = mix(sdArc, sdConic, blend);
+                    float blend = clamp(uCornerConicBlend, 0.0, 1.0);
+                    float sdArc = sdRoundedRect(coord - maskCenter, maskHalf, uMaskCornerRadius);
+                    if (blend <= 0.001) {
+                        sdMask = sdArc;
+                    } else {
+                        float sdConic = sdBezierDistance(coord - maskCenter, maskHalf, cc, uMaskWeight);
+                        sdMask = mix(sdArc, sdConic, blend);
+                    }
                 }
             } else {
                 sdMask = sdRoundedRect(coord - maskCenter, maskHalf, 0.0);

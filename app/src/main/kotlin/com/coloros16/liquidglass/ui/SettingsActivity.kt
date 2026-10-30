@@ -961,6 +961,14 @@ class SettingsActivity : AppCompatActivity() {
             container.addView(glassPresetRow(getString(R.string.glass_preset_class_empty), null))
         }
         val pad = (8 * resources.displayMetrics.density).toInt()
+        if (target.params.isEmpty() && target.classes.isNotEmpty()) {
+            val hint = TextView(this)
+            hint.text = getString(R.string.glass_preset_empty_params_hint)
+            hint.textSize = 12f
+            hint.alpha = 0.7f
+            hint.setPadding(pad, pad, pad, pad)
+            container.addView(hint, 0)
+        }
         classes.forEach { cls ->
             val box = CheckBox(this)
             box.text = classDisplayText(cls)

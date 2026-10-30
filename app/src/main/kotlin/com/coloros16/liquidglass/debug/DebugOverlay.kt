@@ -67,6 +67,8 @@ internal object DebugOverlay {
     private const val TICK_MS = 66L
     private const val TICK_FAST_MS = 33L
     private const val PICK_TOLERANCE_DIP = 24f
+    /** 巨区判定：region 面积超屏幅此比例的候选不吃容差（只参与严格包含轮）。 */
+    private const val GIANT_REGION_SCREEN_FRACTION = 0.4f
     private const val GLASS_LIST_INTERVAL_MS = 1000L
     private const val STALE_MS = 3000L
     private const val TREE_MAX_DEPTH = 8
@@ -454,40 +456,68 @@ internal object DebugOverlay {
     private fun captureAt(x: Float, y: Float): CaptureResult {
         val snap = snapshotProvider?.invoke() ?: emptyList()
         val tol = PICK_TOLERANCE_DIP * density
+        val giantArea = screenW.toFloat() * screenH.toFloat() * GIANT_REGION_SCREEN_FRACTION
+        var zIndexMap: Map<View, Int>? = null
+        // 两轮候选制：第一轮只收 region 严格包含触点者；零命中才开第二轮（±容差）。
+        // 巨区（面积超屏幅比例）不吃容差——容差本意照顾小元素点选精度，巨区吃容差只会吞掉未注册点。
+        val strict = ArrayList<DebugElement>()
+        val tolerant = ArrayList<DebugElement>()
+        for (e in snap) {
+            if (e.hostViewRef?.get() == null) continue
+            val r = e.region
+            if (r.left <= x && x <= r.right && r.top <= y && y <= r.bottom) {
+                strict.add(e)
+                continue
+            }
+            if (r.width() * r.height() > giantArea) continue
+            if (r.left - tol <= x && x <= r.right + tol && r.top - tol <= y && y <= r.bottom + tol) {
+                tolerant.add(e)
+            }
+        }
+        val pool = if (strict.isNotEmpty()) strict else tolerant
         var best: DebugElement? = null
         var bestZ = Int.MIN_VALUE
         var bestDepth = -1
+        var bestDist = Float.MAX_VALUE
         var bestArea = Float.MAX_VALUE
-        var zIndexMap: Map<View, Int>? = null
-        for (e in snap) {
+        for (e in pool) {
+            val host = e.hostViewRef?.get() ?: continue
             val r = e.region
-            if (r.left - tol <= x && x <= r.right + tol && r.top - tol <= y && y <= r.bottom + tol) {
-                val host = e.hostViewRef?.get()
-                val root = try {
-                    host?.rootView
-                } catch (t: Throwable) {
-                    null
-                }
-                val z = if (root != null) {
-                    (zIndexMap ?: buildWindowZIndexMap().also { zIndexMap = it })[root] ?: -1
-                } else {
-                    -1
-                }
-                val depth = if (host != null) viewDepthOf(host) else -1
-                val area = r.width() * r.height()
-                // 上层优先：窗口 z 序（mViews 索引大=上）> 同窗 View 树深度 > 面积小者
-                if (z > bestZ ||
-                    (z == bestZ && depth > bestDepth) ||
-                    (z == bestZ && depth == bestDepth && area < bestArea)
-                ) {
-                    bestZ = z
-                    bestDepth = depth
-                    bestArea = area
-                    best = e
-                }
+            val root = try {
+                host.rootView
+            } catch (t: Throwable) {
+                null
+            }
+            val z = if (root != null) {
+                (zIndexMap ?: buildWindowZIndexMap().also { zIndexMap = it })[root] ?: -1
+            } else {
+                -1
+            }
+            val depth = viewDepthOf(host)
+            val area = r.width() * r.height()
+            val dx = (r.left + r.right) * 0.5f - x
+            val dy = (r.top + r.bottom) * 0.5f - y
+            val dist = dx * dx + dy * dy
+            // 上层优先：窗口 z 序（mViews 索引大=上）> 同窗 View 树深度 > 距触点中心近 > 面积小者
+            if (z > bestZ ||
+                (z == bestZ && depth > bestDepth) ||
+                (z == bestZ && depth == bestDepth && dist < bestDist) ||
+                (z == bestZ && depth == bestDepth && dist == bestDist && area < bestArea)
+            ) {
+                bestZ = z
+                bestDepth = depth
+                bestDist = dist
+                bestArea = area
+                best = e
             }
         }
         val hit = best
+        val via = if (strict.isNotEmpty()) "strict" else if (hit != null) "tolerant" else "-"
+        logThrottled(
+            "capture-at",
+            "debug overlay: capture pool=${pool.size} strict=${strict.size} tolerant=${tolerant.size} " +
+                "winner=${hit?.hostViewName ?: "none"} via=$via",
+        )
         return if (hit != null) {
             buildGlassResult(hit, via = "registry")
         } else {

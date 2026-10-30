@@ -570,6 +570,8 @@ object BlurDrawHook {
     private const val VOLUME_PANEL_BACKDROP_TTL_MS = 500L
     /** 展开面板黑遮罩色：黑 8%（透明度 0x14）。 */
     private const val VOLUME_PANEL_MASK_COLOR = 0x14000000
+    /** srcRect 塌缩回退记忆有效期（ms）：超龄不回退（防采样陈旧内容），仅治滑入动画超屏帧。 */
+    private const val SRC_RECT_FALLBACK_MAX_AGE_MS = 500L
     /** 主线程同步抓屏源白名单：内容指纹 unchanged 也强制发布（关键 UI 事件补抓不被旧基准否决）。 */
     private val SYNC_CAPTURE_FORCE_PUBLISH_SOURCES = setOf(
         "volume-expand-main-thread",
@@ -627,6 +629,12 @@ object BlurDrawHook {
     private const val SUFFIX_ENTRANCE_CARD_VIEW = "EntranceCardView"
     /** 控制中心磁贴展开大卡 View 类名后缀（Dialog 容器根）。 */
     private const val SUFFIX_QS_DETAIL = "OplusQSDetail"
+    /** 媒体展开大卡 Dialog 类名后缀（父链辅判据，双版本反编译实锤类名稳定）。 */
+    private const val CLASS_HINT_MEDIA_DETAIL_DIALOG = "OplusQsMediaDetailPanelDialog"
+    /** 媒体展开大卡语义卡类全名（GlassRegistry 键控按全类名，真类名天然进绑定清单）。 */
+    private const val CLASS_MEDIA_DETAIL_DIALOG = "com.oplus.systemui.qs.media.OplusQsMediaDetailPanelDialog"
+    /** 媒体展开大卡底板布局 entry 名（宿主 id 指纹主判据，普通 ConstraintLayout 类名不可采信）。 */
+    private const val RES_ENTRY_MEDIA_CAROUSEL_LAYOUT = "oplus_media_carousel_layout"
     /** 设备中心卡片 hook 重读/诊断节流间隔（ms）。 */
     private const val DEVICE_CARD_DIAG_TTL_MS = 2_000L
     /** attach 后模糊背景后插的重扫延迟（ms，两拍：背景插入通常发生在首帧布局后）。 */
@@ -886,6 +894,18 @@ object BlurDrawHook {
         /** true=整屏快照源（0.5 降采样）；false=全局 onBlurReady 原图（已移除，恒 true） */
         val isElementSource: Boolean,
     )
+
+    /** 每元素上一帧成功 srcRect 记忆（滑入超屏塌缩帧回退用）：srcRect + 快照身份（region/尺寸）+ 时刻 */
+    private class LastGoodSrcRect(
+        val srcRect: RectF,
+        val snapRegion: RectF,
+        val bmpW: Int,
+        val bmpH: Int,
+        val atMs: Long,
+    )
+
+    /** 塌缩回退记忆表：id → 上一帧成功 srcRect（[SRC_RECT_FALLBACK_MAX_AGE_MS] 内且快照未换才可用） */
+    private val lastGoodSrcRectById = ConcurrentHashMap<Int, LastGoodSrcRect>()
 
     /** 整屏快照（@Volatile：worker 线程写入，渲染线程读取；内容变化时重抓，静止不抓） */
     @Volatile
@@ -2195,6 +2215,12 @@ object BlurDrawHook {
     /** 长按菜单承载窗 sfc 解析失败负缓存截止时刻。 */
     @Volatile
     private var menuPanelSfcMissAt = 0L
+    /** 长按菜单 popup 窗口根 sfc 缓存（menuBridgeHost 身份直取，防 popup 自采样）。 */
+    @Volatile
+    private var menuPopupSfcCache: SurfaceControl? = null
+    /** 长按菜单 popup sfc 解析失败负缓存截止时刻。 */
+    @Volatile
+    private var menuPopupSfcMissAt = 0L
 
     // ---- [doc/spec/135] 长按菜单玻璃状态 ----
     /** COUIPopupListWindow.show hook 是否已挂（install 幂等） */
@@ -4800,6 +4826,16 @@ object BlurDrawHook {
             if (name.endsWith(SUFFIX_ENTRANCE_CARD_VIEW)) return name
             // 控制中心磁贴展开大卡（WiFi/蓝牙/移动数据等全部 Dialog 容器）
             if (name.endsWith(SUFFIX_QS_DETAIL)) return name
+            // 媒体展开大卡底板：宿主是普通 ConstraintLayout（类名不可采信），按布局 id 指纹主判据
+            if (name.endsWith(CLASS_HINT_MEDIA_DETAIL_DIALOG)) return CLASS_MEDIA_DETAIL_DIALOG
+            if (cur.id != View.NO_ID) {
+                val entry = try {
+                    cur.resources.getResourceEntryName(cur.id)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (entry == RES_ENTRY_MEDIA_CAROUSEL_LAYOUT) return CLASS_MEDIA_DETAIL_DIALOG
+            }
             cur = cur.parent as? View
             depth++
         }
@@ -8114,6 +8150,23 @@ object BlurDrawHook {
         // 新弹窗出现：清负缓存让音量窗 sfc 立即可解析
         volumeSfcMissAt = 0L
         if (now - last > VOLUME_APPEAR_GAP_MS) {
+            // 面板黑遮罩：普通弹出（未经 expandPanel）首帧也替换背景；幂等（已换则 ColorDrawable 判据跳过）
+            if (volumePanelBackdropEnabled()) {
+                try {
+                    var p: View? = seekbar.parent as? View
+                    var hops = 0
+                    while (p != null && hops < 12) {
+                        if (p.javaClass.name == CLASS_VOLUME_DIALOG_VIEW) {
+                            applyVolumePanelClean(p)
+                            break
+                        }
+                        p = p.parent as? View
+                        hops++
+                    }
+                } catch (t: Throwable) {
+                    Lg.w(TAG, "volume-panel-backdrop: appearance apply error", t)
+                }
+            }
             triggerFirstFrameCaptureWithBurst(
                 burstStop = { false },
                 logTag = "volume-appear",
@@ -8215,13 +8268,13 @@ object BlurDrawHook {
         return volumeCornerPx
     }
 
-    /** 音量条映射诊断日志：每种原因每 [DEVICE_CARD_DIAG_TTL_MS] 最多一条，防刷屏。 */
+    /** 音量条映射诊断日志：每种原因每 [DEVICE_CARD_DIAG_TTL_MS] 最多一条，防刷屏；[reason] 回显可按 key grep。 */
     private fun logVolumeDiag(reason: String, msg: String) {
         val now = SystemClock.uptimeMillis()
         val prev = volumeDiagAtMs[reason] ?: 0L
         if (now - prev < DEVICE_CARD_DIAG_TTL_MS) return
         volumeDiagAtMs[reason] = now
-        Lg.i(TAG, msg)
+        Lg.i(TAG, "[$reason] $msg")
     }
 
     // ------------------------------------------------------------ [doc/spec/134 第二轮] ···展开按钮玻璃 ------------------------------------------------------------
@@ -8461,13 +8514,21 @@ object BlurDrawHook {
             wrapper.background = NotificationPopupGlassDrawable(wrapper, bg, corner)
             menuBridgeHost = WeakReference(wrapper)
             menuBridgeHostAtMs = SystemClock.uptimeMillis()
+            menuPopupSfcMissAt = 0L
+            try {
+                resolveMenuPopupSfc()
+            } catch (t: Throwable) {
+                logThrottled("menu-popup-sfc-fail", Log.WARN) {
+                    "notif-popup: seed popup sfc failed ${t.javaClass.simpleName}"
+                }
+            }
             Lg.i(TAG, "notif-popup: glass installed on ${wrapper.javaClass.simpleName} corner=$corner")
         } else if (bg is NotificationPopupGlassDrawable) {
             wrapper.background = bg.orig
         }
     }
 
-    /** dismiss 清理：背景是模块玻璃 drawable → 还原原背景；清承载窗 sfc 缓存与负缓存（下次弹出立即可解析）。 */
+    /** dismiss 清理：背景是模块玻璃 drawable → 还原原背景；清承载窗/popup sfc 缓存与负缓存（下次弹出立即可解析）。 */
     private fun clearNotificationPopupGlass(windowObj: Any?) {
         val wrapper = resolveMenuWrapper(windowObj) ?: return
         val bg = try {
@@ -8482,6 +8543,8 @@ object BlurDrawHook {
         menuBridgeHost = null
         menuPanelSfcCache = null
         menuPanelSfcMissAt = 0L
+        menuPopupSfcCache = null
+        menuPopupSfcMissAt = 0L
     }
 
     /** 反射取 `mMainMenuWrapper`（public final 字段，字段缓存一次）。 */
@@ -8746,7 +8809,8 @@ object BlurDrawHook {
             return
         }
         val renderSource = resolveRenderSource(id, screenRegion) ?: run {
-            logThrottled("seedling-nosrc", Log.WARN, 500L) {
+            // key 带 id：不同元素各自节流窗，防高频元素（more-btn）吞掉滑条自己的 ABORT 记录
+            logThrottled("seedling-nosrc-$id", Log.WARN, 500L) {
                 "seedling-card: ABORT no render source id=$id region=$screenRegion"
             }
             return
@@ -13328,8 +13392,35 @@ object BlurDrawHook {
             srcTop = srcTop.coerceIn(0f, bmpH)
             srcRight = srcRight.coerceIn(0f, bmpW)
             srcBottom = srcBottom.coerceIn(0f, bmpH)
-            if (srcLeft >= srcRight || srcTop >= srcBottom) return null
+            if (srcLeft >= srcRight || srcTop >= srcBottom) {
+                // 滑入动画超屏帧塌缩（region 整体越出快照）：≤SRC_RECT_FALLBACK_MAX_AGE_MS 内该 id
+                // 上一帧成功 srcRect 且快照未换 → 回退旧 rect 继续画玻璃；超龄/换快照才 null
+                val now = SystemClock.uptimeMillis()
+                val lastGood = lastGoodSrcRectById[id]
+                val usable = lastGood != null &&
+                    now - lastGood.atMs <= SRC_RECT_FALLBACK_MAX_AGE_MS &&
+                    lastGood.bmpW == snap.bitmap.width && lastGood.bmpH == snap.bitmap.height &&
+                    lastGood.snapRegion == snap.region
+                if (usable) {
+                    logThrottled("seedling-src-fallback", Log.INFO, 1000L) {
+                        "resolve: srcRect collapsed -> fallback id=$id region=$screenRegion " +
+                            "lastGood=${lastGood.srcRect} age=${now - lastGood.atMs}ms"
+                    }
+                    return RenderSource(snap.bitmap, RectF(lastGood.srcRect), isElementSource = true)
+                }
+                logThrottled("seedling-src-collapse", Log.WARN, 1000L) {
+                    "resolve: srcRect collapsed id=$id region=$screenRegion snapRegion=${snap.region} " +
+                        "bmp=${snap.bitmap.width}x${snap.bitmap.height} lastGood=${lastGood != null} " +
+                        "age=${if (lastGood != null) now - lastGood.atMs else -1L}ms"
+                }
+                return null
+            }
             val srcRect = RectF(srcLeft, srcTop, srcRight, srcBottom)
+            lastGoodSrcRectById[id] = LastGoodSrcRect(
+                RectF(srcRect), RectF(snap.region),
+                snap.bitmap.width, snap.bitmap.height, SystemClock.uptimeMillis(),
+            )
+            if (lastGoodSrcRectById.size > 128) lastGoodSrcRectById.clear()
             // MetaBall 扩张/动画中 region 可能含屏外负偏移 → srcRect 可能越界；AGSL BitmapShader CLAMP 兜底
             return RenderSource(snap.bitmap, srcRect, isElementSource = true)
         }
@@ -14933,6 +15024,7 @@ object BlurDrawHook {
      *  活跃玻璃宿主的窗口根，必然是合法排除对象。 */
     private fun isGlassOwnWindowRoot(rootView: View): Boolean {
         // [doc/spec/92 §5.2] 身份判据：活跃玻璃宿主的窗口根（引用比较，零反射）
+        if (menuBridgeHost?.get()?.rootView === rootView) return true
         if (simpleBannerActiveHost?.get()?.rootView === rootView) return true
         if (headsUpActiveHost?.get()?.rootView === rootView) return true
         if (cardBackgroundActiveHost?.get()?.rootView === rootView) return true
@@ -15218,6 +15310,82 @@ object BlurDrawHook {
         }
     }
 
+    /**
+     * 解析长按菜单 popup 窗口根 SurfaceControl（供 [collectExcludes] 第 7 路排除，防菜单卡玻璃自采样 popup 自己）：
+     * 宿主 = [menuBridgeHost]（菜单主体，show 时写入），popup 装饰根类名不可靠（PopupWindow$PopupView）
+     * → 一律身份直取 `host.rootView` 引用，禁类名匹配。正缓存有效直接复用；宿主缺失/未 attach/解析失败
+     * 记负缓存（[MENU_PANEL_SFC_NEG_CACHE_MS] 内不重解析）；装玻璃时清负缓存、dismiss 清正缓存。
+     * 双通道取 sfc：先方法反射（[reflectViewRootSurfaceControl]），失败再直读 ViewRootImpl.mSurfaceControl
+     * 字段（[fieldViewRootSurfaceControl]），都失败才 miss。
+     */
+    @Synchronized
+    private fun resolveMenuPopupSfc(): SurfaceControl? {
+        menuPopupSfcCache?.let {
+            if (it.isValid) {
+                logMenuPopupSfc("ok", "cache", null)
+                return it
+            }
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now < menuPopupSfcMissAt) return null
+        val host = menuBridgeHost?.get()
+        if (host == null || !host.isAttachedToWindow) {
+            menuPopupSfcMissAt = now + MENU_PANEL_SFC_NEG_CACHE_MS
+            logMenuPopupSfc("false", "null", if (host == null) "no-host" else "not-attached")
+            return null
+        }
+        val rootView = try {
+            host.rootView
+        } catch (t: Throwable) {
+            null
+        }
+        if (rootView == null) {
+            menuPopupSfcMissAt = now + MENU_PANEL_SFC_NEG_CACHE_MS
+            logMenuPopupSfc("false", "null", "no-root")
+            return null
+        }
+        val viaReflect = try {
+            reflectViewRootSurfaceControl(rootView)
+        } catch (t: Throwable) {
+            null
+        }
+        if (viaReflect != null && viaReflect.isValid) {
+            menuPopupSfcCache = viaReflect
+            menuPopupSfcMissAt = 0L
+            logMenuPopupSfc("ok", "reflect", null)
+            return viaReflect
+        }
+        val vri = try {
+            var m1 = mGetViewRootImpl
+            if (m1 == null) {
+                m1 = View::class.java.getMethod("getViewRootImpl")
+                mGetViewRootImpl = m1
+            }
+            m1.invoke(rootView)
+        } catch (t: Throwable) {
+            null
+        }
+        if (vri != null) {
+            val viaField = fieldViewRootSurfaceControl(vri)
+            if (viaField != null && viaField.isValid) {
+                menuPopupSfcCache = viaField
+                menuPopupSfcMissAt = 0L
+                logMenuPopupSfc("ok", "field", null)
+                return viaField
+            }
+        }
+        menuPopupSfcMissAt = now + MENU_PANEL_SFC_NEG_CACHE_MS
+        logMenuPopupSfc("false", "null", if (vri == null) "no-vri" else "both-channels-failed")
+        return null
+    }
+
+    /** menu-popup-sfc 解析诊断（每 key 每 2s 最多一条，Lg.i 受模块日志门控）。 */
+    private fun logMenuPopupSfc(result: String, via: String, reason: String?) {
+        logThrottled("menu-popup-sfc", Log.INFO) {
+            "menu-popup-sfc: resolve $result via=$via" + (reason?.let { " reason=$it" } ?: "")
+        }
+    }
+
     /** [spec/19] heads-up 窗口根 View 判定：rootView=HeadsUpLayout（HeadsUpContainerWindow ccView，
      *  反编译实证 com.oplus.systemui.notification.headsup.windowframe.HeadsUpLayout）；
      *  兜底按窗口类型 type==2017（TYPE_STATUS_BAR_SUB_PANEL，HeadsUpContainerWindow lp 实证）。 */
@@ -15494,31 +15662,54 @@ object BlurDrawHook {
             }
             null
         }
+        val menuPopup = try {
+            resolveMenuPopupSfc()
+        } catch (t: Throwable) {
+            logThrottled("menu-popup-sfc-fail", Log.WARN) {
+                "bg-element: resolve menu-popup sfc failed ${t.javaClass.simpleName}"
+            }
+            null
+        }
         if (shade != null && shade.isValid) excludes.add(shade)
         hu?.let { if (it.isValid) excludes.add(it) }
         banner?.let { if (it.isValid) excludes.add(it) }
         card?.let { if (it.isValid) excludes.add(it) }
         if (vol != null && vol.isValid && excludes.none { e -> e == vol }) excludes.add(vol)
         if (menu != null && menu.isValid && excludes.none { e -> e == menu }) excludes.add(menu)
+        if (menuPopup != null && menuPopup.isValid && excludes.none { e -> e == menuPopup }) excludes.add(menuPopup)
         // [doc/spec/92 §5.5 · 2026-10-10] 诊断日志（模块日志开关 + 节流）：一眼分辨两类根因——
         // 「解析不到」（banner=null / n 偏小）vs 「解析到了但 SF 不认 setExcludeLayers」（n≥1 仍叠加）。
         logThrottled("excludes", Log.DEBUG) {
             "bg-element: excludes n=${excludes.size} " +
-                "[shade=${exclName(shade)}, hu=${exclName(hu)}, banner=${exclName(banner)}, card=${exclName(card)}, " +
-                "vol=${exclName(vol)}, menu=${exclName(menu)}]"
+                "[shade=${exclName(shade)}, hu=${exclName(hu, headsUpActiveHost?.get())}, banner=${exclName(banner, simpleBannerActiveHost?.get())}, " +
+                "card=${exclName(card, cardBackgroundActiveHost?.get())}, vol=${exclName(vol, volumeGlassHost?.get())}, " +
+                "menu=${exclName(menu)}, menuPopup=${exclName(menuPopup, menuBridgeHost?.get())}]"
         }
         return excludes
     }
 
-    /** [doc/spec/92 §5.5] 排除层名（诊断日志用）：null/失效打 null，反射失败打 "<name?>fail"。 */
+    /** [doc/spec/92 §5.5] 排除层名（诊断日志用）：null/失效打 null，反射失败打 "<name-fail>"，反射得 null 打 "<name-null>"（与 sfc 缺席区分）。 */
     private fun exclName(sfc: SurfaceControl?): String? {
         if (sfc == null) return null
         if (!sfc.isValid) return "invalid"
         return try {
-            reflectSurfaceControlName(sfc)
+            reflectSurfaceControlName(sfc) ?: "<name-null>"
         } catch (t: Throwable) {
             "<name-fail>"
         }
+    }
+
+    /** 排除层名（带宿主身份优先）：有活跃宿主时直接打其窗口根类名（sfc.getName 反射恒 null 时的诊断替代）。 */
+    private fun exclName(sfc: SurfaceControl?, host: View?): String? {
+        if (sfc == null) return null
+        if (!sfc.isValid) return "invalid"
+        val cls = try {
+            host?.rootView?.javaClass?.name
+        } catch (t: Throwable) {
+            null
+        }
+        if (cls != null) return cls.substringAfterLast('.')
+        return exclName(sfc)
     }
 
     /**

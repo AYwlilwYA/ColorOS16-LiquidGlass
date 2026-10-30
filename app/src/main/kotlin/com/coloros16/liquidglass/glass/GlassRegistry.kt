@@ -211,6 +211,7 @@ object GlassRegistry {
 
     /** 预设查表审计（每 id 每秒最多一条，定位绑定类/命中键） */
     private val lookupAudit = ConcurrentHashMap<Int, Long>()
+    private val presetEmptyAuditAtMs = ConcurrentHashMap<String, Long>()
 
     /** 预设查表时未绑定的元素 id（每元素一条，抓注册 id 与渲染 id 错配） */
     private val unboundAudit = ConcurrentHashMap.newKeySet<Int>()
@@ -343,6 +344,7 @@ object GlassRegistry {
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleEntranceCardView" to "设备空间入口卡（横版）",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.NoDeviceEntranceCardView" to "设备空间入口卡（无设备版）",
         "com.oplus.systemui.qs.detail.OplusQSDetail" to "快捷开关展开卡",
+        "com.oplus.systemui.qs.media.OplusQsMediaDetailPanelDialog" to "媒体展开大卡底板",
         "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "相册照片页背景",
         "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "相册通用背景模糊层",
         "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "窗口背景模糊层",
@@ -383,6 +385,7 @@ object GlassRegistry {
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleEntranceCardView" to "loc_device_entrance_rect",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.NoDeviceEntranceCardView" to "loc_device_entrance_nodevice",
         "com.oplus.systemui.qs.detail.OplusQSDetail" to "loc_qs_detail",
+        "com.oplus.systemui.qs.media.OplusQsMediaDetailPanelDialog" to "loc_qs_media_detail",
         "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "loc_gallery_photo_bg",
         "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "loc_gallery_bg_view",
         "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "loc_window_blur",
@@ -510,7 +513,8 @@ object GlassRegistry {
             val presets = parsePresets(prefs.getString(Prefs.KEY_GLASS_PRESETS, null))
             val map = HashMap<String, Map<String, Float>>()
             for (p in presets) {
-                if (p.params.isEmpty()) continue
+                // 空参预设保留条目：只绑类未调参 = 命中预设行、各字段回退默认值生效（不再静默丢弃）
+                if (p.params.isEmpty() && p.classes.isNotEmpty()) auditPresetEmptyParams(p)
                 for (c in p.classes) map[c] = p.params
             }
             presetCache = map
@@ -518,6 +522,19 @@ object GlassRegistry {
             Lg.w(TAG, "read glass_presets failed", t)
         }
         return presetCache
+    }
+
+    /** 空参预设节流审计（每行每 [AUDIT_PER_ID_INTERVAL_MS] 最多一条，便于预设表对账）。 */
+    private fun auditPresetEmptyParams(p: Preset) {
+        val now = SystemClock.uptimeMillis()
+        val prev = presetEmptyAuditAtMs[p.id] ?: 0L
+        if (now - prev < AUDIT_PER_ID_INTERVAL_MS) return
+        if (presetEmptyAuditAtMs.size > 64) presetEmptyAuditAtMs.clear()
+        presetEmptyAuditAtMs[p.id] = now
+        Lg.i(
+            TAG, "preset-drop-kept-empty: id=${p.id} " +
+                "classes=${p.classes.take(8).joinToString { it.substringAfterLast('.') }}",
+        )
     }
 
     // ------------------------------------------------------------ 圆角覆盖查询（渲染热路径） ------------------------------------------------------------
