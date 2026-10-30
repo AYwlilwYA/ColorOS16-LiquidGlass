@@ -10,6 +10,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.util.Log
+import com.coloros16.liquidglass.hook.NotificationMotionContract
 import com.coloros16.liquidglass.hook.ParticleDissolveHook
 import java.io.File
 import org.json.JSONObject
@@ -80,6 +81,13 @@ class ParticleProbeActivity:Activity() {
   val type=api.javaClass
   fun method(name:String)=type.getDeclaredMethod(name,View::class.java).apply { isAccessible=true }
   val prepare=method("prepare");val dismiss=method("dismiss");val cancel=method("cancel")
+  api.onGesture(card,NotificationMotionContract.Event.PREPARE)
+  api.onGesture(card,NotificationMotionContract.Event.REQUEST)
+  val effects=type.getDeclaredField("effects").apply { isAccessible=true }.get(api) as Map<*,*>
+  val captures=type.getDeclaredField("captures").apply { isAccessible=true }.get(api) as Map<*,*>
+  check(effects.isEmpty()) // A swipe attempt is not a deletion.
+  api.onGesture(card,NotificationMotionContract.Event.CANCEL)
+  check(captures.isEmpty())
   val cap=prepare.invoke(api,card)!!
   val field=cap.javaClass.getDeclaredField("bitmap").apply { isAccessible=true }
   var tries=0
@@ -91,10 +99,13 @@ class ParticleProbeActivity:Activity() {
     val readback=captured.copy(Bitmap.Config.ARGB_8888,false)!!
     check(Color.alpha(readback.getPixel(readback.width/2,readback.height/2))>200)
     readback.recycle()
-    dismiss.invoke(api,card)
+    api.onGesture(card,NotificationMotionContract.Event.REQUEST)
+    api.onGesture(card,NotificationMotionContract.Event.COMMIT)
     ui.postDelayed({try {
-      val effects=type.getDeclaredField("effects").apply { isAccessible=true }.get(api) as Map<*,*>
-      check(effects.size==1);cancel.invoke(api,card);check(effects.isEmpty())
+      check(effects.size==1);cancel.invoke(api,card);check(effects.size==1)
+      // Native reset after a committed delete must not kill the already-started dust.
+      api.onGesture(card,NotificationMotionContract.Event.ABORT);check(effects.isEmpty())
+      api.stopAll();check(effects.isEmpty())
       dismiss.invoke(api,card)
       ui.postDelayed({try {
        check(effects.size==1)
@@ -102,7 +113,7 @@ class ParticleProbeActivity:Activity() {
         var detached=0
         val dust=ParticleDissolveHook.Api33.Dust(card,captured,0f,0f,card.width,card.height,1f,100) { detached++ }
         dust.start();(card.parent as android.view.ViewGroup).removeView(card);check(detached==1)
-        report.put("detachReleasesOverlay",true).put("hardwareSnapshot",true).put("cancelReleasesOverlay",true).put("completionReleasesOverlay",true).put("physicalDeviceTested",false)
+        report.put("detachReleasesOverlay",true).put("hardwareSnapshot",true).put("cancelBeforeCommitReleasesCapture",true).put("attemptDoesNotEmitParticles",true).put("nativeResetAfterCommitKeepsDust",true).put("nativeAbortStopsParticles",true).put("stopAllReleasesOverlay",true).put("completionReleasesOverlay",true).put("physicalDeviceTested",false)
         Log.i("ParticleProbe","PASS "+report);label.text="PASS\n"+report.toString(2)
        } catch(e:Throwable){fail(e)}},1400)
       } catch(e:Throwable){fail(e)}},300)

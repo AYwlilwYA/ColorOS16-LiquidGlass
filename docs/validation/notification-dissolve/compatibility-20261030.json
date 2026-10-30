@@ -1,0 +1,14 @@
+{
+  "baseCommit": "64148b8",
+  "baselineErrors": 177,
+  "pullRequestErrors": 177,
+  "newErrors": 0,
+  "baselineWarnings": 233,
+  "pullRequestWarnings": 240,
+  "errorComparisonIgnoresLineShifts": true,
+  "productionParticleCodeMatchesDreamGlass": true,
+  "unitTests": 11,
+  "unitFailures": 0,
+  "upstreamGpuShaderUnchanged": true,
+  "COS16PhysicalDeviceTested": false
+}
