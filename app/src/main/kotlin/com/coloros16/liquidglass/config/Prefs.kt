@@ -489,6 +489,19 @@ object Prefs {
     /** 全局搜索弹窗玻璃化默认值（false = 不干预） */
     const val DEFAULT_QUICK_SEARCH_GLASS = false
 
+    /** 负一屏整页玻璃：批量挂载器扫 assistantscreen 视图树，纯色/渐变背板与 HighlightShadow
+     *  自绘背板控件统一挂背板玻璃（与弹窗玻璃 [KEY_ASSISTANT_SCREEN_GLASS] 独立）。
+     *  默认 **false**。开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_ASSISTANT_PAGE_GLASS = "assistant_page_glass_enable"
+    /** 负一屏整页玻璃默认值（false = 不干预） */
+    const val DEFAULT_ASSISTANT_PAGE_GLASS = false
+
+    /** 搜索页整页玻璃：批量挂载器扫 quicksearchbox 视图树挂背板玻璃（与弹窗玻璃
+     *  [KEY_QUICK_SEARCH_GLASS] 独立）。默认 **false**。开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_QUICK_SEARCH_PAGE_GLASS = "quick_search_page_glass_enable"
+    /** 搜索页整页玻璃默认值（false = 不干预） */
+    const val DEFAULT_QUICK_SEARCH_PAGE_GLASS = false
+
     /** 相册背景采样范围探针（实验）：把 A 族视图背景 RenderEffect 临时替换为越界采样染色探针，
      * 肉眼判定 shader input 是否含节点外像素（折射环带可行性）。默认 **false**；
      * 开启时相册原模糊观感被探针覆盖（主体透传=清晰背景 + 边缘色环）。改动即时生效（TTL 500ms 重读）。 */

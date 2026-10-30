@@ -174,6 +174,7 @@ object AppGlassHook {
             mountSelfProbeHook(api, classLoader)
             Lg.i(TAG, "probe switch read=${probeEnabled()}")
         }
+        AppPageGlassMounter.install(api, classLoader, packageName)
     }
 
     /** A 族：hook 视图背景 RenderEffect 挂载点，命中即按 View 类登记组件。 */
@@ -193,6 +194,7 @@ object AppGlassHook {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain -> aFamilyIntercept(chain) }
             aFamilyMounted = true
+            selfProbeSetBg = method
             Lg.i(TAG, "mounted: $CLASS_VIEW_BG_RENDER_EFFECT#$METHOD_SET_BACKGROUND_RENDER_EFFECT(RenderEffect, View) (A-family)")
         } catch (t: Throwable) {
             Lg.e(TAG, "mount FAILED: $CLASS_VIEW_BG_RENDER_EFFECT#$METHOD_SET_BACKGROUND_RENDER_EFFECT", t)
@@ -477,7 +479,7 @@ object AppGlassHook {
     }
 
     /** 背板玻璃效果 w×h×corner 编译缓存（失败不缓存，由 [ButtonGlassState.compileFailed] 停试）。 */
-    private fun cachedGlassEffect(width: Int, height: Int, cornerRadius: Float): RenderEffect? {
+    internal fun cachedGlassEffect(width: Int, height: Int, cornerRadius: Float): RenderEffect? {
         val key = "${width}x$height@${cornerRadius.toInt()}"
         glassEffectCache[key]?.let { return it }
         val effect = try {
@@ -496,7 +498,7 @@ object AppGlassHook {
      * 五钮圆角解析：outline provider 优先（ColorOS 钮多为胶囊/圆钮）；
      * 兜底短边 ≤96px 取 min/2（胶囊），大元素取短边×0.3（防圆团）。
      */
-    private fun resolveButtonCornerRadius(view: View): Float {
+    internal fun resolveButtonCornerRadius(view: View): Float {
         val w = view.width
         val h = view.height
         val short = minOf(w, h).toFloat()
@@ -560,6 +562,19 @@ object AppGlassHook {
                         )
                     }
                 }
+                // 整页玻璃元素被宿主覆写：换回挂载器玻璃（记档已在上方完成）
+                if (AppPageGlassMounter.isApplied(view)) {
+                    cachedGlassEffect(view.width, view.height, resolveButtonCornerRadius(view))
+                        ?.let { glass ->
+                            val args = chain.getArgs().toTypedArray()
+                            args[0] = glass
+                            logOnce(
+                                "page-remount:${view.javaClass.name}",
+                                "page glass remount view=${view.javaClass.name}",
+                            )
+                            return chain.proceed(args)
+                        }
+                }
             }
         } catch (t: Throwable) {
             Lg.e(TAG, "A-family intercept error", t)
@@ -570,13 +585,15 @@ object AppGlassHook {
     /** B 族拦截体：登记元素并确保边缘装饰层挂载（装饰随 App 玻璃开关启停，preDraw 同步）。 */
     private fun bFamilyIntercept(chain: XposedInterface.Chain): Any? {
         try {
+            val view = chain.getThisObject() as? View
+            // 背景变更 = 整页挂载器的 A 型候选信号（mounter 自查整页开关与扫描节流）
+            if (view != null) AppPageGlassMounter.onHostBackgroundSet(view)
             if (glassEnabled()) {
                 val bg = try {
                     chain.getArg(0) as? Drawable
                 } catch (t: Throwable) {
                     null
                 }
-                val view = chain.getThisObject() as? View
                 if (view != null && bg != null &&
                     bg.javaClass.name == CLASS_BACKGROUND_BLUR_DRAWABLE
                 ) {
@@ -591,7 +608,7 @@ object AppGlassHook {
     }
 
     /** B 族装饰层挂载：首次建状态并挂 preDraw 监听；重绑时换挂到当前 ViewTreeObserver。 */
-    private fun ensureBDecor(view: View) {
+    internal fun ensureBDecor(view: View) {
         val existing = bDecorStates[view]
         if (existing != null) {
             try {
@@ -617,7 +634,7 @@ object AppGlassHook {
     /** preDraw 同步装饰层：开关开 → 补挂 overlay 并跟随尺寸；开关关 → 摘除。 */
     private fun syncBDecor(view: View) {
         val state = bDecorStates[view] ?: return
-        if (!glassEnabled()) {
+        if (!glassEnabled() && !AppPageGlassMounter.pageGlassEnabled()) {
             if (state.overlayAdded) {
                 try {
                     view.overlay.remove(state.drawable)
@@ -650,7 +667,7 @@ object AppGlassHook {
     }
 
     /** 把命中元素按 [viewClass] 登记进组件清单（view 与背景 drawable 双键，任一命中都能按组件取预设）。 */
-    private fun registerElement(view: View, viewClass: String, family: String) {
+    internal fun registerElement(view: View, viewClass: String, family: String) {
         val viewKey = System.identityHashCode(view)
         if (boundElements.add(viewKey)) {
             if (boundElements.size > 512) boundElements.clear()
@@ -666,6 +683,40 @@ object AppGlassHook {
         if (boundElements.add(bgKey)) {
             if (boundElements.size > 512) boundElements.clear()
             GlassRegistry.bind(bgKey, bg, viewClass)
+        }
+    }
+
+    /** A 族静态挂载点句柄（整页挂载器写 View 背景玻璃用；未解析时返回 null）。 */
+    internal fun glassSetBgMethod(): Method? = selfProbeSetBg
+
+    /** 经静态挂载点施加玻璃 effect（旁路 A 族拦截，防把玻璃自身记档成宿主原值）。 */
+    internal fun applyGlassEffect(view: View, effect: RenderEffect): Boolean {
+        val setBg = selfProbeSetBg ?: return false
+        selfProbeActive = true
+        return try {
+            setBg.invoke(null, effect, view)
+            true
+        } catch (t: Throwable) {
+            Lg.w(TAG, "applyGlassEffect failed view=${view.javaClass.name}", t)
+            false
+        } finally {
+            selfProbeActive = false
+        }
+    }
+
+    /** 还原宿主原 effect（A 族拦截记档值；无记录 = null 清效果）。 */
+    internal fun restoreHostEffect(view: View): Boolean {
+        val setBg = selfProbeSetBg ?: return false
+        val orig = lastHostEffect[view]
+        selfProbeActive = true
+        return try {
+            setBg.invoke(null, orig, view)
+            true
+        } catch (t: Throwable) {
+            Lg.w(TAG, "restoreHostEffect failed view=${view.javaClass.name}", t)
+            false
+        } finally {
+            selfProbeActive = false
         }
     }
 
