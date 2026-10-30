@@ -330,6 +330,8 @@
     <string name="loc_device_card_square">控制中心设备中心里的方形设备卡片</string>
     <string name="loc_device_card_rect">控制中心设备中心里的长条设备卡片</string>
     <string name="loc_device_entrance">控制中心设备空间里的小入口方块</string>
+    <string name="loc_device_entrance_rect">控制中心设备空间里的横长条入口卡（带标题）</string>
+    <string name="loc_device_entrance_nodevice">控制中心设备空间没设备时的整行入口占位卡</string>
     <string name="loc_qs_detail">控制中心点开磁贴后弹出的展开大面板</string>
     <string name="loc_gallery_photo_bg">相册照片页的背景材质模糊</string>
     <string name="loc_gallery_bg_view">相册内的通用背景模糊覆盖层</string>
