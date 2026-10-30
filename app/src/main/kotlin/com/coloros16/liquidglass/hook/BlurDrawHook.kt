@@ -26,10 +26,12 @@ import android.view.View
 import android.view.ViewParent
 import android.view.WindowManager
 import android.widget.TextView
+import com.coloros16.liquidglass.config.ConfigStore
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.debug.DebugElement
 import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
+import com.coloros16.liquidglass.hook.spec.HookSpec
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
@@ -90,13 +92,13 @@ object BlurDrawHook {
 
     private const val TAG = "LiquidGlass"
 
-    private const val CLASS_BASE_DRAWABLE = "com.oplus.posteffect.drawable.BaseDrawable"
-    private const val CLASS_BLEND_DRAWABLE = "com.oplus.posteffect.drawable.BlendDrawable"
+    internal const val CLASS_BASE_DRAWABLE = "com.oplus.posteffect.drawable.BaseDrawable"
+    internal const val CLASS_BLEND_DRAWABLE = "com.oplus.posteffect.drawable.BlendDrawable"
     private const val CLASS_CONTINUOUS_BLUR_DRAWABLE = "com.oplus.posteffect.drawable.ContinuousBlurDrawable"
     private const val CLASS_DRAWABLE_SHADER = "com.oplus.posteffect.agsl.DrawableShader"
     private const val CLASS_BLUR_DRAWABLE_MANAGER = "com.oplus.posteffect.manager.BlurDrawableManager"
-    private const val METHOD_DRAW_BLUR_SHADER = "drawBlurShader"
-    private const val METHOD_ON_DRAW_CONTENT = "onDrawContent"
+    internal const val METHOD_DRAW_BLUR_SHADER = "drawBlurShader"
+    internal const val METHOD_ON_DRAW_CONTENT = "onDrawContent"
     // [spec/114] 16.00.14 旧架构无 onDrawContent，shader 不可用时系统改走 drawBlur 位图平铺 —— 挂它作等价兜底
     private const val METHOD_DRAW_BLUR = "drawBlur"
     private const val CLASS_FOREGROUND_BLUR_PARAM = "com.oplus.posteffect.ForegroundBlurParam"
@@ -149,13 +151,13 @@ object BlurDrawHook {
     private const val METHOD_GET_SURFACE_CONTROL = "getSurfaceControl"
 
     // ---- 坐标映射 hook（AutoBlurDrawable.draw）：drawable(identityHashCode) → 屏幕区域 ----
-    private const val CLASS_AUTO_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable"
+    internal const val CLASS_AUTO_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable"
     // [任务 I] 描边 tile 专属：LightStyleStrokeDrawable（extends AutoBlurDrawable）在
     // strokeShaderProxy != null 时 draw() 不回调 super.draw → AutoBlurDrawable.draw hook 不触发
     // → 无映射回退系统模糊（真机"部分 tile 磨砂"根因）。需单独 hook 其 draw 建立映射。
     private const val CLASS_LIGHT_STYLE_STROKE_DRAWABLE = "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable"
     private const val CLASS_VIEW_BLUR_PROXY = "com.oplusos.systemui.common.blurability.ViewBlurProxy"
-    private const val CLASS_PLATFORM_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable"
+    internal const val CLASS_PLATFORM_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable"
     // [spec/61 2026-08-23] 系统控制中心模糊力度调整 + 阻止缩小（CLASS_BLUR_CONFIG 已有，见任务 D 常量区）
     private const val CLASS_NOTIFI_QS_PLATFORM_BLUR_KT = "com.oplusos.systemui.common.util.NotifiAndQsPlatformBlurExKt"
     private const val METHOD_APPLY_PANEL_MIRROR_SCALE = "applyPanelMirrorScale"
@@ -170,7 +172,7 @@ object BlurDrawHook {
     //   改为返回 BlurMixConfig.None → PlatformBlurDrawable.applyBlurConfig(:72-78) 只设模糊不设材质色。
     private const val CLASS_BLUR_MIX_CONFIG = "com.oplusos.systemui.common.blurability.BlurMixConfig"
     private const val CLASS_BLUR_MIX_CONFIG_NONE = "com.oplusos.systemui.common.blurability.BlurMixConfig\$None"
-    private const val METHOD_DRAW = "draw"
+    internal const val METHOD_DRAW = "draw"
     private const val METHOD_GET_VIEW_BLUR_PROXY = "getViewBlurProxy"
     private const val METHOD_GET_VIEW = "getView"
     private const val METHOD_GET_BLUR_DRAWABLE = "getBlurDrawable"
@@ -193,9 +195,9 @@ object BlurDrawHook {
     // `viewBlurProxy.getBlurDrawable(drawable)` 后直接 setBounds+draw，**不经 AutoBlurDrawable.draw**
     // → screenRegionMap 从无卡片映射 → 等宽卡片兜底串图。此 hook 建立卡片专属映射。
     private const val CLASS_NBV_EXT = "com.android.systemui.statusbar.notification.row.NotificationBackgroundViewExt"
-    private const val CLASS_NBV_EXT_IMP = "com.oplus.systemui.statusbar.notification.row.NotificationBackgroundViewExtImp"
+    internal const val CLASS_NBV_EXT_IMP = "com.oplus.systemui.statusbar.notification.row.NotificationBackgroundViewExtImp"
     private const val METHOD_GET_BG_VIEW = "getBgView"
-    private const val METHOD_DRAW_NOTIF_BG = "draw"
+    internal const val METHOD_DRAW_NOTIF_BG = "draw"
     // ---- 磨砂根因（2026-08-12）：移除玻璃之上的半透明材质色层 ----
     // 修 1（通知主背景磨砂）：ExtImp.draw 稳态分支在玻璃（drawable2.draw）之后画 materialColorDrawable
     //   （res/drawable/notification_stacking_material_color_bg.xml，16dp 圆角 shape，反编译实证）并
@@ -2680,7 +2682,8 @@ object BlurDrawHook {
             return
         }
         resolveMethods(classLoader)
-        mountAutoBlurDrawable(api, classLoader)
+        // 引擎挂载：映射/scrim/通知卡材质抑制/主渲染/兜底（原 5 个 mount 迁为 HookSpec，相对顺序不变）
+        HookEngine.mountAll(api, classLoader, buildEngineRequests())
         // [spec/48 过渡修复 2026-08-13] hook ScrimView.setViewAlpha 捕获 behind_scrim 真实动画 alpha
         //（AutoBlurDrawable.setAlpha 空实现恒 255 → 原黑 tint 读 drawable.alpha 永远=1 无过渡）。
         mountScrimViewAlpha(api, classLoader)
@@ -2692,12 +2695,8 @@ object BlurDrawHook {
         mountNotifHeaderMaskColor(api, classLoader)
         mountMetaColorSuppress(api, classLoader)
         mountMixColorTileRegion(api, classLoader)
-        mountNotificationBackground(api, classLoader)
-        mountPlatformBlurMaskColor(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountAddBlurDrawable(api, classLoader)
-        mountDrawBlurShader(api, classLoader)
-        mountOnDrawContent(api, classLoader)
         // [spec/114] 16.00.14 旧架构：无 onDrawContent → 挂 drawBlur 作等价兜底（现役直接返回）
         mountLegacyDrawBlur(api, classLoader)
         mountMotionSources(api, classLoader)
@@ -2810,6 +2809,65 @@ object BlurDrawHook {
         // shader 实例池保留（纯 CPU 构造，无 GPU 窗口）。
         ShaderInstancePool.pollOrCreate()
         // warmUpRealGrContext()  // [禁用] SystemUI 重启循环事故，见上
+    }
+
+    // ------------------------------------------------------------ 引擎装配：5 mount → HookSpec
+
+    /** 引擎挂载请求表：spec（DefaultHooksJson 出厂表）+ effect（本对象内实现，可访问私有 helper）。 */
+    private fun buildEngineRequests(): List<HookEngine.MountRequest> {
+        val specs = ConfigStore.loadDefault().associateBy { it.id }
+        fun spec(id: String): HookSpec = specs.getValue(id)
+        return listOf(
+            HookEngine.MountRequest(
+                spec = spec("autoBlur.map"),
+                effect = EffectRegisterRegionScrim,
+                precondition = {
+                    mAutoGetViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B AutoBlurDrawable methods unresolved, screen-region map disabled",
+                mountedLog = "Hook B mounted: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (screen-region map)",
+                failedLog = "Hook B mount FAILED: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW",
+                registerClass = CLASS_AUTO_BLUR_DRAWABLE,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("notif.cardMap"),
+                effect = EffectRegisterNotifCardSuppress,
+                precondition = {
+                    mNbvGetBgView != null && mNbvGetViewBlurProxy != null &&
+                        mViewProxyGetBlurDrawable != null && mGetBounds != null
+                },
+                preconditionWarn = "Hook B NotificationBackgroundView methods unresolved, notification card map disabled",
+                mountedLog = "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)",
+                failedLog = "Hook B mount FAILED: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG",
+                registerClass = CLASS_NBV_EXT_IMP,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("platform.suppressBlurMaskColor"),
+                effect = EffectSuppressField,
+                precondition = { mPlatformBlurMaskColor != null },
+                preconditionWarn = "Hook B PlatformBlurDrawable.blurMaskColor unresolved, mask-layer suppress disabled",
+                mountedLog = "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)",
+                failedLog = "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("posteffect.drawBlurShader"),
+                effect = EffectGlassDraw,
+                mountedLog = "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER(Canvas)",
+                failedLog = "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("posteffect.onDrawContent.blend"),
+                effect = EffectGlassFallback,
+                mountedLog = "Hook B mounted: $CLASS_BLEND_DRAWABLE#$METHOD_ON_DRAW_CONTENT(Canvas)",
+                failedLog = "Hook B mount FAILED: $CLASS_BLEND_DRAWABLE#$METHOD_ON_DRAW_CONTENT",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("posteffect.onDrawContent.base"),
+                effect = EffectGlassFallback,
+                mountedLog = "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_ON_DRAW_CONTENT(Canvas)",
+                failedLog = "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_ON_DRAW_CONTENT",
+            ),
+        )
     }
 
     // ------------------------------------------------------------ 反射解析
@@ -3329,71 +3387,43 @@ object BlurDrawHook {
     // ------------------------------------------------------------ Hook -1：AutoBlurDrawable.draw（坐标映射）
 
     /**
-     * Hook AutoBlurDrawable.draw(Canvas)（16.1 源码实证）：
-     * - `AutoBlurDrawable`（com.oplusos.systemui.common.blurability.drawable）包装 ViewBlurProxy，
-     *   面板背景（ScrimControllerExImp.refreshBehindDrawable）与 tile 背景
-     *   （LightStyleStrokeDrawable extends AutoBlurDrawable，PlatformStatic 时 strokeShaderProxy=null
-     *   → super.draw(canvas) 走本方法）共用。
-     * - draw 内部：`viewBlurProxy.getBlurDrawable(defaultDrawable)` → 运行时 PlatformBlurDrawable
-     *   （PlatformStatic）→ 其内部 `getBlurDrawable()`（无参）返回 posteffect BlurDrawable——
-     *   与 drawBlurShader hook 的 this 同一实例（identityHashCode 匹配）。
-     * - hookBefore 建立映射：drawable(identityHashCode) → 屏幕区域（全屏像素 RectF），
-     *   坐标 = hostView.getLocationOnScreen 左上角 + AutoBlurDrawable bounds 偏移。
-     *   drawBlurShader 侧查表后 ×0.25 折算原图区域（原图 1/4 分辨率）。
-     *
-     * 反射/挂载失败只影响坐标映射（回退系统模糊），不影响其他 hook。
+     * [spec/48] AutoBlurDrawable.draw(Canvas)：坐标映射（drawable→屏幕区域）+ 背景 scrim 策略。
+     * - draw 内部 `viewBlurProxy.getBlurDrawable(defaultDrawable)` 产出 posteffect BlurDrawable，
+     *   与 drawBlurShader hook 的 this 同一实例（identityHashCode 匹配）；hook 前建立映射。
+     * - 仅 hostView=ScrimView 走 scrim 策略（behind_scrim 画纯黑 tint / keep 开关决定是否
+     *   proceed 系统模糊链）；控件子类（tile 等）正常 proceed。
      */
-    private fun mountAutoBlurDrawable(api: XposedInterface, classLoader: ClassLoader) {
-        if (mAutoGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B AutoBlurDrawable methods unresolved, screen-region map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_AUTO_BLUR_DRAWABLE, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordScreenRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "AutoBlurDrawable.draw: intercept error", t)
-                    }
-                    // [spec/48 方案 A] 背景 scrim：不 proceed → 拦截整条背景模糊绘制链
-                    // （AutoBlurDrawable.draw → PlatformBlurDrawable → posteffect BlurDrawable
-                    // → drawBlurShader）。behind_scrim 改画纯黑 tint（遮罩走系统自带机制，
-                    // alpha=behindScrimAlpha×maskAlpha，由 hook ScrimView.setViewAlpha 捕获系统动画值；
-                    // ⚠️ 不能读 Drawable.getAlpha()——AutoBlurDrawable.setAlpha 空实现恒 255）；
-                    // notifications_scrim/front_scrim 保持透明（现状）。仅 hostView=ScrimView
-                    // 才跳过，控件（tile 等 AutoBlurDrawable 子类，hostView=OplusQSTileBaseView 等）不受影响。
-                    if (isBackgroundScrimDrawable(chain)) {
-                        // [spec/61 2026-08-23] 保留系统控制中心模糊（默认 true）：先 proceed 走系统模糊链
-                        // （力度已由 applyBlurConfig hook 调整 + applyPanelMirrorScale 阻止缩小），再画黑 tint
-                        // 压暗在模糊之上（mask 开时）；关闭（false）则短路背景模糊链（透明露壁纸，旧行为）。
-                        if (keepSystemCcBlurEnabled()) {
-                            chain.proceed()
-                            try {
-                                if (isBehindScrim(chain)) drawScrimBlackTint(chain)
-                            } catch (t: Throwable) {
-                                Lg.e(TAG, "bg: draw scrim black tint error", t)
-                            }
-                            logThrottled("bg-scrim-keep", Log.INFO) { "bg: keep system cc blur (strength=${ccBlurStrength()}%), proceed system blur + black tint" }
-                        } else {
-                            try {
-                                if (isBehindScrim(chain)) drawScrimBlackTint(chain)
-                            } catch (t: Throwable) {
-                                Lg.e(TAG, "bg: draw scrim black tint error", t)
-                            }
-                            logThrottled("bg-scrim-skip", Log.INFO) { "bg: force transparent, skip AutoBlurDrawable.draw (background scrim, reveal wallpaper)" }
-                        }
-                        return@intercept null
-                    }
+    private object EffectRegisterRegionScrim : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordScreenRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "AutoBlurDrawable.draw: intercept error", t)
+            }
+            // 背景 scrim：不 proceed → 拦截整条背景模糊绘制链（AutoBlurDrawable.draw →
+            // PlatformBlurDrawable → posteffect BlurDrawable → drawBlurShader）。
+            // behind_scrim 改画纯黑 tint（alpha 由 hook ScrimView.setViewAlpha 捕获系统动画值；
+            // 不能读 Drawable.getAlpha()——setAlpha 空实现恒 255）。仅 hostView=ScrimView 命中。
+            if (isBackgroundScrimDrawable(chain)) {
+                if (keepSystemCcBlurEnabled()) {
                     chain.proceed()
+                    try {
+                        if (isBehindScrim(chain)) drawScrimBlackTint(chain)
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "bg: draw scrim black tint error", t)
+                    }
+                    logThrottled("bg-scrim-keep", Log.INFO) { "bg: keep system cc blur (strength=${ccBlurStrength()}%), proceed system blur + black tint" }
+                } else {
+                    try {
+                        if (isBehindScrim(chain)) drawScrimBlackTint(chain)
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "bg: draw scrim black tint error", t)
+                    }
+                    logThrottled("bg-scrim-skip", Log.INFO) { "bg: force transparent, skip AutoBlurDrawable.draw (background scrim, reveal wallpaper)" }
                 }
-            Lg.i(TAG, "Hook B mounted: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (screen-region map)")
-            GlassRegistry.registerClass(CLASS_AUTO_BLUR_DRAWABLE)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_AUTO_BLUR_DRAWABLE#$METHOD_DRAW", t)
+                return null
+            }
+            return chain.proceed()
         }
     }
 
@@ -6033,57 +6063,28 @@ object BlurDrawHook {
     // ------------------------------------------------------------ Hook -1b：通知卡片专属映射（C1）
 
     /**
-     * C1（2026-08-12 真机实锤修复）：通知卡片模糊背景专属映射。
-     *
-     * 逆向确认（16.1 反编译源码，SystemUI\sources）：
-     * - `NotificationBackgroundView.onDraw(Canvas)`（line 218-231）→ oplus 样式走
-     *   `mExt.draw(canvas, mBackground)`（`NotificationBackgroundViewExt.draw` line 53 默认实现
-     *   `getBgView().draw(canvas, drawable)`；`NotificationBackgroundViewExtImp.draw(Canvas, Drawable)`
-     *   line 174 覆写，jadx `--show-bad-code` 实证）。
-     * - ExtImp.draw 内部：`drawable2 = viewBlurProxy.getBlurDrawable(drawable)`（line 202-203，
-     *   PlatformStatic 时返回 `PlatformBlurDrawable`）→ 各分支 `drawable2.setBounds(...)` +
-     *   `drawable2.draw(canvas)`（line 298/334/365），**不经 AutoBlurDrawable.draw** →
-     *   原 screenRegionMap 从无通知卡片映射 → 等宽卡片 bounds 兜底串图（全黑/同斑块）。
-     * - `ViewBlurProxy.getBlurDrawable(Drawable)`（line 435）：PlatformStatic → `PlatformBlurDrawable`；
-     *   `PlatformBlurDrawable.getBlurDrawable()`（line 210）→ posteffect `BlurDrawable`
-     *   （drawBlurShader hook 的 this 同实例，identityHashCode 可作查表键）。
-     * - 卡片区域：bgView（NotificationBackgroundView，getBgView() 返回）屏幕位置 + posteffect
-     *   drawable getBounds（render 侧同款，C3 对齐）。
-     *
-     * 反射/挂载失败只影响通知卡片映射（回退系统模糊 = C2 宁缺毋滥安全默认），不影响其他 hook。
+     * [spec/48 C1] NotificationBackgroundViewExtImp.draw(Canvas, Drawable)：通知卡片专属映射。
+     * ExtImp.draw 内部 getBlurDrawable 后直接 setBounds+draw，**不经 AutoBlurDrawable.draw**
+     * → 单独 hook 建立卡片映射；同时 proceed 前临时把 currentMaterialColor 置透明抑制材质覆盖层。
+     * 反射/挂载失败只影响通知卡片映射（回退系统模糊），不影响其他 hook。
      */
-    private fun mountNotificationBackground(api: XposedInterface, classLoader: ClassLoader) {
-        if (mNbvGetBgView == null || mNbvGetViewBlurProxy == null ||
-            mViewProxyGetBlurDrawable == null || mGetBounds == null
-        ) {
-            Lg.w(TAG, "Hook B NotificationBackgroundView methods unresolved, notification card map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_NBV_EXT_IMP, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW_NOTIF_BG, Canvas::class.java, Drawable::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        try {
-                            recordNotificationCardRegion(chain)
-                        } catch (t: Throwable) {
-                            Lg.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
-                        }
-                        // [磨砂根因·修 1] proceed 前临时把 ViewBlurManager.currentMaterialColor 置透明 →
-                        // 稳态分支 materialColorDrawable.setTint(透明) 不覆盖玻璃；suppress 内部
-                        // try-finally 保证 proceed 后恢复原值（防状态污染）。反射失败 → proceed 原样（含磨砂）。
-                        suppressNotificationMaterialColor(chain)
-                    } finally {
-                        // draw 栈结束清宿主戳，防跨 draw 泄漏
-                        drawHostStamp.remove()
-                    }
+    private object EffectRegisterNotifCardSuppress : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                try {
+                    recordNotificationCardRegion(chain)
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "NotificationBackgroundViewExtImp.draw: intercept error", t)
                 }
-            Lg.i(TAG, "Hook B mounted: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG(Canvas, Drawable) (notification card map)")
-            GlassRegistry.registerClass(CLASS_NBV_EXT_IMP)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_NBV_EXT_IMP#$METHOD_DRAW_NOTIF_BG", t)
+                // proceed 前临时把 ViewBlurManager.currentMaterialColor 置透明 → 稳态分支
+                // materialColorDrawable.setTint(透明) 不覆盖玻璃；suppress 内部 try-finally
+                // 保证 proceed 后恢复原值（防状态污染）。反射失败 → proceed 原样（含磨砂）。
+                suppressNotificationMaterialColor(chain)
+            } finally {
+                // draw 栈结束清宿主戳，防跨 draw 泄漏
+                drawHostStamp.remove()
+            }
+            return null
         }
     }
 
@@ -6163,40 +6164,14 @@ object BlurDrawHook {
     }
 
     /**
-     * [磨砂根因·修 2] 控件磨砂移除：hook PlatformBlurDrawable.draw(Canvas)，proceed 前把 blurMaskColor 置 0。
-     *
-     * 根因（反编译实证，platformblur\PlatformBlurDrawable.java line 201-208）：
-     * ```
-     * public void draw(Canvas canvas) {
-     *     this.blurDrawable.setBounds(getBounds());
-     *     this.blurDrawable.draw(canvas);            // 玻璃底座
-     *     if (this.blurMaskColor == 0 || this.maskPaint.getAlpha() == 0 || !this.enableBlurMaskColor) return;
-     *     canvas.drawRect(getBounds(), this.maskPaint);  // blurMaskColor 半透明覆盖层（磨砂）
-     * }
-     * ```
-     * blurMaskColor（public int，line 36）仅在 BlurMixConfig.OverlayColor 场景被置非 0
-     * （applyBlurConfig line 88 `setBlurMaskColor(blurColor)`）；通知卡 config=BlurMixMulti/WithShader
-     * 时恒 0 不画，但 colorized 展开动画等可能短暂走 OverlayColor → 触发磨砂层。
-     *
-     * 拦截策略：proceed 前把 blurMaskColor 置 0 → draw 内部条件 `blurMaskColor == 0` 直接 return，
-     * 跳过 drawRect；finally 恢复原值。失败 → proceed 原样（强兜底不崩）。
+     * [磨砂根因·修 2] PlatformBlurDrawable.draw(Canvas)：proceed 前把 blurMaskColor 置 0。
+     * draw 内部 `blurMaskColor == 0` 条件直接 return，跳过 blurMaskColor drawRect 磨砂覆盖层；
+     * finally 恢复原值。失败 → proceed 原样（强兜底不崩）。
      */
-    private fun mountPlatformBlurMaskColor(api: XposedInterface, classLoader: ClassLoader) {
-        if (mPlatformBlurMaskColor == null) {
-            Lg.w(TAG, "Hook B PlatformBlurDrawable.blurMaskColor unresolved, mask-layer suppress disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_PLATFORM_BLUR_DRAWABLE, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    suppressPlatformBlurMaskColor(chain)
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (blurMaskColor mask-layer suppress)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_PLATFORM_BLUR_DRAWABLE#$METHOD_DRAW (mask-color layer keeps)", t)
+    private object EffectSuppressField : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            suppressPlatformBlurMaskColor(chain)
+            return null
         }
     }
 
@@ -12355,124 +12330,102 @@ object BlurDrawHook {
 
     // ------------------------------------------------------------ Hook 1：drawBlurShader（主绘制）
 
-    private fun mountDrawBlurShader(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
-            val method = clazz.getDeclaredMethod(METHOD_DRAW_BLUR_SHADER, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    val drawable = try {
-                        chain.getThisObject()
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "drawBlurShader: getThisObject failed", t); null
-                    }
-                    if (drawable != null) {
-                        try {
-                            replaceShaderIfPossible(drawable)
-                        } catch (t: Throwable) {
-                            Lg.e(TAG, "render: drawBlurShader intercept error", t)
-                        }
-                        // [2026-10-10 spec/91 §六] 外层 clip 诊断（用户假设：通知卡多层容器，父容器
-                        // canvas clip 单侧收紧 → 该侧高光被裁）。打画布 clip 与 drawable bounds 的
-                        // 四向差值：dL/dR/dT/dB >0 = 该侧被父层裁掉的像素数。moduleLogEnabled 门控。
-                        // ⚠️ [doc/spec/99 修正] 本行的 clip 实为 `RenderNode.beginRecording()` 的**录制
-                        //    视口**：恒 = (0,0,bounds.w,bounds.h)、坐标空间是**节点本地**（原点 = bounds
-                        //    左上），与 bounds（父坐标）不同源 ⇒ dL/dR 是空间错配伪值（实测
-                        //    bounds=Rect(-69,0-1381,340) 配 clip=Rect(0,0-1450,340) ⇒ dL=69=0-(-69)）。
-                        //    **原行保留作对照，真值看下面的 `lg-clip-host`。**
-                        if (moduleLogEnabled) {
-                            try {
-                                // [doc/spec/105 P0-2] 取值（clipBounds 的 Rect 分配 + mGetBounds 反射）
-                                // 整段挪进节流 lambda 内：未到节流窗口**一次都不取**。原实现在 lambda 外
-                                // 先取值、logThrottled 只省掉拼字符串 ⇒ 每次 draw 白付（spec/102 §3.2 D2）。
-                                logThrottledOpt("lg-clip", Log.DEBUG) {
-                                    val canvas = chain.getArgs()?.getOrNull(0) as? android.graphics.Canvas
-                                    val clip = canvas?.clipBounds
-                                    val b = mGetBounds?.invoke(drawable) as? android.graphics.Rect
-                                    if (clip == null || b == null) {
-                                        null
-                                    } else {
-                                        "lg-clip: view=${drawable.javaClass.simpleName} bounds=$b clip=$clip " +
-                                            "dL=${clip.left - b.left} dR=${b.right - clip.right} " +
-                                            "dT=${clip.top - b.top} dB=${b.bottom - clip.bottom}"
-                                    }
-                                }
-                                // [doc/spec/99] 宿主 clip（注册 hook 从宿主 draw canvas 采集，与 bounds
-                                // 同坐标空间）+ eff = clip∩bounds 四向差值 + 有效区域折算到 drawable 本地。
-                                // dLh/dRh/dTh/dBh >0 = 该侧**真实**被父层裁掉的像素数；host=null = 未采集
-                                //（swipe / MixColorTile 等本轮不传）→ 几何维持现状。
-                                logThrottledOpt("lg-clip-host", Log.DEBUG) {
-                                    val b = mGetBounds?.invoke(drawable) as? android.graphics.Rect
-                                        ?: return@logThrottledOpt null
-                                    val host = clipBoundsMap[System.identityHashCode(drawable)]
-                                        ?: return@logThrottledOpt null
-                                    val effL = host.left.coerceAtLeast(b.left)
-                                    val effT = host.top.coerceAtLeast(b.top)
-                                    val effR = host.right.coerceAtMost(b.right)
-                                    val effB = host.bottom.coerceAtMost(b.bottom)
-                                    "lg-clip-host: view=${drawable.javaClass.simpleName} bounds=$b host=$host " +
-                                        "dLh=${effL - b.left} dRh=${b.right - effR} " +
-                                        "dTh=${effT - b.top} dBh=${b.bottom - effB} " +
-                                        "effLocal=(${effL - b.left},${effT - b.top},${effR - b.left},${effB - b.top})"
-                                }
-                                logThrottledOpt("lg-clip-host-none", Log.DEBUG, 5000L) {
-                                    mGetBounds?.invoke(drawable) as? android.graphics.Rect
-                                        ?: return@logThrottledOpt null
-                                    val host = clipBoundsMap[System.identityHashCode(drawable)]
-                                    if (host != null) {
-                                        null
-                                    } else {
-                                        "lg-clip-host: view=${drawable.javaClass.simpleName} host=null (未采集)"
-                                    }
-                                }
-                            } catch (ignored: Throwable) {
+    /** BaseDrawable.drawBlurShader(Canvas)：主渲染入口——替换 shader 为液态玻璃，恒 proceed 系统绘制。 */
+    private object EffectGlassDraw : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val drawable = try {
+                chain.getThisObject()
+            } catch (t: Throwable) {
+                Lg.e(TAG, "drawBlurShader: getThisObject failed", t); null
+            }
+            if (drawable != null) {
+                try {
+                    replaceShaderIfPossible(drawable)
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "render: drawBlurShader intercept error", t)
+                }
+                // clip 诊断（moduleLogEnabled 门控）：lg-clip = 画布 clip 与 bounds 四向差值，
+                // 其 clip 实为 RenderNode.beginRecording 录制视口（节点本地坐标，与 bounds
+                // 不同源 ⇒ dL/dR 是空间错配伪值）；真值看 lg-clip-host（宿主 clip ∩ bounds）。
+                if (moduleLogEnabled) {
+                    try {
+                        // 取值（clipBounds 的 Rect 分配 + mGetBounds 反射）整段在节流 lambda 内：
+                        // 未到节流窗口一次都不取
+                        logThrottledOpt("lg-clip", Log.DEBUG) {
+                            val canvas = chain.getArgs()?.getOrNull(0) as? android.graphics.Canvas
+                            val clip = canvas?.clipBounds
+                            val b = mGetBounds?.invoke(drawable) as? android.graphics.Rect
+                            if (clip == null || b == null) {
+                                null
+                            } else {
+                                "lg-clip: view=${drawable.javaClass.simpleName} bounds=$b clip=$clip " +
+                                    "dL=${clip.left - b.left} dR=${b.right - clip.right} " +
+                                    "dT=${clip.top - b.top} dB=${b.bottom - clip.bottom}"
                             }
                         }
+                        // 宿主 clip（注册 hook 从宿主 draw canvas 采集，与 bounds 同坐标空间）+
+                        // eff = clip∩bounds 四向差值；host=null = 未采集 → 几何维持现状
+                        logThrottledOpt("lg-clip-host", Log.DEBUG) {
+                            val b = mGetBounds?.invoke(drawable) as? android.graphics.Rect
+                                ?: return@logThrottledOpt null
+                            val host = clipBoundsMap[System.identityHashCode(drawable)]
+                                ?: return@logThrottledOpt null
+                            val effL = host.left.coerceAtLeast(b.left)
+                            val effT = host.top.coerceAtLeast(b.top)
+                            val effR = host.right.coerceAtMost(b.right)
+                            val effB = host.bottom.coerceAtMost(b.bottom)
+                            "lg-clip-host: view=${drawable.javaClass.simpleName} bounds=$b host=$host " +
+                                "dLh=${effL - b.left} dRh=${b.right - effR} " +
+                                "dTh=${effT - b.top} dBh=${b.bottom - effB} " +
+                                "effLocal=(${effL - b.left},${effT - b.top},${effR - b.left},${effB - b.top})"
+                        }
+                        logThrottledOpt("lg-clip-host-none", Log.DEBUG, 5000L) {
+                            mGetBounds?.invoke(drawable) as? android.graphics.Rect
+                                ?: return@logThrottledOpt null
+                            val host = clipBoundsMap[System.identityHashCode(drawable)]
+                            if (host != null) {
+                                null
+                            } else {
+                                "lg-clip-host: view=${drawable.javaClass.simpleName} host=null (未采集)"
+                            }
+                        }
+                    } catch (ignored: Throwable) {
                     }
-                    chain.proceed()
                 }
-            Lg.i(TAG, "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER(Canvas)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_DRAW_BLUR_SHADER", t)
+            }
+            return chain.proceed()
         }
     }
 
     // ------------------------------------------------------------ Hook 2：onDrawContent（shader 不可用兜底）
 
-    private fun mountOnDrawContent(api: XposedInterface, classLoader: ClassLoader) {
-        // 同时挂 BlendDrawable（面板/tile 主绘制，16.1）与 BaseDrawable（基类空实现兜底）
-        for (clsName in arrayOf(CLASS_BLEND_DRAWABLE, CLASS_BASE_DRAWABLE)) {
-            try {
-                val clazz = Class.forName(clsName, false, classLoader)
-                val method = clazz.getDeclaredMethod(METHOD_ON_DRAW_CONTENT, Canvas::class.java)
-                api.hook(method)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .intercept { chain ->
-                        val drawable = try {
-                            chain.getThisObject()
-                        } catch (t: Throwable) {
-                            Lg.e(TAG, "onDrawContent: getThisObject failed", t); null
-                        }
-                        val canvas = try {
-                            chain.getArg(0) as? Canvas
-                        } catch (t: Throwable) {
-                            Lg.e(TAG, "onDrawContent: getArg(0) failed", t); null
-                        }
-                        var handled = false
-                        if (drawable != null && canvas != null) {
-                            try {
-                                handled = tryRenderOnDrawContent(drawable, canvas)
-                            } catch (t: Throwable) {
-                                Lg.e(TAG, "onDrawContent: intercept error", t)
-                            }
-                        }
-                        if (!handled) chain.proceed()
-                    }
-                Lg.i(TAG, "Hook B mounted: $clsName#$METHOD_ON_DRAW_CONTENT(Canvas)")
+    /**
+     * [spec/48] BlendDrawable/BaseDrawable.onDrawContent(Canvas)：shader 不可用（将走
+     * drawBitmapContent）时接管画液态玻璃；成功跳过系统 proceed，失败 proceed 回退。
+     * 两个类各注册一条 spec 共用本 effect。
+     */
+    private object EffectGlassFallback : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val drawable = try {
+                chain.getThisObject()
             } catch (t: Throwable) {
-                Lg.e(TAG, "Hook B mount FAILED: $clsName#$METHOD_ON_DRAW_CONTENT", t)
+                Lg.e(TAG, "onDrawContent: getThisObject failed", t); null
             }
+            val canvas = try {
+                chain.getArg(0) as? Canvas
+            } catch (t: Throwable) {
+                Lg.e(TAG, "onDrawContent: getArg(0) failed", t); null
+            }
+            var handled = false
+            if (drawable != null && canvas != null) {
+                try {
+                    handled = tryRenderOnDrawContent(drawable, canvas)
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "onDrawContent: intercept error", t)
+                }
+            }
+            if (!handled) return chain.proceed()
+            return null
         }
     }
 

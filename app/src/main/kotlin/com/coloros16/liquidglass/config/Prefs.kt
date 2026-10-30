@@ -502,6 +502,13 @@ object Prefs {
     /** 搜索页整页玻璃默认值（false = 不干预） */
     const val DEFAULT_QUICK_SEARCH_PAGE_GLASS = false
 
+    /** 点选元素玻璃总闸：开 = PageGlassEngine 按固化表挂载（与旧两枚整页键 OR 兼容）。默认 false。 */
+    const val KEY_ELEMENT_GLASS_ENABLE = "element_glass_enable"
+    const val DEFAULT_ELEMENT_GLASS_ENABLE = false
+
+    /** 点选固化条目 JSON（用户表 + removed 列表；出厂预置在 GlassElementRegistry 常量表）。 */
+    const val KEY_ELEMENT_GLASS_ENTRIES = "glass_elements_json"
+
     /** 相册背景采样范围探针（实验）：把 A 族视图背景 RenderEffect 临时替换为越界采样染色探针，
      * 肉眼判定 shader input 是否含节点外像素（折射环带可行性）。默认 **false**；
      * 开启时相册原模糊观感被探针覆盖（主体透传=清晰背景 + 边缘色环）。改动即时生效（TTL 500ms 重读）。 */

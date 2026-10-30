@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewTreeObserver
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.debug.AppGlassWorkbench
 import com.coloros16.liquidglass.entry.XposedEntry
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.log.Lg
@@ -174,7 +175,11 @@ object AppGlassHook {
             mountSelfProbeHook(api, classLoader)
             Lg.i(TAG, "probe switch read=${probeEnabled()}")
         }
-        AppPageGlassMounter.install(api, classLoader, packageName)
+        PageGlassEngine.install(api, classLoader, packageName)
+        try {
+            AppGlassWorkbench.ensureStarted(api, packageName)
+        } catch (_: Throwable) {
+        }
     }
 
     /** A 族：hook 视图背景 RenderEffect 挂载点，命中即按 View 类登记组件。 */
@@ -569,7 +574,7 @@ object AppGlassHook {
                     }
                 }
                 // 整页玻璃元素被宿主覆写：换回挂载器玻璃（记档已在上方完成）
-                if (AppPageGlassMounter.isApplied(view)) {
+                if (PageGlassEngine.isApplied(view)) {
                     cachedGlassEffect(view.width, view.height, resolveButtonCornerRadius(view))
                         ?.let { glass ->
                             val args = chain.getArgs().toTypedArray()
@@ -592,8 +597,8 @@ object AppGlassHook {
     private fun bFamilyIntercept(chain: XposedInterface.Chain): Any? {
         try {
             val view = chain.getThisObject() as? View
-            // 背景变更 = 整页挂载器的 A 型候选信号（mounter 自查整页开关与扫描节流）
-            if (view != null) AppPageGlassMounter.onHostBackgroundSet(view)
+            // 背景变更 = 点选引擎扫描触发信号（引擎自查总闸与扫描节流）
+            if (view != null) PageGlassEngine.onHostBackgroundSet(view)
             if (glassEnabled()) {
                 val bg = try {
                     chain.getArg(0) as? Drawable
@@ -640,7 +645,7 @@ object AppGlassHook {
     /** preDraw 同步装饰层：开关开 → 补挂 overlay 并跟随尺寸；开关关 → 摘除。 */
     private fun syncBDecor(view: View) {
         val state = bDecorStates[view] ?: return
-        if (!glassEnabled() && !AppPageGlassMounter.pageGlassEnabled()) {
+        if (!glassEnabled() && !PageGlassEngine.pageGlassEnabled()) {
             if (state.overlayAdded) {
                 try {
                     view.overlay.remove(state.drawable)

@@ -292,10 +292,8 @@
     <string name="settings_assistant_screen_glass_desc">给速览（负一屏）的卡片和控件加玻璃效果。</string>
     <string name="settings_quick_search_glass">全局搜索弹窗玻璃</string>
     <string name="settings_quick_search_glass_desc">给全局搜索 App 里长按列表项弹出的菜单和弹窗加玻璃效果（只作用于这类弹窗，不含搜索条本身）。</string>
-    <string name="settings_assistant_page_glass">负一屏整页玻璃</string>
-    <string name="settings_assistant_page_glass_desc">把负一屏整页的卡片、按钮、搜索条等控件统一变成液态玻璃（与上面的速览开关相互独立）。</string>
-    <string name="settings_quick_search_page_glass">搜索页整页玻璃</string>
-    <string name="settings_quick_search_page_glass_desc">把全局搜索页整屏的控件（应用建议卡、搜索条等）统一变成液态玻璃（与上面的弹窗开关相互独立）。</string>
+    <string name="settings_element_glass">点选元素玻璃</string>
+    <string name="settings_element_glass_desc">把悬浮工作台里点选固化的控件变成液态玻璃（负一屏卡片、搜索页应用建议、相册按钮等），固化后立即生效。</string>
     <string name="settings_gallery_shader_probe">相册采样范围探针（实验）</string>
     <string name="settings_gallery_shader_probe_desc">临时替换相册背景模糊做诊断：元素边缘出现红色环＝模糊取到了元素外面的背景（可以做真折射），绿色环＝只取到元素内的内容。开启后相册背景会变清晰并带一圈色环，关掉即恢复原模糊。</string>
     <string name="settings_clear_all_btn_glass">最近任务清除按钮</string>

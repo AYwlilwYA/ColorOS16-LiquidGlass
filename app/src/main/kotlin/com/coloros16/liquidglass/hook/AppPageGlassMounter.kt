@@ -13,6 +13,8 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import com.coloros16.liquidglass.config.GlassElementEntry
+import com.coloros16.liquidglass.config.GlassElementRegistry
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.entry.XposedEntry
 import com.coloros16.liquidglass.log.Lg
@@ -23,74 +25,51 @@ import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 负一屏/搜索页整页玻璃批量挂载器（[spec/147]）。
+ * 点选元素玻璃挂载引擎：按 [GlassElementRegistry] 固化表匹配 View 树并挂背板玻璃。
  *
- * 视图树扫描挂载，两型候选：
- * - **A 型**（drawable 背景：GradientDrawable / VectorDrawable / 实色 ColorDrawable）——
- *   形态规则自动发现；
- * - **B 型**（HighlightShadow 族 onDraw 自绘背板）——类名单命中 + 同一 A 族通道挂玻璃，
- *   并经填充咽喉条件化抑制实底（仅已玻璃化宿主抑制，未登记元素自绘照常）；
- * - **硬编码兜底**（无 drawable 背景、形态规则扫不到但需挂的容器/整卡）。
- *
- * 扫描触发：Activity.onResume（进页）+ View.setBackground（背景变更信号），延迟一帧到
- * idle 执行；挂载后每控件持续 preDraw 同步（开关关还原、bounds 变重挂）。
- * A 族写入经 [AppGlassHook] 静态挂载点（旁路拦截防把玻璃记档成宿主原值）。
+ * - 触发：Activity.onResume（进页）+ View.setBackground（背景变更信号），延迟一帧到 idle 扫描；
+ *   固化写入后经 [rescanNow] 立即热挂。
+ * - 匹配：类名全等 + id（含包）+ 父链 + 尺寸区间（[GlassElementRegistry.matchAnchor]）。
+ * - 挂载：全部条目走背景 RenderEffect 直挂（[AppGlassHook.applyGlassEffect] 通道）。
+ * - 抑制：条目 suppressMode 驱动——THROAT = 族类 onDraw 架抑制桥 + 咽喉方法条件化跳过
+ *   （仅已玻璃化宿主抑制，未命中元素自绘照常）；FULL = 该类 onDraw 对已挂玻璃宿主整段跳过。
+ * - 旧形态规则自动发现降为候选提示：命中形态但未固化 → 只打节流日志，不挂。
  */
-object AppPageGlassMounter {
+object PageGlassEngine {
 
     private const val TAG = "AppPageGlass"
 
     private const val SWITCH_TTL_MS = 500L
 
-    /** 扫描最小间隔（ms）：连续 resume / 背景变更去重。 */
     private const val SCAN_MIN_INTERVAL_MS = 500L
 
     private const val MAX_SCAN_DEPTH = 40
 
     private const val MAX_SCAN_NODES = 3000
 
-    /** A 型形态规则最小短边（dp）：挡 divider / 小图标底。 */
+    /** 候选提示最小短边（dp）：挡 divider / 小图标底。 */
     private const val MIN_SHORT_EDGE_DP = 24f
 
-    /** 包 → 整页开关键。 */
-    private val PAGE_SWITCH_KEYS = mapOf(
+    /** 旧整页开关键（读兼容；总闸 [Prefs.KEY_ELEMENT_GLASS_ENABLE] 与之 OR）。 */
+    private val COMPAT_SWITCH_KEYS = mapOf(
         XposedEntry.PACKAGE_ASSISTANT_SCREEN to Prefs.KEY_ASSISTANT_PAGE_GLASS,
         XposedEntry.PACKAGE_QUICK_SEARCH_BOX to Prefs.KEY_QUICK_SEARCH_PAGE_GLASS,
     )
 
-    private val PAGE_SWITCH_DEFAULTS = mapOf(
+    private val COMPAT_SWITCH_DEFAULTS = mapOf(
         Prefs.KEY_ASSISTANT_PAGE_GLASS to Prefs.DEFAULT_ASSISTANT_PAGE_GLASS,
         Prefs.KEY_QUICK_SEARCH_PAGE_GLASS to Prefs.DEFAULT_QUICK_SEARCH_PAGE_GLASS,
     )
 
-    /** B 型族类（真名稳定锚，common-legacy 库不混淆；ButtonView 真机版本已删，保留条目防版本回摆）。 */
-    private val HIGHLIGHT_SHADOW_CLASSES = setOf(
-        "com.coloros.common.widget.HighlightShadowConstraintLayout",
-        "com.coloros.common.widget.HighlightShadowImageView",
-        "com.coloros.common.widget.HighlightShadowButtonView",
-    )
-
-    /** 硬编码兜底：无 drawable 背景但需整卡挂玻璃的容器/整卡。 */
-    private val HARDCODED_CLASSES = setOf(
-        "com.oplus.assistantscreen.cardcontainer.ui.MainPageBannerFixedCardView",
-        "com.heytap.quicksearchbox.ui.card.AppSuggestCardView",
-    )
-
-    /** 抑制咽喉（R8 混淆名，按真机 APK 版本锚定 + 方法签名锚校验）。 */
-    private const val CLASS_FILL_THROAT = "tc.u"
-    private const val CLASS_FILL_STROKE = "tc.b"
-
-    private const val FAMILY_A = "A"
-    private const val FAMILY_B = "B"
-    private const val FAMILY_H = "H"
-
     private var api: XposedInterface? = null
 
-    @Volatile
-    private var switchKey: String = ""
+    private var hostClassLoader: ClassLoader? = null
 
     @Volatile
-    private var switchDefault: Boolean = false
+    private var compatSwitchKey: String? = null
+
+    @Volatile
+    private var compatSwitchDefault: Boolean = false
 
     @Volatile
     private var cachedSwitch = false
@@ -106,10 +85,15 @@ object AppPageGlassMounter {
 
     private var hooksMounted = false
 
-    /** 抑制桥：族类 onDraw 已玻璃化宿主 set，填充咽喉读（同线程顺序调用，onDraw 返回即清）。 */
+    /** 填充抑制桥：已玻璃化宿主 set（同线程顺序调用，onDraw 返回即清）。 */
     private val suppressHost = ThreadLocal<View?>()
 
-    private class PageGlassState(view: View, val family: String) {
+    /** 已挂 onDraw 桥 / 咽喉 hook 的目标（按类名去重，registry 增量补挂）。 */
+    private val onDrawBridged = ConcurrentHashMap.newKeySet<String>()
+
+    private val throatHooked = ConcurrentHashMap.newKeySet<String>()
+
+    private class PageGlassState(view: View, var entry: GlassElementEntry) {
         val viewRef = WeakReference(view)
         var applied = false
         var compileFailed = false
@@ -125,22 +109,25 @@ object AppPageGlassMounter {
     /** 已挂载/在同步的控件（全主线程访问：扫描 / preDraw / setBackground 均 UI 线程）。 */
     private val states = WeakHashMap<View, PageGlassState>()
 
+    /** 近期扫描过的窗口根（rescanNow 热挂目标）。 */
+    private val knownRoots = ArrayList<WeakReference<View>>()
+
     private val loggedKeys = ConcurrentHashMap.newKeySet<String>()
 
     private val diagAtMs = ConcurrentHashMap<String, Long>()
 
     fun install(api: XposedInterface, classLoader: ClassLoader, packageName: String) {
-        val key = PAGE_SWITCH_KEYS[packageName] ?: return
         this.api = api
-        switchKey = key
-        switchDefault = PAGE_SWITCH_DEFAULTS[key] ?: false
+        this.hostClassLoader = classLoader
+        compatSwitchKey = COMPAT_SWITCH_KEYS[packageName]
+        compatSwitchKey?.let { compatSwitchDefault = COMPAT_SWITCH_DEFAULTS[it] ?: false }
+        GlassElementRegistry.attach(api)
         if (hooksMounted) return
         hooksMounted = true
-        Lg.i(TAG, "installing page glass mounter into $packageName (switch=$key default=$switchDefault)")
-        mountHighlightOnDrawHooks(api, classLoader)
-        mountFillSuppressHook(api, classLoader)
+        Lg.i(TAG, "installing page glass engine into $packageName (compat switch=$compatSwitchKey)")
         mountResumeScanHook(api)
         precompileSelfCheck()
+        ensureRuntimeHooks()
     }
 
     /** install 期预编译自检：固定样例触发 shader 编译，装机日志直接见编译真凶。 */
@@ -157,70 +144,83 @@ object AppPageGlassMounter {
         }
     }
 
-    /** B 型族类 onDraw 前置：已玻璃化宿主在 draw 期间架抑制桥（未登记元素零干预）。 */
-    private fun mountHighlightOnDrawHooks(api: XposedInterface, classLoader: ClassLoader) {
-        for (clsName in HIGHLIGHT_SHADOW_CLASSES) {
-            val clazz = try {
-                hostForName(clsName, classLoader)
-            } catch (t: Throwable) {
-                Lg.w(TAG, "$clsName unavailable, onDraw bridge skipped")
-                continue
-            }
-            try {
-                val onDraw = clazz.getMethod("onDraw", Canvas::class.java)
-                api.hook(onDraw)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .intercept { chain ->
-                        val view = chain.getThisObject() as? View
-                        if (view != null && pageGlassEnabled() && isApplied(view)) {
+    /** 固化表增量补挂：启用条目需要的 onDraw 桥与咽喉 hook（已挂的类跳过）。 */
+    fun ensureRuntimeHooks() {
+        for (cls in GlassElementRegistry.suppressedClasses()) ensureOnDrawBridge(cls)
+        for (entry in GlassElementRegistry.enabledThroats()) ensureThroatHook(entry)
+    }
+
+    /** 抑制桥：条目类 onDraw 前置——FULL 整段跳过 / THROAT 架桥（无命中零干预）。 */
+    private fun ensureOnDrawBridge(clsName: String) {
+        if (!onDrawBridged.add(clsName)) return
+        val cl = hostClassLoader ?: return
+        val clazz = try {
+            hostForName(clsName, cl)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "$clsName unavailable, onDraw bridge skipped")
+            return
+        }
+        try {
+            val onDraw = clazz.getMethod("onDraw", Canvas::class.java)
+            api?.hook(onDraw)
+                ?.setExceptionMode(ExceptionMode.PROTECTIVE)
+                ?.intercept { chain ->
+                    val view = chain.getThisObject() as? View
+                    var suppressFull = false
+                    var bridge = false
+                    if (view != null && pageGlassEnabled()) {
+                        val entry = GlassElementRegistry.matchAnchor(view)
+                        if (entry != null && isApplied(view)) {
+                            when (entry.suppressMode) {
+                                GlassElementEntry.SUPPRESS_FULL -> suppressFull = true
+                                GlassElementEntry.SUPPRESS_THROAT -> bridge = true
+                            }
+                        }
+                    }
+                    when {
+                        suppressFull -> {
+                            logPageDiag(
+                                "page-suppress-full:${view?.javaClass?.name}",
+                                "onDraw full suppressed view=${view?.javaClass?.name}",
+                                2000L,
+                            )
+                            null
+                        }
+                        bridge -> {
                             suppressHost.set(view)
                             try {
                                 chain.proceed()
                             } finally {
                                 suppressHost.remove()
                             }
-                        } else {
-                            chain.proceed()
                         }
+                        else -> chain.proceed()
                     }
-                Lg.i(TAG, "mounted onDraw suppression bridge: $clsName")
-            } catch (t: Throwable) {
-                Lg.w(TAG, "onDraw bridge hook FAILED $clsName", t)
-            }
+                }
+            Lg.i(TAG, "mounted onDraw suppression bridge: $clsName")
+        } catch (t: Throwable) {
+            onDrawBridged.remove(clsName)
+            Lg.w(TAG, "onDraw bridge hook FAILED $clsName", t)
         }
     }
 
-    /** 咽喉抑制：签名锚（c/d/i 三方法交叉校验）防同名错 hook，锚不过则不挂。 */
-    private fun mountFillSuppressHook(api: XposedInterface, classLoader: ClassLoader) {
+    /** 咽喉抑制：条目提供的方法签名锚全部命中才挂（防混淆错位），锚不过则不挂。 */
+    private fun ensureThroatHook(entry: GlassElementEntry) {
+        val clsName = entry.throatClass ?: return
+        if (!throatHooked.add(clsName)) return
+        val cl = hostClassLoader ?: return
         val clazz = try {
-            hostForName(CLASS_FILL_THROAT, classLoader)
+            hostForName(clsName, cl)
         } catch (t: Throwable) {
-            Lg.w(TAG, "$CLASS_FILL_THROAT unavailable, fill suppression skipped")
+            Lg.w(TAG, "$clsName unavailable, fill suppression skipped")
             return
         }
         try {
-            val cMethod = clazz.getMethod(
-                "c",
-                Canvas::class.java,
-                Path::class.java,
-                java.lang.Float.TYPE,
-            )
-            if (cMethod.returnType != Void.TYPE) {
-                throw IllegalStateException("c returns ${cMethod.returnType.name}")
-            }
-            val iMethod = clazz.getMethod(
-                "i",
-                java.lang.Float.TYPE,
-                java.lang.Integer.TYPE,
-                java.lang.Integer.TYPE,
-            )
-            if (!Pair::class.java.isAssignableFrom(iMethod.returnType)) {
-                throw IllegalStateException("i returns ${iMethod.returnType.name}")
-            }
-            clazz.getMethod("d", Canvas::class.java, Path::class.java, hostForName(CLASS_FILL_STROKE, classLoader))
-            api.hook(cMethod)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
+            val anchors = parseThroatAnchors(entry.throatSignature, entry.throatMethod, clazz, cl)
+            val primary = anchors.first()
+            api?.hook(primary)
+                ?.setExceptionMode(ExceptionMode.PROTECTIVE)
+                ?.intercept { chain ->
                     val host = suppressHost.get()
                     if (host != null) {
                         logPageDiag(
@@ -233,10 +233,67 @@ object AppPageGlassMounter {
                         chain.proceed()
                     }
                 }
-            Lg.i(TAG, "mounted fill suppression: $CLASS_FILL_THROAT#c(Canvas,Path,float) (anchors OK)")
+            Lg.i(TAG, "mounted fill suppression: $clsName#${primary.name} (anchors=${anchors.size} OK)")
         } catch (t: Throwable) {
-            Lg.w(TAG, "fill suppression hook FAILED $CLASS_FILL_THROAT: ${t.message}")
+            throatHooked.remove(clsName)
+            Lg.w(TAG, "fill suppression hook FAILED $clsName: ${t.message}")
         }
+    }
+
+    /** 解析咽喉锚串："name(Type,Type);..."；分号分隔多项、全部 getMethod 命中才通过。 */
+    private fun parseThroatAnchors(
+        signature: String?,
+        method: String?,
+        clazz: Class<*>,
+        cl: ClassLoader,
+    ): List<java.lang.reflect.Method> {
+        if (!signature.isNullOrBlank()) {
+            val out = ArrayList<java.lang.reflect.Method>()
+            for (piece in signature.split(';')) {
+                val s = piece.trim()
+                if (s.isEmpty()) continue
+                val paren = s.indexOf('(')
+                if (paren <= 0 || !s.endsWith(')')) throw IllegalArgumentException("bad anchor $s")
+                val name = s.substring(0, paren)
+                val typesRaw = s.substring(paren + 1, s.length - 1)
+                val params = if (typesRaw.isBlank()) {
+                    emptyArray()
+                } else {
+                    typesRaw.split(',').map { resolveParamType(it.trim(), cl) }.toTypedArray()
+                }
+                out.add(clazz.getMethod(name, *params))
+            }
+            if (out.isEmpty()) throw IllegalArgumentException("empty throat signature")
+            return out
+        }
+        if (!method.isNullOrBlank()) return listOf(clazz.getMethod(method))
+        throw IllegalArgumentException("no throat anchor on ${clazz.name}")
+    }
+
+    /** 咽喉锚参数类型解析：原始类型 + 常见简单名映射，其余按全限定名走宿主 ClassLoader。 */
+    private val PARAM_TYPE_ALIASES = mapOf(
+        "Canvas" to "android.graphics.Canvas",
+        "Path" to "android.graphics.Path",
+        "View" to "android.view.View",
+        "Bitmap" to "android.graphics.Bitmap",
+        "Paint" to "android.graphics.Paint",
+        "Rect" to "android.graphics.Rect",
+        "RectF" to "android.graphics.RectF",
+        "Drawable" to "android.graphics.drawable.Drawable",
+        "String" to "java.lang.String",
+    )
+
+    private fun resolveParamType(name: String, cl: ClassLoader): Class<*> = when (name) {
+        "void" -> Void.TYPE
+        "int" -> Integer.TYPE
+        "long" -> java.lang.Long.TYPE
+        "float" -> java.lang.Float.TYPE
+        "double" -> java.lang.Double.TYPE
+        "boolean" -> java.lang.Boolean.TYPE
+        "short" -> java.lang.Short.TYPE
+        "byte" -> java.lang.Byte.TYPE
+        "char" -> java.lang.Character.TYPE
+        else -> hostForName(PARAM_TYPE_ALIASES[name] ?: name, cl)
     }
 
     /** 进页扫描触发：onResume → 延迟一帧 → 主线程 idle 执行扫描。 */
@@ -260,14 +317,36 @@ object AppPageGlassMounter {
         }
     }
 
-    /** 背景变更信号（AppGlassHook 的 setBackground 拦截转发）：A 型候选出现即调度扫描。 */
+    /** 背景变更信号（AppGlassHook 的 setBackground 拦截转发）：候选出现即调度扫描。 */
     internal fun onHostBackgroundSet(view: View) {
-        if (switchKey.isEmpty() || !pageGlassEnabled()) return
+        if (api == null) return
         scheduleScan(view.rootView)
+    }
+
+    /** 固化 append 后立即热挂：补挂 hook + 对已知窗口根无节流重扫。 */
+    @JvmStatic
+    fun rescanNow() {
+        ensureRuntimeHooks()
+        val roots = knownRoots.mapNotNull { it.get() }.filter { it.isAttachedToWindow }
+        for (root in roots) {
+            root.post {
+                Looper.myQueue().addIdleHandler {
+                    try {
+                        if (root.isAttachedToWindow) scan(root)
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "rescan error", t)
+                    }
+                    false
+                }
+                true
+            }
+        }
+        Lg.i(TAG, "rescanNow roots=${roots.size} entries=${GlassElementRegistry.load().size}")
     }
 
     private fun scheduleScan(root: View) {
         if (!pageGlassEnabled()) return
+        noteRoot(root)
         val now = SystemClock.uptimeMillis()
         if (now - lastScanAtMs < SCAN_MIN_INTERVAL_MS) return
         lastScanAtMs = now
@@ -284,17 +363,28 @@ object AppPageGlassMounter {
         }
     }
 
+    private fun noteRoot(root: View) {
+        knownRoots.removeAll { it.get() == null }
+        if (knownRoots.any { it.get() === root }) return
+        if (knownRoots.size >= 8) knownRoots.removeAt(0)
+        knownRoots.add(WeakReference(root))
+    }
+
     private fun scan(root: View) {
         if (!pageGlassEnabled()) return
-        var candidates = 0
+        noteRoot(root)
+        ensureRuntimeHooks()
+        var hits = 0
         fun walk(view: View, depth: Int) {
-            if (depth > MAX_SCAN_DEPTH || candidates > MAX_SCAN_NODES) return
-            // root 是 decorView：窗口背景会被 A 型规则误命中成整窗玻璃罩，只递归子节点不分类
+            if (depth > MAX_SCAN_DEPTH || hits > MAX_SCAN_NODES) return
+            // root 是 decorView：窗口背景不参与匹配，只递归子节点
             if (view !== root) {
-                val family = classify(view)
-                if (family != null) {
-                    candidates++
-                    ensurePageState(view, family)
+                val entry = GlassElementRegistry.matchAnchor(view)
+                if (entry != null) {
+                    hits++
+                    ensurePageState(view, entry)
+                } else {
+                    maybeLogCandidate(view)
                 }
             }
             if (view is ViewGroup) {
@@ -306,22 +396,19 @@ object AppPageGlassMounter {
         walk(root, 0)
         logPageDiag(
             "page-scan",
-            "scan root=${root.javaClass.simpleName} candidates=$candidates states=${states.size}",
+            "scan root=${root.javaClass.simpleName} hits=$hits states=${states.size}",
             10_000L,
         )
     }
 
-    /** 形态规则分类：B 型族类 / 硬编码容器 / A 型 drawable 背景；未布局返回 null。 */
-    private fun classify(view: View): String? {
-        val cls = view.javaClass.name
-        if (cls in HIGHLIGHT_SHADOW_CLASSES) return FAMILY_B
-        if (cls in HARDCODED_CLASSES) return FAMILY_H
-        if (view.width <= 0 || view.height <= 0) return null
+    /** 旧形态规则降级：形态像背板但未固化 → 只打节流候选日志，不挂。 */
+    private fun maybeLogCandidate(view: View) {
+        if (view.width <= 0 || view.height <= 0) return
         val bg = try {
             view.background
         } catch (t: Throwable) {
             null
-        } ?: return null
+        } ?: return
         val d = unwrapInset(bg)
         val solid = when (d) {
             is GradientDrawable -> true
@@ -329,10 +416,14 @@ object AppPageGlassMounter {
             is ColorDrawable -> d.alpha > 0
             else -> false
         }
-        if (!solid) return null
+        if (!solid) return
         val minPx = MIN_SHORT_EDGE_DP * view.resources.displayMetrics.density
-        if (minOf(view.width, view.height) < minPx) return null
-        return FAMILY_A
+        if (minOf(view.width, view.height) < minPx) return
+        logPageDiag(
+            "page-candidate:${view.javaClass.name}",
+            "page-candidate ${view.javaClass.name} ${view.width}x${view.height}",
+            30_000L,
+        )
     }
 
     private fun unwrapInset(drawable: Drawable): Drawable {
@@ -346,9 +437,10 @@ object AppPageGlassMounter {
         return cur
     }
 
-    private fun ensurePageState(view: View, family: String) {
+    private fun ensurePageState(view: View, entry: GlassElementEntry) {
         val existing = states[view]
         if (existing != null) {
+            existing.entry = entry
             try {
                 view.viewTreeObserver.removeOnPreDrawListener(existing.listener)
             } catch (_: Throwable) {
@@ -360,23 +452,26 @@ object AppPageGlassMounter {
             }
             return
         }
-        val state = PageGlassState(view, family)
+        val state = PageGlassState(view, entry)
         states[view] = state
         try {
             view.viewTreeObserver.addOnPreDrawListener(state.listener)
         } catch (t: Throwable) {
             Lg.w(TAG, "page preDraw add failed", t)
         }
+        Lg.i(TAG, "page element matched [${entry.mountType}] view=${view.javaClass.name} label=${entry.label}")
     }
 
-    /** preDraw 同步：开关关还原；开且尺寸就绪挂载；已挂且 bounds 变重挂。 */
+    /** preDraw 同步：开关关 / 条目失配还原；开且尺寸就绪挂载；已挂且 bounds 变重挂。 */
     private fun syncPageGlass(view: View) {
         val state = states[view] ?: return
         if (state.compileFailed) return
-        if (!pageGlassEnabled()) {
+        val entry = GlassElementRegistry.matchAnchor(view)
+        if (!pageGlassEnabled() || entry == null) {
             if (state.applied) restorePageGlass(view, state)
             return
         }
+        state.entry = entry
         if (view.width <= 1 || view.height <= 1) return
         if (state.applied) {
             if (view.width != state.lastW || view.height != state.lastH) {
@@ -390,7 +485,7 @@ object AppPageGlassMounter {
 
     private fun applyPageGlass(view: View, state: PageGlassState) {
         if (AppGlassHook.glassSetBgMethod() == null) return
-        val corner = AppGlassHook.resolveButtonCornerRadius(view)
+        val corner = resolveCorner(view, state.entry)
         val effect = AppGlassHook.cachedGlassEffect(view.width, view.height, corner)
         if (effect == null) {
             state.compileFailed = true
@@ -402,15 +497,22 @@ object AppPageGlassMounter {
         state.applied = true
         state.lastW = view.width
         state.lastH = view.height
-        AppGlassHook.registerElement(view, view.javaClass.name, state.family)
+        AppGlassHook.registerElement(view, view.javaClass.name, state.entry.mountType)
         if (!state.logged) {
             state.logged = true
             Lg.i(
                 TAG,
-                "page glass applied [${state.family}] view=${view.javaClass.name} " +
-                    "${view.width}x${view.height} corner=$corner",
+                "page glass applied [${state.entry.mountType}] view=${view.javaClass.name} " +
+                    "${view.width}x${view.height} corner=$corner label=${state.entry.label}",
             )
         }
+    }
+
+    /** 圆角取值：条目 overrides（px / dp）优先，缺省跟随实测 outline。 */
+    private fun resolveCorner(view: View, entry: GlassElementEntry): Float {
+        entry.overrides["cornerRadius"]?.let { return it }
+        entry.overrides["cornerRadiusDp"]?.let { return it * view.resources.displayMetrics.density }
+        return AppGlassHook.resolveButtonCornerRadius(view)
     }
 
     private fun unapplyPageGlass(view: View, state: PageGlassState) {
@@ -429,30 +531,33 @@ object AppPageGlassMounter {
         state.applied = false
         logOnce(
             "page-restore:${view.javaClass.name}",
-            "page glass restored view=${view.javaClass.name} (switch off)",
+            "page glass restored view=${view.javaClass.name} (switch off or entry gone)",
         )
     }
 
-    /** 整页玻璃是否已对该控件施加（A 族拦截换回与抑制桥共用判定）。 */
+    /** 元素是否已被本引擎施加玻璃（A 族拦截换回与抑制桥共用判定）。 */
     internal fun isApplied(view: View): Boolean = states[view]?.applied == true
 
-    /** 整页开关键（TTL [SWITCH_TTL_MS] 重读；AppGlassHook 装饰层兜底联动）。 */
+    /** 点选元素玻璃总闸（总键 OR 旧整页键，TTL [SWITCH_TTL_MS] 重读）。 */
     internal fun pageGlassEnabled(): Boolean {
-        val key = switchKey
-        if (key.isEmpty()) return false
+        if (api == null) return false
         val now = SystemClock.uptimeMillis()
         if (now - cachedSwitchAtMs > SWITCH_TTL_MS) {
             cachedSwitchAtMs = now
             val before = cachedSwitch
             cachedSwitch = try {
-                api?.let { Prefs.read(it).getBoolean(key, switchDefault) } ?: false
+                val prefs = Prefs.read(api!!)
+                prefs.getBoolean(Prefs.KEY_ELEMENT_GLASS_ENABLE, Prefs.DEFAULT_ELEMENT_GLASS_ENABLE) ||
+                    compatSwitchKey?.let {
+                        prefs.getBoolean(it, compatSwitchDefault)
+                    } == true
             } catch (t: Throwable) {
-                Lg.w(TAG, "prefs read $key failed, default false", t)
+                Lg.w(TAG, "prefs read element glass switch failed, default false", t)
                 false
             }
             val shouldLog = cachedSwitch != before || !switchLogged
             switchLogged = true
-            if (shouldLog) Lg.i(TAG, "switch $key = $cachedSwitch")
+            if (shouldLog) Lg.i(TAG, "switch element_glass=$cachedSwitch (compat=$compatSwitchKey)")
         }
         return cachedSwitch
     }
