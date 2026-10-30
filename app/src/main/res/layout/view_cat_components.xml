@@ -201,6 +201,22 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 桌面编辑工具条四圆钮玻璃（默认关；TTL 500ms 重读 Prefs） -->
+        <Switch
+            android:id="@+id/switchEditToolBtnGlass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_edit_toolbtn_glass" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_edit_toolbtn_glass_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <!-- 桌面长按菜单底衬玻璃（默认关；TTL 500ms 重读 Prefs） -->
         <Switch
             android:id="@+id/switchPopupMenuGlass"

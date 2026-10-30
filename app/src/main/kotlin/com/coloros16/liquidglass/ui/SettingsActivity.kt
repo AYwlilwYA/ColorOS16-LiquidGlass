@@ -1355,6 +1355,7 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
         bindGlassSwitch(view, R.id.switchClearAllBtnGlass, Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
         bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchEditToolBtnGlass, Prefs.KEY_EDIT_TOOLBTN_GLASS, Prefs.DEFAULT_EDIT_TOOLBTN_GLASS)
         bindGlassSwitch(view, R.id.switchPopupMenuGlass, Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
     }
 

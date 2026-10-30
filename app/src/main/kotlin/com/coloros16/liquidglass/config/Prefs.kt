@@ -417,6 +417,14 @@ object Prefs {
     /** 编辑模式整理/完成钮玻璃默认值（false = 不干预，保持系统原样平色胶囊） */
     const val DEFAULT_EDIT_TOOLBAR_GLASS = false
 
+    // ---------- 桌面编辑工具条四圆钮液态玻璃化 ----------
+    /** 双指捏合编辑模式底部工具条的四颗圆钮（卡片/壁纸/布局/设置）液态玻璃。默认 **false**。
+     *  圆钮走 `drawCircleColor` 平色圆绘制（不走系统模糊管线），开启后由本模块接管渲染。
+     *  开关切换即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_EDIT_TOOLBTN_GLASS = "edit_toolbtn_glass_enable"
+    /** 编辑工具条四圆钮玻璃默认值（false = 不干预，保持系统原样平色圆） */
+    const val DEFAULT_EDIT_TOOLBTN_GLASS = false
+
     // ---------- 桌面长按菜单底衬液态玻璃化 ----------
     /** 桌面长按（应用图标/文件夹/卡片/堆叠）主菜单全屏底衬液态玻璃。默认 **false**。
      *  底衬由系统离线位图管线（模糊壁纸 + 模糊 dragLayer 两层）产生，不走系统模糊管线，

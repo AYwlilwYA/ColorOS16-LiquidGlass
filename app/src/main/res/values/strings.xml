@@ -298,6 +298,8 @@
     <string name="settings_clear_all_btn_glass_desc">把最近任务页底部的「清除全部」按钮变成液态玻璃。开启后立即生效，无需重启桌面。</string>
     <string name="settings_edit_toolbar_glass">桌面整理/完成按钮</string>
     <string name="settings_edit_toolbar_glass_desc">把双指捏合进入桌面编辑模式后左上角「整理」和右上角「完成」两个按钮变成液态玻璃。开启后立即生效，无需重启桌面。</string>
+    <string name="settings_edit_toolbtn_glass">桌面编辑工具条按钮</string>
+    <string name="settings_edit_toolbtn_glass_desc">把双指捏合进入桌面编辑模式后底部一排圆形按钮（卡片、壁纸、布局、设置等）变成液态玻璃。开启后立即生效，无需重启桌面。</string>
     <string name="settings_popup_menu_glass">桌面长按菜单底衬</string>
     <string name="settings_popup_menu_glass_desc">把长按桌面图标、文件夹、卡片时弹出菜单的整屏毛玻璃背景变成液态玻璃（折射、色散、高光）。开启后立即生效，无需重启桌面。</string>
 

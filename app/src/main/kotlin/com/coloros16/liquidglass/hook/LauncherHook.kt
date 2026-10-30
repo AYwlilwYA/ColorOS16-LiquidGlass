@@ -241,6 +241,15 @@ object LauncherHook {
     /** 编辑工具条玻璃开关重读间隔（ms）。 */
     private const val EDIT_TOOLBAR_GLASS_TTL_MS = 500L
 
+    // ---- 桌面编辑工具条四圆钮玻璃（drawCircleColor 类门控；唯一调用方=PressFeedbackCircleImageView） ----
+    /** 编辑工具条 item 圆底图标（drawCircleColor 唯一调用方，类名即门控，无需身份槽）。 */
+    private const val CLASS_CIRCLE_IMAGE_VIEW =
+        "com.android.launcher.togglebar.views.PressFeedbackLinearLayout\$PressFeedbackCircleImageView"
+    /** 圆底平色绘制方法（正圆：圆心/半径 = h/2，不读 mRadius）。 */
+    private const val METHOD_DRAW_CIRCLE_COLOR = "drawCircleColor"
+    /** 四圆钮玻璃开关重读间隔（ms）。 */
+    private const val EDIT_TOOLBTN_GLASS_TTL_MS = 500L
+
     // ---- 桌面长按菜单底衬玻璃（PopupBlurView 离线位图两层 → 自研玻璃渲染核） ----
     /** 长按菜单全屏底衬 View（应用/文件夹/卡片/堆叠长按共用同一弹窗底衬）。 */
     private const val CLASS_POPUP_BLUR_VIEW = "com.android.launcher3.popup.PopupBlurView"
@@ -497,6 +506,13 @@ object LauncherHook {
         enabled = { editToolbarGlassEnabled() },
     )
 
+    /** 编辑工具条四圆钮条目（drawCircleColor 类门控直接命中，不经 hostRef 身份匹配）。 */
+    private val editToolBtnSlot = PressGlassSlot(
+        name = "edit-toolbtn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { editToolBtnGlassEnabled() },
+    )
+
     /** 白名单表：drawPressedColor 拦截逐条匹配，未命中 → 原绘制。 */
     private val pressGlassSlots = listOf(clearAllBtnSlot, editTidySlot, editApplySlot)
 
@@ -517,6 +533,12 @@ object LauncherHook {
     private var cachedEditToolbarGlass = false
     @Volatile
     private var cachedEditToolbarGlassAtMs = 0L
+
+    /** 编辑工具条四圆钮玻璃开关缓存（TTL 同清除钮）。 */
+    @Volatile
+    private var cachedEditToolBtnGlass = false
+    @Volatile
+    private var cachedEditToolBtnGlassAtMs = 0L
 
     // ---- 长按菜单底衬玻璃运行态 ----
     /** 底衬两层位图的反射字段（install 期解析）。 */
@@ -1698,26 +1720,53 @@ object LauncherHook {
 
     /** [doc/spec/76] 问小布映射登记：系统自建 LayerBlurDrawable → 内层 posteffect BlurDrawable
      *  → screenRegionMap（键与 drawBlurShader 的 this 同 identityHashCode）。
-     *  getBlurDrawable() 返回 null 时静默回退（不登记 = 保持系统磨砂）。 */
+     *  getBlurDrawable() 返回 null 时回退（不登记 = 保持系统磨砂），回退原因打节流诊断日志。 */
     private fun registerPageIndicatorRegion(chain: XposedInterface.Chain) {
         val indicator = chain.getThisObject() as? View ?: return
         val layer = try {
             mPageIndicatorGetBlurDrawable?.invoke(indicator)
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher page-indicator: getBlurDrawable failed", t); null
-        } ?: return
-        if (mLayerCls?.isInstance(layer) != true) return
+        } ?: run {
+            logCardDiag(
+                "page-ind-null-layer",
+                "coord: PageIndicator skip —— getBlurDrawable null（背景层缺失，保持系统磨砂）",
+            )
+            return
+        }
+        if (mLayerCls?.isInstance(layer) != true) {
+            logCardDiag(
+                "page-ind-not-layer",
+                "coord: PageIndicator skip —— getBlurDrawable 返回 ${layer?.javaClass?.name ?: "null"} 非 LayerBlurDrawable",
+            )
+            return
+        }
         val inner = try {
             mLayerBlurInnerField?.get(layer)
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher page-indicator: read LayerBlurDrawable.mBlurDrawable failed", t); null
-        } ?: return
+        } ?: run {
+            logCardDiag(
+                "page-ind-null-inner",
+                "coord: PageIndicator skip —— LayerBlurDrawable.mBlurDrawable null",
+            )
+            return
+        }
         val corner = try {
             (mPageIndicatorGetBackgroundRadius?.invoke(indicator) as? Int)?.toFloat() ?: 0f
         } catch (t: Throwable) {
             Lg.w(TAG, "launcher page-indicator: getBackgroundRadius failed, fallback min(w,h)/2", t)
             0f
         }
+        // 编辑态缩放几何诊断：raw 布局尺寸 vs 屏幕 loc vs 自身缩放（每 reason 节流 3 条）
+        val geomLoc = IntArray(2)
+        indicator.getLocationOnScreen(geomLoc)
+        logCardDiag(
+            "page-ind-geom",
+            "coord: PageIndicator geom raw=${indicator.width}x${indicator.height} loc=[${geomLoc[0]},${geomLoc[1]}] " +
+                "scale=(${indicator.scaleX},${indicator.scaleY}) pivot=(${indicator.pivotX},${indicator.pivotY}) " +
+                "trans=(${indicator.translationX},${indicator.translationY})",
+        )
         registerBlurRegion(
             inner, indicator, corner,
             hostName = "PageIndicator", cardClass = CLASS_OPLUS_PAGE_INDICATOR,
@@ -2480,6 +2529,34 @@ object LauncherHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_PRESSED_COLOR, press-feedback glass disabled", t)
         }
+        // ③ 编辑工具条四圆钮：drawCircleColor 类门控（唯一调用方 = PressFeedbackCircleImageView，
+        //    类名圈定即可，无需身份槽）；radius = h/2（正圆语义，不读 mRadius 高光偏移值）。
+        //    无 alpha 守卫（alpha=0 帧照画，合成期自然乘掉，按 alpha skip 会永久空白）。
+        try {
+            val circleCls = hostForName(CLASS_PRESS_FEEDBACK_HANDLER)
+            mPfhHostViewField = circleCls.getDeclaredField(FIELD_PFH_HOST_VIEW).apply { isAccessible = true }
+            val circleMethod = circleCls.getDeclaredMethod(METHOD_DRAW_CIRCLE_COLOR, Canvas::class.java)
+            api.hook(circleMethod)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    var glassDrawn = false
+                    try {
+                        val view = mPfhHostViewField?.get(chain.getThisObject()) as? View
+                        if (view != null && view.javaClass.name == CLASS_CIRCLE_IMAGE_VIEW) {
+                            val canvas = chain.getArgs()?.getOrNull(0) as? Canvas
+                            if (canvas != null) {
+                                glassDrawn = drawPressGlassOnCanvas(canvas, view, view.height / 2f, editToolBtnSlot)
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "launcher press-glass: drawCircleColor intercept error", t)
+                    }
+                    if (!glassDrawn) chain.proceed()
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_CIRCLE_COLOR(Canvas) (edit-toolbtn circle glass)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_CIRCLE_COLOR, edit toolbtn glass disabled", t)
+        }
     }
 
     /** 清除钮捕获挂点：面板 onFinishInflate 后读 public 字段 mClearAllBtn 写入白名单槽。
@@ -2575,6 +2652,23 @@ object LauncherHook {
             }
         }
         return cachedEditToolbarGlass
+    }
+
+    /** 编辑工具条四圆钮玻璃开关（TTL [EDIT_TOOLBTN_GLASS_TTL_MS] 重读，开关切换无需重启 Launcher）。 */
+    private fun editToolBtnGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedEditToolBtnGlassAtMs > EDIT_TOOLBTN_GLASS_TTL_MS) {
+            cachedEditToolBtnGlassAtMs = now
+            cachedEditToolBtnGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_EDIT_TOOLBTN_GLASS, Prefs.DEFAULT_EDIT_TOOLBTN_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read edit_toolbtn_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedEditToolBtnGlass
     }
 
     /** 在按压宿主的 onDraw canvas 上画液态玻璃（坐标系 = 按钮局部坐标，无需平移）。
