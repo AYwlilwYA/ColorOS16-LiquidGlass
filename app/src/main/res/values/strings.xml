@@ -154,6 +154,8 @@
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">运行日志</string>
     <string name="settings_enable_logs_desc">关闭后 logcat 只保留错误日志。修改后需重启系统界面。</string>
+    <string name="settings_debug_draw">开启调试绘制</string>
+    <string name="settings_debug_draw_desc">开启后屏幕上出现悬浮球调试工具，可以抓取任意控件的信息、查看当前页面的玻璃绘制清单和界面结构。</string>
     <string name="settings_share_log">分享日志</string>
     <string name="settings_share_log_failed">分享失败：%1$s</string>
     <string name="settings_capture_include_all">含全部日志（默认只抓模块标签）</string>
@@ -275,16 +277,33 @@
     <string name="settings_volume_seekbar_glass_desc">给调节音量时弹出的竖向音量条加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
     <string name="settings_volume_panel_clean">进度条亮白填充</string>
     <string name="settings_volume_panel_clean_desc">把音量滑杆的进度条改成亮白磨砂填充，顶边加一道高光，在玻璃背景上更清晰。开启后立即生效，无需重启系统界面。</string>
-    <string name="settings_volume_panel_backdrop">音量面板去白底</string>
-    <string name="settings_volume_panel_backdrop_desc">去掉展开音量面板背后那层模糊的发白底色，只保留模糊效果。关闭即恢复系统原样。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_volume_panel_backdrop">替换音量调节背景模糊为黑色遮罩</string>
+    <string name="settings_volume_panel_backdrop_desc">把展开音量面板背后那层模糊替换成一层轻微的黑色遮罩。关闭即恢复系统原样。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_notification_popup_glass">通知长按菜单玻璃</string>
+    <string name="settings_notification_popup_glass_desc">给长按通知后弹出的操作菜单卡加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="loc_notification_popup_menu">长按通知弹出的操作菜单卡</string>
+    <string name="settings_device_entrance_glass">设备空间入口卡玻璃</string>
+    <string name="settings_device_entrance_glass_desc">给控制中心设备空间里的小入口方块加液态玻璃背景。开启后立即生效，无需重启系统界面。</string>
+    <string name="settings_qs_detail_glass">快捷开关展开卡玻璃</string>
+    <string name="settings_qs_detail_glass_desc">给控制中心点开 WiFi、蓝牙等开关后弹出的大面板加液态玻璃背景（只作用于面板底板）。开启后立即生效，无需重启系统界面。</string>
     <string name="settings_gallery_glass">相册液态玻璃</string>
     <string name="settings_gallery_glass_desc">把相册里的视图背景模糊接管成液态玻璃。该功能依赖相册自身的模糊实现，不同界面效果可能不一致。</string>
     <string name="settings_calculator_glass">计算器液态玻璃</string>
     <string name="settings_calculator_glass_desc">把计算器的对话框与弹出菜单背景模糊接管成液态玻璃。</string>
     <string name="settings_smart_sidebar_glass">智能侧边栏液态玻璃</string>
     <string name="settings_smart_sidebar_glass_desc">把智能侧边栏面板与卡片的背景模糊接管成液态玻璃。</string>
+    <string name="settings_assistant_screen_glass">速览（负一屏）玻璃</string>
+    <string name="settings_assistant_screen_glass_desc">给速览（负一屏）的卡片和控件加玻璃效果。</string>
+    <string name="settings_quick_search_glass">全局搜索弹窗玻璃</string>
+    <string name="settings_quick_search_glass_desc">给全局搜索 App 里长按列表项弹出的菜单和弹窗加玻璃效果（只作用于这类弹窗，不含搜索条本身）。</string>
     <string name="settings_gallery_shader_probe">相册采样范围探针（实验）</string>
     <string name="settings_gallery_shader_probe_desc">临时替换相册背景模糊做诊断：元素边缘出现红色环＝模糊取到了元素外面的背景（可以做真折射），绿色环＝只取到元素内的内容。开启后相册背景会变清晰并带一圈色环，关掉即恢复原模糊。</string>
+    <string name="settings_clear_all_btn_glass">最近任务清除按钮</string>
+    <string name="settings_clear_all_btn_glass_desc">把最近任务页底部的「清除全部」按钮变成液态玻璃。开启后立即生效，无需重启桌面。</string>
+    <string name="settings_edit_toolbar_glass">桌面整理/完成按钮</string>
+    <string name="settings_edit_toolbar_glass_desc">把双指捏合进入桌面编辑模式后左上角「整理」和右上角「完成」两个按钮变成液态玻璃。开启后立即生效，无需重启桌面。</string>
+    <string name="settings_popup_menu_glass">桌面长按菜单底衬</string>
+    <string name="settings_popup_menu_glass_desc">把长按桌面图标、文件夹、卡片时弹出菜单的整屏毛玻璃背景变成液态玻璃（折射、色散、高光）。开启后立即生效，无需重启桌面。</string>
 
     <!-- 组件位置描述（类清单/管理对话框里「在哪里的」一句话） -->
     <string name="loc_blur_drawable">通知中心与控制中心的多类卡片共用背景</string>
@@ -310,12 +329,18 @@
     <string name="loc_toggle_seekbar">亮度弹窗里的横向滑条</string>
     <string name="loc_device_card_square">控制中心设备中心里的方形设备卡片</string>
     <string name="loc_device_card_rect">控制中心设备中心里的长条设备卡片</string>
+    <string name="loc_device_entrance">控制中心设备空间里的小入口方块</string>
+    <string name="loc_device_entrance_rect">控制中心设备空间里的横长条入口卡（带标题）</string>
+    <string name="loc_device_entrance_nodevice">控制中心设备空间没设备时的整行入口占位卡</string>
+    <string name="loc_qs_detail">控制中心点开磁贴后弹出的展开大面板</string>
     <string name="loc_gallery_photo_bg">相册照片页的背景材质模糊</string>
     <string name="loc_gallery_bg_view">相册内的通用背景模糊覆盖层</string>
     <string name="loc_window_blur">对话框与侧边栏等窗口的背景模糊层</string>
     <string name="loc_smart_sidebar">智能侧边栏的主面板</string>
     <string name="loc_vertical_seekbar">竖向滑条（音量条等）</string>
     <string name="loc_horizontal_seekbar">横向滑条</string>
+    <string name="loc_clear_all_button">最近任务页底部的清除全部按钮</string>
+    <string name="loc_popup_menu_backdrop">桌面长按弹出菜单后面的整屏毛玻璃背景</string>
 
     <!-- iOS 动态倾斜 / 透视（doc/spec/65，2026-09-16，实验性） -->
     <string name="cat_tilt">倾斜与透视</string>

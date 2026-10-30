@@ -264,6 +264,56 @@ object GlassRegistry {
     /** 按元素 identityHashCode 取类全名；未登记 → null（渲染侧回落全局参数）。 */
     fun classOf(elementId: Int): String? = bound[elementId]?.name
 
+    /** 按元素 identityHashCode 取卡片语义类（如通知卡/磁贴）；未登记或无语义类 → null。 */
+    fun cardClassOf(elementId: Int): String? = bound[elementId]?.cardClass
+
+    /** 预设命中状态行（调试面板用）：status ∈ UNBOUND/HIT_CARD/HIT_CLASS/FALLBACK。
+     *  判据与 [overridesFor] 的 hit 逻辑同源；无副作用（不写审计表、不打日志）。 */
+    data class StatusRow(val status: String, val hitKey: String?, val cardClass: String?, val presetCount: Int)
+
+    fun statusOf(elementId: Int): StatusRow? {
+        val b = bound[elementId] ?: return null
+        val map = snapshotOverrides()
+        val hit = when {
+            b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
+            map.containsKey(b.name) -> b.name
+            else -> null
+        }
+        val status = when {
+            hit == null -> "FALLBACK"
+            hit == b.cardClass -> "HIT_CARD"
+            else -> "HIT_CLASS"
+        }
+        return StatusRow(status, hit, b.cardClass, map.size)
+    }
+
+    /** 绘制对象类的完整父链（沿 superclass 上溯，cap 12 层；调试面板用，零采集）。 */
+    fun classChainOf(elementId: Int): List<String> {
+        val b = bound[elementId] ?: return emptyList()
+        val out = ArrayList<String>(8)
+        var c: Class<*>? = b.clazz
+        var depth = 0
+        while (c != null && depth < 12) {
+            out.add(c.name)
+            c = c.superclass
+            depth++
+        }
+        return out
+    }
+
+    /** 与 preset-lookup 审计日志同源格式的行文本（调试面板用；无副作用）。 */
+    fun lookupLineOf(elementId: Int): String {
+        val b = bound[elementId] ?: return "id=$elementId UNBOUND"
+        val map = snapshotOverrides()
+        val hit = when {
+            b.cardClass != null && map.containsKey(b.cardClass) -> b.cardClass
+            map.containsKey(b.name) -> b.name
+            else -> null
+        }
+        return "id=$elementId name=${b.name.substringAfterLast('.')} " +
+            "card=${b.cardClass?.substringAfterLast('.')} hit=$hit presets=${map.size}"
+    }
+
     /** 类全名 → 中文标签（语义来自各 hook mount 处的反编译确认）。 */
     private val CLASS_LABELS = mapOf(
         "com.oplus.posteffect.BlurDrawable" to "通用模糊背景（多卡共用）",
@@ -289,12 +339,19 @@ object GlassRegistry {
         "com.oplus.systemui.qs.widget.OplusToggleSeekBar" to "横向亮度滑条",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareDeviceCardView" to "设备中心卡片（方形）",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleDeviceCardView" to "设备中心卡片（长条）",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareEntranceCardView" to "设备空间入口卡",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleEntranceCardView" to "设备空间入口卡（横版）",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.NoDeviceEntranceCardView" to "设备空间入口卡（无设备版）",
+        "com.oplus.systemui.qs.detail.OplusQSDetail" to "快捷开关展开卡",
         "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "相册照片页背景",
         "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "相册通用背景模糊层",
         "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "窗口背景模糊层",
         "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "智能侧边栏面板",
         "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "垂直滑条基类",
         "com.coui.appcompat.seekbar.COUISeekBar" to "横向滑条基类",
+        "com.coui.appcompat.poplist.COUIPopupListWindow" to "通知长按菜单",
+        "com.android.launcher.views.PressFeedbackButton" to "最近任务清除按钮",
+        "com.android.launcher3.popup.PopupBlurView" to "长按菜单底衬",
     )
 
     /** 类全名 → 位置描述的 strings.xml 资源名（「在哪里的」一句话；UI 侧经 [classLocationKey] 取用）。 */
@@ -322,12 +379,19 @@ object GlassRegistry {
         "com.oplus.systemui.qs.widget.OplusToggleSeekBar" to "loc_toggle_seekbar",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareDeviceCardView" to "loc_device_card_square",
         "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleDeviceCardView" to "loc_device_card_rect",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.SquareEntranceCardView" to "loc_device_entrance",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.RectangleEntranceCardView" to "loc_device_entrance_rect",
+        "com.oplus.deviceplugin.sdk.ui.view.separatecardview.NoDeviceEntranceCardView" to "loc_device_entrance_nodevice",
+        "com.oplus.systemui.qs.detail.OplusQSDetail" to "loc_qs_detail",
         "com.oplus.gallery.photo_page.widget.materialblur.blur.BlendPhotoBlurView" to "loc_gallery_photo_bg",
         "com.oplus.gallery.basebiz.widget.BackgroundBlurView" to "loc_gallery_bg_view",
         "com.android.internal.graphics.drawable.BackgroundBlurDrawable" to "loc_window_blur",
         "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView" to "loc_smart_sidebar",
         "com.coui.appcompat.seekbar.COUIVerticalSeekBar" to "loc_vertical_seekbar",
         "com.coui.appcompat.seekbar.COUISeekBar" to "loc_horizontal_seekbar",
+        "com.coui.appcompat.poplist.COUIPopupListWindow" to "loc_notification_popup_menu",
+        "com.android.launcher.views.PressFeedbackButton" to "loc_clear_all_button",
+        "com.android.launcher3.popup.PopupBlurView" to "loc_popup_menu_backdrop",
     )
 
     /** 清单/对话框展示用：有标签显示「标签（简单类名）」，无标签只显示简单类名。 */

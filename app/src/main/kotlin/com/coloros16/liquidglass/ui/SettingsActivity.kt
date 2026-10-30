@@ -1342,15 +1342,23 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchCardGlass, Prefs.KEY_CARD_GLASS_ENABLE, Prefs.DEFAULT_CARD_GLASS_ENABLE)
     }
 
-    /** 其他组件：音量条 + 相册 / 计算器 / 智能侧边栏的组件级玻璃开关。 */
+    /** 其他组件：音量条 + 相册 / 计算器 / 智能侧边栏 / 速览的组件级玻璃开关。 */
     private fun bindComponents(view: View) {
         bindGlassSwitch(view, R.id.switchVolumeSeekBarGlass, Prefs.KEY_VOLUME_SEEKBAR_GLASS, Prefs.DEFAULT_VOLUME_SEEKBAR_GLASS)
         bindGlassSwitch(view, R.id.switchVolumePanelClean, Prefs.KEY_VOLUME_PANEL_CLEAN, Prefs.DEFAULT_VOLUME_PANEL_CLEAN)
         bindGlassSwitch(view, R.id.switchVolumePanelBackdrop, Prefs.KEY_VOLUME_PANEL_BACKDROP, Prefs.DEFAULT_VOLUME_PANEL_BACKDROP)
+        bindGlassSwitch(view, R.id.switchNotificationPopupGlass, Prefs.KEY_NOTIFICATION_POPUP_GLASS, Prefs.DEFAULT_NOTIFICATION_POPUP_GLASS)
+        bindGlassSwitch(view, R.id.switchDeviceEntranceGlass, Prefs.KEY_DEVICE_ENTRANCE_GLASS, Prefs.DEFAULT_DEVICE_ENTRANCE_GLASS)
+        bindGlassSwitch(view, R.id.switchQsDetailGlass, Prefs.KEY_QS_DETAIL_GLASS, Prefs.DEFAULT_QS_DETAIL_GLASS)
         bindGlassSwitch(view, R.id.switchGalleryGlass, Prefs.KEY_GALLERY_GLASS, Prefs.DEFAULT_GALLERY_GLASS)
         bindGlassSwitch(view, R.id.switchCalculatorGlass, Prefs.KEY_CALCULATOR_GLASS, Prefs.DEFAULT_CALCULATOR_GLASS)
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchAssistantScreenGlass, Prefs.KEY_ASSISTANT_SCREEN_GLASS, Prefs.DEFAULT_ASSISTANT_SCREEN_GLASS)
+        bindGlassSwitch(view, R.id.switchQuickSearchGlass, Prefs.KEY_QUICK_SEARCH_GLASS, Prefs.DEFAULT_QUICK_SEARCH_GLASS)
         bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
+        bindGlassSwitch(view, R.id.switchClearAllBtnGlass, Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
+        bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
+        bindGlassSwitch(view, R.id.switchPopupMenuGlass, Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
     }
 
     /** 组件级玻璃开关绑定（写 Prefs + 按权威值刷新；hook 端 TTL 500ms 重读，改动即时生效）。 */
@@ -1585,6 +1593,13 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchLogs.setOnCheckedChangeListener(logsListener)
         refreshBooleanSwitch(switchLogs, logsListener, Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+        // 调试绘制（悬浮球调试工具：抓取控件/输出区/玻璃清单/UI 树）
+        val switchDebugDraw = view.findViewById<Switch>(R.id.switchDebugDraw)
+        val debugDrawListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_DEBUG_DRAW_ENABLE, checked)
+        }
+        switchDebugDraw.setOnCheckedChangeListener(debugDrawListener)
+        refreshBooleanSwitch(switchDebugDraw, debugDrawListener, Prefs.KEY_DEBUG_DRAW_ENABLE, Prefs.DEFAULT_DEBUG_DRAW_ENABLE)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表
         captureStartRow = view.findViewById(R.id.captureStartRow)
         captureStopRow = view.findViewById(R.id.captureStopRow)

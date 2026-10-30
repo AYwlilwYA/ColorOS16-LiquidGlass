@@ -11,8 +11,12 @@
 # - com.coloros.gallery3d：相册（A 族视图背景 RenderEffect）
 # - com.coloros.calculator：计算器（B 族窗口背景模糊 drawable）
 # - com.coloros.smartsidebar：智能侧边栏（B 族窗口背景模糊 drawable）
+# - com.coloros.assistantscreen：速览（负一屏）（B 族窗口背景模糊 drawable）
+# - com.heytap.quicksearchbox：全局搜索（B 族窗口背景模糊 drawable，只覆盖 COUI 长按菜单/弹窗，不含搜索条）
 com.android.systemui
 com.android.launcher
 com.coloros.gallery3d
 com.coloros.calculator
 com.coloros.smartsidebar
+com.coloros.assistantscreen
+com.heytap.quicksearchbox

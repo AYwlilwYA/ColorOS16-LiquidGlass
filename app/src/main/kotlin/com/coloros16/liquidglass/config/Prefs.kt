@@ -290,6 +290,13 @@ object Prefs {
     /** 模块日志开关默认值（2026-08-26 用户要求默认关：false = 默认关日志，需要调试时设置里手动开） */
     const val DEFAULT_ENABLE_LOGS = false
 
+    // ---------- 调试绘制（悬浮球调试工具） ----------
+    /** 调试绘制开关：true=显示悬浮球调试工具（抓取控件/输出区/玻璃清单/UI 树）；默认 false。
+     *  hook 端 500ms TTL 重读，≤0.5s 生效，无需重启 SystemUI。 */
+    const val KEY_DEBUG_DRAW_ENABLE = "debug_draw_enable"
+    /** 调试绘制开关默认值（默认关） */
+    const val DEFAULT_DEBUG_DRAW_ENABLE = false
+
     // ---------- 文字背景反转取色（doc/spec/21，2026-08-13） ----------
     /** 文字反转取色总开关：true=开启（默认）；false=不 hook QsColorUtil/TextView，走系统原逻辑。
      *  改动需重启 SystemUI 生效（hook 端 install 时读取并缓存）。 */
@@ -394,6 +401,30 @@ object Prefs {
     /** 桌面卡片玻璃默认值（false = 不干预，保持系统原样磨砂） */
     const val DEFAULT_CARD_GLASS_ENABLE = false
 
+    // ---------- 最近任务清除按钮液态玻璃化 ----------
+    /** 最近任务页底部「清除全部」按钮液态玻璃。默认 **false**。该按钮是 launcher 进程内
+     *  View 级平色 Paint 填充（不走系统模糊管线），开启后由本模块接管渲染。改动即时生效
+     *  （hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_CLEAR_ALL_BTN_GLASS = "clear_all_btn_glass_enable"
+    /** 最近任务清除按钮玻璃默认值（false = 不干预，保持系统原样平色胶囊） */
+    const val DEFAULT_CLEAR_ALL_BTN_GLASS = false
+
+    // ---------- 桌面编辑模式整理/完成钮液态玻璃化 ----------
+    /** 双指捏合编辑模式左上「整理」与右上「完成」按钮液态玻璃。默认 **false**。该组按钮同为
+     *  `PressFeedbackButton` 平色 Paint 填充（不走系统模糊管线），开启后由本模块接管渲染。
+     *  开关切换即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_EDIT_TOOLBAR_GLASS = "edit_toolbar_glass_enable"
+    /** 编辑模式整理/完成钮玻璃默认值（false = 不干预，保持系统原样平色胶囊） */
+    const val DEFAULT_EDIT_TOOLBAR_GLASS = false
+
+    // ---------- 桌面长按菜单底衬液态玻璃化 ----------
+    /** 桌面长按（应用图标/文件夹/卡片/堆叠）主菜单全屏底衬液态玻璃。默认 **false**。
+     *  底衬由系统离线位图管线（模糊壁纸 + 模糊 dragLayer 两层）产生，不走系统模糊管线，
+     *  开启后由本模块接管渲染。开关切换即时生效（hook 端 TTL 500ms 重读 Prefs，无需重启桌面）。 */
+    const val KEY_POPUP_MENU_GLASS_ENABLE = "popup_menu_glass_enable"
+    /** 长按菜单底衬玻璃默认值（false = 不干预，保持系统原样模糊底衬） */
+    const val DEFAULT_POPUP_MENU_GLASS_ENABLE = false
+
     // ---------- 音量条液态玻璃化（doc/spec/09） ----------
     /** 音量条（垂直滑条）液态玻璃。默认 **false**。音量条背景走 framework 窗口模糊
      *  （BackgroundBlurDrawable，draw 空实现），现有 drawable 替换链打不中，需按 spec/09
@@ -414,6 +445,26 @@ object Prefs {
     /** 音量面板去白底默认值（false = 保持系统原样含发白底色） */
     const val DEFAULT_VOLUME_PANEL_BACKDROP = false
 
+    // ---------- 通知长按菜单玻璃化（doc/spec/135） ----------
+    /** 通知长按菜单卡液态玻璃。默认 **false**；关 = 系统原样纯色菜单卡。
+     *  改动即时生效（TTL 500ms 重读）。 */
+    const val KEY_NOTIFICATION_POPUP_GLASS = "notification_popup_glass_enable"
+    /** 通知长按菜单玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_NOTIFICATION_POPUP_GLASS = false
+
+    // ---------- 控制中心组件玻璃（设备空间入口卡 / 快捷开关展开卡） ----------
+    /** 设备空间入口方块（控制中心设备空间 1×1 入口卡）玻璃。默认 **false**；
+     *  开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_DEVICE_ENTRANCE_GLASS = "device_entrance_glass_enable"
+    /** 设备空间入口方块玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_DEVICE_ENTRANCE_GLASS = false
+
+    /** 快捷开关展开大卡（控制中心点开 WiFi/蓝牙等磁贴后的展开面板）玻璃。默认 **false**；
+     *  开关切换即时生效（TTL 500ms 重读）。 */
+    const val KEY_QS_DETAIL_GLASS = "qs_detail_glass_enable"
+    /** 快捷开关展开大卡玻璃默认值（false = 不干预，保持系统原样） */
+    const val DEFAULT_QS_DETAIL_GLASS = false
+
     // ---------- 第三方 App 玻璃化（相册/计算器/智能侧边栏） ----------
     /** 相册玻璃化：拦截 App 内的视图背景模糊（RenderEffect / 窗口模糊 drawable）改画液态玻璃。
      *  默认 **false**；开启后需要进程内背景源（抓屏）通道可用，抓不到时保持系统原样模糊。
@@ -431,6 +482,17 @@ object Prefs {
     const val KEY_SMART_SIDEBAR_GLASS = "smart_sidebar_glass_enable"
     /** 智能侧边栏玻璃化默认值（false = 不干预） */
     const val DEFAULT_SMART_SIDEBAR_GLASS = false
+
+    /** 速览（负一屏）玻璃化（卡片/控件背景模糊）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_ASSISTANT_SCREEN_GLASS = "assistant_screen_glass_enable"
+    /** 速览（负一屏）玻璃化默认值（false = 不干预） */
+    const val DEFAULT_ASSISTANT_SCREEN_GLASS = false
+
+    /** 全局搜索（com.heytap.quicksearchbox）弹窗玻璃化（只覆盖 App 内 COUI 长按菜单/弹窗，
+     *  不含搜索条——搜索条是自绘纯色不在模糊管线）。默认 **false**，语义同 [KEY_GALLERY_GLASS]。 */
+    const val KEY_QUICK_SEARCH_GLASS = "quick_search_glass_enable"
+    /** 全局搜索弹窗玻璃化默认值（false = 不干预） */
+    const val DEFAULT_QUICK_SEARCH_GLASS = false
 
     /** 相册背景采样范围探针（实验）：把 A 族视图背景 RenderEffect 临时替换为越界采样染色探针，
      * 肉眼判定 shader input 是否含节点外像素（折射环带可行性）。默认 **false**；
@@ -678,6 +740,72 @@ object Prefs {
             DEFAULT_GLASS_ENABLE
         }
         glassEnableCache = v
+        return v
+    }
+
+    @Volatile
+    private var debugDrawCache: Boolean = DEFAULT_DEBUG_DRAW_ENABLE
+
+    @Volatile
+    private var debugDrawCacheAtMs = 0L
+
+    /** 调试绘制开关（500ms TTL 缓存；关 = 无窗口无 tick，仅本 volatile 读）。 */
+    fun debugDrawEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_DEBUG_DRAW_ENABLE
+        val now = SystemClock.uptimeMillis()
+        if (now - debugDrawCacheAtMs < 500L) return debugDrawCache
+        debugDrawCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_DEBUG_DRAW_ENABLE, DEFAULT_DEBUG_DRAW_ENABLE)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read debug_draw_enable failed, default $DEFAULT_DEBUG_DRAW_ENABLE", t)
+            DEFAULT_DEBUG_DRAW_ENABLE
+        }
+        debugDrawCache = v
+        return v
+    }
+
+    @Volatile
+    private var deviceEntranceCache: Boolean = DEFAULT_DEVICE_ENTRANCE_GLASS
+
+    @Volatile
+    private var deviceEntranceCacheAtMs = 0L
+
+    /** 设备空间入口方块玻璃开关（500ms TTL 缓存；注册链每次 draw 读）。 */
+    fun deviceEntranceGlassEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_DEVICE_ENTRANCE_GLASS
+        val now = SystemClock.uptimeMillis()
+        if (now - deviceEntranceCacheAtMs < 500L) return deviceEntranceCache
+        deviceEntranceCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_DEVICE_ENTRANCE_GLASS, DEFAULT_DEVICE_ENTRANCE_GLASS)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read device_entrance_glass_enable failed, default $DEFAULT_DEVICE_ENTRANCE_GLASS", t)
+            DEFAULT_DEVICE_ENTRANCE_GLASS
+        }
+        deviceEntranceCache = v
+        return v
+    }
+
+    @Volatile
+    private var qsDetailCache: Boolean = DEFAULT_QS_DETAIL_GLASS
+
+    @Volatile
+    private var qsDetailCacheAtMs = 0L
+
+    /** 快捷开关展开大卡玻璃开关（500ms TTL 缓存；注册链每次 draw 读）。 */
+    fun qsDetailGlassEnabled(api: XposedInterface?): Boolean {
+        if (api == null) return DEFAULT_QS_DETAIL_GLASS
+        val now = SystemClock.uptimeMillis()
+        if (now - qsDetailCacheAtMs < 500L) return qsDetailCache
+        qsDetailCacheAtMs = now
+        val v = try {
+            read(api).getBoolean(KEY_QS_DETAIL_GLASS, DEFAULT_QS_DETAIL_GLASS)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read qs_detail_glass_enable failed, default $DEFAULT_QS_DETAIL_GLASS", t)
+            DEFAULT_QS_DETAIL_GLASS
+        }
+        qsDetailCache = v
         return v
     }
 

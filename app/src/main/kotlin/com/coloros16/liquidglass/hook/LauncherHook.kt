@@ -22,8 +22,11 @@ import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewGroup
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.debug.DebugElement
+import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
+import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
@@ -124,6 +127,7 @@ object LauncherHook {
     private const val FIELD_MBG_VIEW = "mBgView"
     private const val FIELD_MRADIUS = "mRadius"
     private const val CLASS_LAYER_BLUR_DRAWABLE = "com.android.launcher3.uioverrides.states.blurdrawable.LayerBlurDrawable"
+    private const val CLASS_ITEM_INFO = "com.android.launcher3.model.data.ItemInfo"
     /** LayerBlurDrawable 私有字段（反编译 L62：`private final BlurDrawable mBlurDrawable`），
      *  与 drawBlurShader 的 this 同一实例。用字段反射避免 Kotlin getter 名歧义。 */
     private const val FIELD_MBLUR_DRAWABLE = "mBlurDrawable"
@@ -211,6 +215,46 @@ object LauncherHook {
     /** 卡片玻璃开关重读间隔（ms）。 */
     private const val CARD_GLASS_TTL_MS = 500L
 
+    // ---- 最近任务清除按钮玻璃（View 级渲染接管：该按钮全链零 blur，不走 posteffect 漏斗） ----
+    /** 最近任务清除钮面板容器（onFinishInflate 后读 public 字段 mClearAllBtn 捕获按钮实例）。 */
+    private const val CLASS_CLEAR_ALL_PANEL_VIEW = "com.oplus.quickstep.views.OplusClearAllPanelView"
+    /** 面板内清除钮字段（反编译实证 `public PressFeedbackButton mClearAllBtn`）。 */
+    private const val FIELD_CLEAR_ALL_BTN = "mClearAllBtn"
+    /** 按压反馈处理器（launcher 全库按钮共用；drawPressedColor = 平色 Paint 圆角矩形）。 */
+    private const val CLASS_PRESS_FEEDBACK_HANDLER = "com.android.launcher.togglebar.animation.PressFeedbackHandler"
+    /** 按压底色绘制方法（PressFeedbackButton.onDraw 先调它再画文字 → 在此盖玻璃不遮「清除」字样）。 */
+    private const val METHOD_DRAW_PRESSED_COLOR = "drawPressedColor"
+    /** handler 持有的宿主 View 私有字段（白名单判定：仅清除钮实例接管）。 */
+    private const val FIELD_PFH_HOST_VIEW = "mView"
+    /** 清除钮语义类（GlassRegistry 登记键，预设按「最近任务清除按钮」行命中）。 */
+    private const val CLASS_CLEAR_ALL_BUTTON = "com.android.launcher.views.PressFeedbackButton"
+    /** 清除钮玻璃开关重读间隔（ms）。 */
+    private const val CLEAR_ALL_BTN_GLASS_TTL_MS = 500L
+
+    // ---- 桌面编辑模式整理/完成钮玻璃（并入 PressFeedback 白名单共享机制） ----
+    /** 编辑模式工具条容器（onFinishInflate 后读 getter 捕获整理/完成两钮实例）。 */
+    private const val CLASS_EDIT_TOOLBAR = "com.android.launcher.togglebar.views.ToggleStateToolbar"
+    /** 左钮 getter（back_to_main_page，动态改文为「整理」）。 */
+    private const val METHOD_GET_BACK_TO_MAIN_PAGE = "getBackToMainPage"
+    /** 右钮 getter（apply，固定文案「完成」）。 */
+    private const val METHOD_GET_APPLY_BTN = "getApplyBtn"
+    /** 编辑工具条玻璃开关重读间隔（ms）。 */
+    private const val EDIT_TOOLBAR_GLASS_TTL_MS = 500L
+
+    // ---- 桌面长按菜单底衬玻璃（PopupBlurView 离线位图两层 → 自研玻璃渲染核） ----
+    /** 长按菜单全屏底衬 View（应用/文件夹/卡片/堆叠长按共用同一弹窗底衬）。 */
+    private const val CLASS_POPUP_BLUR_VIEW = "com.android.launcher3.popup.PopupBlurView"
+    /** 底衬模糊壁纸层私有字段（BitmapDrawable，bounds=全屏）。 */
+    private const val FIELD_POPUP_WM_DRAWABLE = "mWallpaperDrawable"
+    /** 底衬模糊 dragLayer 层私有字段（BitmapDrawable，bounds=全屏）。 */
+    private const val FIELD_POPUP_DL_DRAWABLE = "mDragLayerDrawable"
+    /** 底衬绘制方法（原实现顺序画壁纸层→dragLayer 层→super 子 View）。 */
+    private const val METHOD_POPUP_DISPATCH_DRAW = "dispatchDraw"
+    /** 底衬分离回调（清理我们侧合成缓存；系统在其中回收两层源位图）。 */
+    private const val METHOD_POPUP_ON_DETACHED = "onDetachedFromWindow"
+    /** 长按菜单玻璃开关重读间隔（ms）。 */
+    private const val POPUP_MENU_GLASS_TTL_MS = 500L
+
     /** 整屏快照抓屏任务 id（worker 队列唯一任务；Int.MIN_VALUE 不可能与真实 identityHashCode 冲突） */
     private const val SNAPSHOT_ID = Int.MIN_VALUE
     /** [doc/spec/42 2026-08-13] Launcher 抓屏「只抓壁纸层」UID 过滤：setUid 语义 = 只抓
@@ -230,12 +274,14 @@ object LauncherHook {
 
     // ------------------------------------------------------------ 数据结构
 
-    /** screenRegionMap 条目：屏幕区域 + 局部 bounds + 宿主名 + 圆角。 */
+    /** screenRegionMap 条目：屏幕区域 + 局部 bounds + 宿主名 + 圆角 + 最近登记时刻 + 宿主弱引用。 */
     private data class RegionEntry(
         val region: RectF,
         val autoBounds: Rect,
         val hostViewName: String,
         val cornerRadius: Float,
+        val lastSeenMs: Long,
+        val hostViewRef: WeakReference<View>,
     )
 
     /** 整屏快照条目：captureDisplay 整屏（排除 Launcher 根 surface，0.5 降采样）干净壁纸背景，共享所有玻璃元素。 */
@@ -284,6 +330,8 @@ object LauncherHook {
         val refractionHeight: Float = 0f,
         /** 材质参数指纹（含预设覆盖值）：任一材质键变化都要重设 uniform，否则被早退分支吃掉。 */
         val materialHash: Int = 0,
+        /** 实际绑定的 uSourceLowRes 档位（miss 回退记实际档 4；档位变 → 全量重绑）。 */
+        val lowResDiv: Int = 4,
     )
 
     private class LiquidShaderBuild(val shader: RuntimeShader)
@@ -353,6 +401,24 @@ object LauncherHook {
     private var mLayerCls: Class<*>? = null
     private var mLayerBlurInnerField: Field? = null
 
+    // [doc/spec/143] 桌面覆盖写穿：LayerBlurDrawable.setCornerRadius 四参写口
+    //（名字优先，17.3.12 按形状指纹；解析/调用失败只禁写口，不崩不劣化）
+    private var mLayerSetCornerRadius: Method? = null
+    /** 写口失败后置 true，后续注册零反射直接跳过 */
+    private var launcherCornerWriteDisabled = false
+
+    /** [doc/spec/143] 桌面覆盖写穿影子：元素 id → 写穿前系统原角 / 我们最后写入值 */
+    private class LauncherCornerShadow(
+        val layerRef: WeakReference<Any>,
+        /** 写穿前系统原角（= 注册期 resolvedCorner） */
+        val original: Float,
+        /** 我们最后一次写入的角（幂等比对） */
+        var lastWritten: Float,
+    )
+
+    private val launcherCornerShadow = ConcurrentHashMap<Int, LauncherCornerShadow>()
+    private const val LAUNCHER_CORNER_SHADOW_MAX = 32
+
     // [doc/spec/66] Dock 借壳反射（解析失败只禁 Dock 玻璃，不影响文件夹）
     private var mCreateBlurDrawable: Method? = null
     private var mShortcutsAndWidgetsField: Field? = null
@@ -389,6 +455,92 @@ object LauncherHook {
     private var cachedCardGlass = false
     @Volatile
     private var cachedCardGlassAtMs = 0L
+
+    // ---- PressFeedback 玻璃接管（白名单驱动共享机制：drawPressedColor 一次挂载，
+    //      按宿主白名单圈定接管范围；新宿主 = 白名单加条目 + 捕获挂点 + 开关行，零新绘制 hook） ----
+
+    /** 白名单条目：宿主捕获槽 + 预设登记类 + 玻璃开关。 */
+    private class PressGlassSlot(
+        /** 宿主身份标签（日志用） */
+        val name: String,
+        /** GlassRegistry 预设登记键（按组件行命中） */
+        val cardClass: String,
+        /** 本条目玻璃开关（TTL volatile 各自缓存） */
+        val enabled: () -> Boolean,
+    ) {
+        /** 捕获的宿主 View（该宿主捕获挂点写入；WeakReference 防泄漏） */
+        @Volatile
+        var hostRef: WeakReference<View>? = null
+
+        /** 命中判定：拦截到的按压宿主是否本条目捕获的实例（引用身份比较）。 */
+        fun matches(view: View): Boolean = hostRef?.get() === view
+    }
+
+    /** 清除钮条目（白名单第一条目；宿主 = OplusClearAllPanelView.btn_clear）。 */
+    private val clearAllBtnSlot = PressGlassSlot(
+        name = "clear-all-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { clearAllBtnGlassEnabled() },
+    )
+
+    /** 编辑模式「整理」钮条目（宿主 = ToggleStateToolbar.backToMainPage）。 */
+    private val editTidySlot = PressGlassSlot(
+        name = "edit-tidy-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { editToolbarGlassEnabled() },
+    )
+
+    /** 编辑模式「完成」钮条目（宿主 = ToggleStateToolbar.applyBtn）。 */
+    private val editApplySlot = PressGlassSlot(
+        name = "edit-apply-btn",
+        cardClass = CLASS_CLEAR_ALL_BUTTON,
+        enabled = { editToolbarGlassEnabled() },
+    )
+
+    /** 白名单表：drawPressedColor 拦截逐条匹配，未命中 → 原绘制。 */
+    private val pressGlassSlots = listOf(clearAllBtnSlot, editTidySlot, editApplySlot)
+
+    /** PressFeedbackHandler.mView 私有字段（白名单判定反射）。 */
+    private var mPfhHostViewField: Field? = null
+    /** PressFeedbackHandler.getMRadius()（平色圆角；解析失败回退 min(w,h)/2）。 */
+    private var mPfhGetRadius: Method? = null
+    /** PressFeedback 玻璃绘制专用 Paint（每帧绑定 shader，finally 清空防残留到其他绘制）。 */
+    private val pressGlassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    /** 清除钮玻璃开关缓存（TTL 见 [CLEAR_ALL_BTN_GLASS_TTL_MS]，热路径不每帧读 Prefs）。 */
+    @Volatile
+    private var cachedClearAllBtnGlass = false
+    @Volatile
+    private var cachedClearAllBtnGlassAtMs = 0L
+
+    /** 编辑工具条玻璃开关缓存（整理/完成两钮共享一个开关，TTL 同清除钮）。 */
+    @Volatile
+    private var cachedEditToolbarGlass = false
+    @Volatile
+    private var cachedEditToolbarGlassAtMs = 0L
+
+    // ---- 长按菜单底衬玻璃运行态 ----
+    /** 底衬两层位图的反射字段（install 期解析）。 */
+    @Volatile
+    private var mPopupWmField: Field? = null
+    @Volatile
+    private var mPopupDlField: Field? = null
+    /** 长按菜单玻璃开关缓存（TTL [POPUP_MENU_GLASS_TTL_MS]）。 */
+    @Volatile
+    private var cachedPopupMenuGlass = false
+    @Volatile
+    private var cachedPopupMenuGlassAtMs = 0L
+    /** 玻璃绘制专用 Paint（每帧绑定 shader，finally 清空防残留到子 View 绘制）。 */
+    private val popupGlassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** 两层系统位图的一次合成缓存（按底衬 View 身份键控；任一层 drawable 换新即重建）。 */
+    private class PopupBackdrop(
+        val wallpaperKey: Int,
+        val dragLayerKey: Int,
+        val bitmap: Bitmap,
+    )
+
+    /** 底衬 View identityHashCode → 合成背景（dispatchDraw 主线程访问；detach 清理）。 */
+    private val popupBackdropMap = ConcurrentHashMap<Int, PopupBackdrop>()
 
     // ---- 渲染资源 ----
     /** 每个 drawable（identityHashCode）一个液态玻璃 RuntimeShader 实例（防 uniform 串扰） */
@@ -550,6 +702,7 @@ object LauncherHook {
         } catch (t: Throwable) {
             false
         }
+        LowResTier.logEnabled = moduleLogEnabled
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             Lg.w(TAG, "LauncherHook skipped: SDK=${Build.VERSION.SDK_INT} < Q")
             return
@@ -565,12 +718,23 @@ object LauncherHook {
         mountPageIndicatorGlass(api, classLoader)
         // [doc/spec/78] 桌面卡片/分组卡片/小组件背景玻璃化（Launcher 侧此前唯一未映射的模糊产生点）
         mountCardBlurGlass(api, classLoader)
+        // PressFeedback 平色家族玻璃接管（白名单驱动；当前条目：最近任务清除钮/编辑模式整理完成钮）
+        mountPressFeedbackGlass(api, classLoader)
+        // 桌面长按菜单全屏底衬玻璃（离线位图两层 → 自研玻璃渲染核）
+        mountPopupMenuGlass(api)
         mountOnBlurReady(api, classLoader)
         mountWallpaperOffsets(api, classLoader)
         // [doc/spec/83] 开/关/文件夹动画的壁纸缩放信号（镜像折算玻璃采样窗）
         mountWallpaperZoomCommand(api, classLoader)
         // [spec/85 补接] 省电模式广播（开 → 即刻门控 + 重录宿主；关 → 下一帧恢复玻璃）
         registerPowerSaveBroadcastReceiver()
+        // 调试悬浮球（launcher 进程独立实例，与 SystemUI 三窗互不共享运行态）
+        DebugOverlay.ensureStarted(
+            contextProvider = { launcherAppContext },
+            snapshotProvider = ::debugSnapshot,
+            enabledProvider = { Prefs.debugDrawEnabled(api) },
+            processLabel = "launcher",
+        )
         Lg.i(TAG, "LauncherHook install done")
     }
 
@@ -603,6 +767,41 @@ object LauncherHook {
             Lg.i(TAG, "LauncherHook resolved OplusPreviewBackground/LayerBlurDrawable fields (folder icon map)")
         } catch (t: Throwable) {
             Lg.e(TAG, "LauncherHook resolve folder icon fields failed, folder icon map disabled", t)
+        }
+        // [doc/spec/143] 覆盖写穿写口：LayerBlurDrawable.setCornerRadius(float, boolean, ItemInfo, boolean)。
+        // 名字优先；17.3.12 R8 混淆时按形状指纹扫描（float, boolean, 非primitive, boolean）→ void；仍失败只禁写口。
+        try {
+            val layerCls = mLayerCls ?: Class.forName(CLASS_LAYER_BLUR_DRAWABLE, false, classLoader)
+            val itemInfoCls = Class.forName(CLASS_ITEM_INFO, false, classLoader)
+            val byName = try {
+                layerCls.getMethod(
+                    "setCornerRadius",
+                    Float::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+                    itemInfoCls, Boolean::class.javaPrimitiveType,
+                )
+            } catch (t: Throwable) {
+                null
+            }
+            mLayerSetCornerRadius = byName ?: layerCls.methods.firstOrNull { m ->
+                val ps = m.parameterTypes
+                ps.size == 4 &&
+                    ps[0] == Float::class.javaPrimitiveType &&
+                    ps[1] == Boolean::class.javaPrimitiveType &&
+                    !ps[2].isPrimitive &&
+                    ps[3] == Boolean::class.javaPrimitiveType &&
+                    m.returnType == Void.TYPE
+            }
+            if (mLayerSetCornerRadius != null) {
+                Lg.i(
+                    TAG,
+                    "LauncherHook resolved LayerBlurDrawable.setCornerRadius " +
+                        "(${if (byName != null) "by-name" else "by-fingerprint"}) (corner write-through)",
+                )
+            } else {
+                Lg.w(TAG, "LauncherHook setCornerRadius not found by name or fingerprint, corner write-through disabled")
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "LauncherHook resolve setCornerRadius failed, corner write-through disabled", t)
         }
         // 闭合文件夹图标常态映射反射（FolderRoundImageView.onDraw → imageDrawable → 内层 BlurDrawable）
         try {
@@ -1427,7 +1626,7 @@ object LauncherHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher dock: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: return
-        registerBlurRegion(inner, sw, resolveDockCornerPx(sw))
+        registerBlurRegion(inner, sw, resolveDockCornerPx(sw), hostName = "Dock", blurLayerForCorner = drawable)
     }
 
     /** [doc/spec/66] Dock 玻璃圆角 px：系统 `createBlurDrawable`（`OplusHotseat:203`）取
@@ -1522,6 +1721,7 @@ object LauncherHook {
         registerBlurRegion(
             inner, indicator, corner,
             hostName = "PageIndicator", cardClass = CLASS_OPLUS_PAGE_INDICATOR,
+            blurLayerForCorner = layer,
         )
     }
 
@@ -1603,6 +1803,7 @@ object LauncherHook {
             registerBlurRegion(
                 inner, target, readCardCornerPx(target),
                 hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+                blurLayerForCorner = target.background,
             )
             return
         }
@@ -1656,6 +1857,7 @@ object LauncherHook {
                     registerBlurRegion(
                         innerNow, v, readCardCornerPx(v),
                         hostName = "Card", cardClass = CLASS_CARD_BACKGROUND_BLUR_MANAGER,
+                        blurLayerForCorner = v.background,
                     )
                 } catch (t: Throwable) {
                     Lg.e(TAG, "launcher card: deferred map failed", t)
@@ -1880,6 +2082,7 @@ object LauncherHook {
         val cropY = wallpaperOffsetY.coerceIn(0f, 1f) * maxScroll.y
         val region = RectF(base.left - cropX, base.top - cropY, base.right - cropX, base.bottom - cropY)
         if (region == snap.region) return
+        LowResTier.prebuild(snap.bitmap)
         screenSnapshot = ElementBackground(
             snap.bitmap, region, snap.wallpaperZoomAtCapture, snap.screenRect,
             isWallpaperStrip = true, stripBaseRect = base, stripMaxScroll = maxScroll,
@@ -2058,13 +2261,15 @@ object LauncherHook {
 
     /** 公共注册：内层 BlurDrawable → screenRegionMap（region = hostView 屏幕位置 + 尺寸，corner = 圆角）。
      *  [hostName] 标识宿主来源，用于日志与 RegionEntry.hostViewName（默认 FolderIcon 保持既有调用点行为）。
-     *  [cardClass] 该元素所属的卡片语义类（问小布/桌面卡片），随 bind 登记供预设按组件命中。 */
+     *  [cardClass] 该元素所属的卡片语义类（问小布/桌面卡片），随 bind 登记供预设按组件命中。
+     *  [blurLayerForCorner] LayerBlurDrawable 实例（覆盖写穿写口；不传 = 该宿主不参与写穿）。 */
     private fun registerBlurRegion(
         inner: Any,
         hostView: View,
         corner: Float,
         hostName: String = "FolderIcon",
         cardClass: String? = null,
+        blurLayerForCorner: Any? = null,
     ) {
         if (!hostView.isAttachedToWindow) {
             logCardDiag("$hostName-not-attached", "coord: $hostName 跳过 —— 宿主 ${hostView.javaClass.name} 未 attach")
@@ -2091,22 +2296,539 @@ object LauncherHook {
         val key = System.identityHashCode(inner)
         GlassRegistry.bind(key, inner, cardClass)
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
+        applyLauncherCornerWrite(blurLayerForCorner, key, resolvedCorner, bw.toFloat(), bh.toFloat(), "$hostName")
         registerHostView(hostView)
-        val entry = RegionEntry(region, Rect(0, 0, bw, bh), hostName, resolvedCorner)
         val previous = screenRegionMap[key]
+        screenRegionMap[key] = RegionEntry(
+            region,
+            Rect(0, 0, bw, bh),
+            hostName,
+            resolvedCorner,
+            SystemClock.uptimeMillis(),
+            WeakReference(hostView),
+        )
         if (previous == null) {
-            screenRegionMap[key] = entry
             if (screenRegionMap.size > 512) screenRegionMap.clear()
             Lg.i(
                 TAG,
                 "coord: $hostName id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
                     "size=${bw}x${bh} cornerRadius=$resolvedCorner"
             )
-            // [doc/spec/07 + 2026-08-13] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
+            // [doc/spec/07] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
             triggerBackgroundCapture()
-        } else if (previous.region != region) {
-            screenRegionMap[key] = entry
-            // 位置/尺寸更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
+        }
+        // 位置/尺寸/重绘更新仅写表不重抓（背景为静态壁纸快照，srcRect 渲染侧实时折算已跟手）
+    }
+
+    /** 调试快照条目 TTL（超时条目视为已回收，不进快照）。 */
+    private const val DEBUG_SNAPSHOT_TTL_MS = 3000L
+
+    /** 调试悬浮球快照：只读 screenRegionMap，TTL 过滤后映射为 DebugElement（零副作用）。 */
+    internal fun debugSnapshot(): List<DebugElement> {
+        val now = SystemClock.uptimeMillis()
+        val out = ArrayList<DebugElement>(screenRegionMap.size)
+        for ((id, e) in screenRegionMap) {
+            if (now - e.lastSeenMs > DEBUG_SNAPSHOT_TTL_MS) continue
+            out.add(
+                DebugElement(
+                    id = id,
+                    region = RectF(e.region),
+                    cornerRadius = e.cornerRadius,
+                    cornerRadiusSource = "launcher",
+                    hostViewName = e.hostViewName,
+                    sourceTag = debugSourceTagOf(e.hostViewName),
+                    renderLeg = null,
+                    lastSeenMs = e.lastSeenMs,
+                    hostViewRef = e.hostViewRef,
+                )
+            )
+        }
+        return out
+    }
+
+    /** 宿主名 → 调试快照挂点标签。 */
+    private fun debugSourceTagOf(hostName: String): String = when (hostName) {
+        "Card" -> "launcher-card"
+        "Dock" -> "launcher-dock"
+        "PageIndicator" -> "launcher-page-indicator"
+        else -> "launcher-folder"
+    }
+
+    /** [doc/spec/143 §5.3] 桌面 Layer A 覆盖写穿：ov 非空且总开关开 → desired 写进
+     *  LayerBlurDrawable.setCornerRadius（内部写 mBlurDrawable path 圆角）；ov 空 / 总开关关
+     *  且此前写过 → 影子回写系统原值。desired 对齐渲染侧 cap 公式（短边一半封顶）。
+     *  任何解析/调用失败只禁写口，不崩不劣化（玻璃角照变、容器不跟 = 现状）。 */
+    private fun applyLauncherCornerWrite(
+        layer: Any?,
+        id: Int,
+        resolvedCorner: Float,
+        w: Float,
+        h: Float,
+        hostTag: String,
+    ) {
+        val ov = GlassRegistry.cornerOverrideFor(id)
+        val existing = launcherCornerShadow[id]
+        if (ov == null || !Prefs.glassEnabled(api)) {
+            if (existing != null) restoreLauncherCornerShadow(id, existing, hostTag)
+            return
+        }
+        if (layer == null || launcherCornerWriteDisabled) return
+        val method = mLayerSetCornerRadius
+        if (method == null) {
+            launcherCornerWriteDisabled = true
+            Lg.w(TAG, "launcher corner-write: setCornerRadius unresolved, write-through disabled")
+            return
+        }
+        val desired = ov.coerceAtMost(minOf(w, h) / 2f)
+        if (existing != null && existing.lastWritten == desired) return
+        try {
+            // 对齐系统 tag 路径形态（CardBackgroundBlurManager mask=8：isFolder=false、itemInfo=null、isHotseat=false）
+            method.invoke(layer, desired, false, null, false)
+        } catch (t: Throwable) {
+            launcherCornerWriteDisabled = true
+            Lg.w(TAG, "launcher corner-write: setCornerRadius invoke failed, write-through disabled", t)
+            return
+        }
+        if (existing != null) {
+            existing.lastWritten = desired
+        } else {
+            if (launcherCornerShadow.size >= LAUNCHER_CORNER_SHADOW_MAX) restoreAllLauncherCorners()
+            launcherCornerShadow[id] = LauncherCornerShadow(WeakReference(layer), resolvedCorner, desired)
+        }
+        Lg.i(TAG, "launcher corner-write: $hostTag id=$id own=$resolvedCorner -> $desired")
+    }
+
+    /** [doc/spec/143 §六] 单条还原：影子回写系统原值（layer 已被 GC 时只清影子）。 */
+    private fun restoreLauncherCornerShadow(id: Int, shadow: LauncherCornerShadow, hostTag: String) {
+        val layer = shadow.layerRef.get()
+        val method = mLayerSetCornerRadius
+        if (layer != null && method != null) {
+            try {
+                method.invoke(layer, shadow.original, false, null, false)
+                Lg.i(TAG, "launcher corner-write: $hostTag id=$id restored -> ${shadow.original}")
+            } catch (t: Throwable) {
+                Lg.w(TAG, "launcher corner-write: $hostTag id=$id restore invoke failed", t)
+            }
+        }
+        launcherCornerShadow.remove(id)
+    }
+
+    /** [doc/spec/143 §六] 影子表满：先全量回写再清（防「写穿值滞留系统、还原依据被丢」）。 */
+    private fun restoreAllLauncherCorners() {
+        if (launcherCornerShadow.isEmpty()) return
+        Lg.i(TAG, "launcher corner-write: shadow table full (${launcherCornerShadow.size}), restore-all then clear")
+        for ((id, sh) in launcherCornerShadow) {
+            val layer = sh.layerRef.get()
+            val method = mLayerSetCornerRadius
+            if (layer != null && method != null) {
+                try {
+                    method.invoke(layer, sh.original, false, null, false)
+                } catch (t: Throwable) {
+                    Lg.w(TAG, "launcher corner-write: restore-all id=$id failed", t)
+                }
+            }
+        }
+        launcherCornerShadow.clear()
+    }
+
+    // ------------------------------------------------------------ PressFeedback 玻璃接管（白名单驱动共享机制）
+
+    /**
+     * PressFeedback 平色家族玻璃接管 —— 共享挂点。按钮背景是 PressFeedbackHandler 的平色
+     * Paint 圆角矩形/圆形（全链零 blur，不走 posteffect 漏斗）→ 必须 View 级接管。
+     * handler 被 launcher 全库按钮共用（widget 面板等）→ **必须 [pressGlassSlots] 白名单圈定**，
+     * 未命中一律原绘制。玻璃绘制/bounds 跟随/快照失效回落全部收在共享路径
+     * [drawPressGlassOnCanvas]；新宿主接入 = 白名单加 [PressGlassSlot] 条目 + 该宿主的
+     * 捕获挂点 + 开关行，零新绘制 hook。任何解析/绘制失败只回退系统平色，不崩 Launcher。
+     */
+    private fun mountPressFeedbackGlass(api: XposedInterface, classLoader: ClassLoader) {
+        // ① 各宿主捕获挂点（按钮实例就绪时点 → 写入白名单槽）
+        mountClearAllBtnCapture(api)
+        mountEditToolbarCapture(api)
+        // ② 共享拦截：drawPressedColor 白名单命中 → 玻璃顶掉平色（不 proceed）；未命中原样
+        try {
+            val handlerCls = hostForName(CLASS_PRESS_FEEDBACK_HANDLER)
+            mPfhHostViewField = handlerCls.getDeclaredField(FIELD_PFH_HOST_VIEW).apply { isAccessible = true }
+            mPfhGetRadius = handlerCls.getMethod(METHOD_GET_M_RADIUS)
+            val method = handlerCls.getDeclaredMethod(METHOD_DRAW_PRESSED_COLOR, Canvas::class.java)
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    var glassDrawn = false
+                    try {
+                        val view = mPfhHostViewField?.get(chain.getThisObject()) as? View
+                        if (view != null) {
+                            val slot = pressGlassSlots.firstOrNull { it.matches(view) }
+                            if (slot != null && slot.enabled()) {
+                                val canvas = chain.getArgs()?.getOrNull(0) as? Canvas
+                                if (canvas != null) {
+                                    val radius = try {
+                                        (mPfhGetRadius?.invoke(chain.getThisObject()) as? Float) ?: 0f
+                                    } catch (t: Throwable) {
+                                        0f
+                                    }
+                                    glassDrawn = drawPressGlassOnCanvas(canvas, view, radius, slot)
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.e(TAG, "launcher press-glass: drawPressedColor intercept error", t)
+                    }
+                    if (!glassDrawn) chain.proceed()
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_PRESSED_COLOR(Canvas) (press-feedback glass whitelist)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_PRESS_FEEDBACK_HANDLER#$METHOD_DRAW_PRESSED_COLOR, press-feedback glass disabled", t)
+        }
+    }
+
+    /** 清除钮捕获挂点：面板 onFinishInflate 后读 public 字段 mClearAllBtn 写入白名单槽。
+     *  挂失败只禁清除钮条目（共享拦截照挂，供其他条目使用）。 */
+    private fun mountClearAllBtnCapture(api: XposedInterface) {
+        try {
+            val panel = hostForName(CLASS_CLEAR_ALL_PANEL_VIEW)
+            val field = panel.getField(FIELD_CLEAR_ALL_BTN)
+            val method = panel.getMethod("onFinishInflate")
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val btn = field.get(chain.getThisObject()) as? View
+                        if (btn != null) {
+                            clearAllBtnSlot.hostRef = WeakReference(btn)
+                            Lg.i(TAG, "launcher press-glass: ${clearAllBtnSlot.name} captured (${btn.javaClass.name})")
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher press-glass: read mClearAllBtn failed", t)
+                    }
+                    result
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_CLEAR_ALL_PANEL_VIEW#onFinishInflate (${clearAllBtnSlot.name} capture)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_CLEAR_ALL_PANEL_VIEW#onFinishInflate, ${clearAllBtnSlot.name} glass disabled", t)
+        }
+    }
+
+    /** 清除钮玻璃开关（TTL [CLEAR_ALL_BTN_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
+    private fun clearAllBtnGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedClearAllBtnGlassAtMs > CLEAR_ALL_BTN_GLASS_TTL_MS) {
+            cachedClearAllBtnGlassAtMs = now
+            cachedClearAllBtnGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read clear_all_btn_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedClearAllBtnGlass
+    }
+
+    /** 编辑工具条捕获挂点：工具条 onFinishInflate 后读 getter 捕获整理/完成两钮写入白名单槽。
+     *  挂失败只留空槽（拦截照挂但恒不命中 = 原绘制，零风险）。 */
+    private fun mountEditToolbarCapture(api: XposedInterface) {
+        try {
+            val toolbar = hostForName(CLASS_EDIT_TOOLBAR)
+            val getTidy = toolbar.getMethod(METHOD_GET_BACK_TO_MAIN_PAGE)
+            val getApply = toolbar.getMethod(METHOD_GET_APPLY_BTN)
+            val method = toolbar.getMethod("onFinishInflate")
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val obj = chain.getThisObject()
+                        (getTidy.invoke(obj) as? View)?.let {
+                            editTidySlot.hostRef = WeakReference(it)
+                            Lg.i(TAG, "launcher press-glass: ${editTidySlot.name} captured (${it.javaClass.name})")
+                        }
+                        (getApply.invoke(obj) as? View)?.let {
+                            editApplySlot.hostRef = WeakReference(it)
+                            Lg.i(TAG, "launcher press-glass: ${editApplySlot.name} captured (${it.javaClass.name})")
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher press-glass: read edit toolbar buttons failed", t)
+                    }
+                    result
+                }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_EDIT_TOOLBAR#onFinishInflate (${editTidySlot.name}/${editApplySlot.name} capture)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_EDIT_TOOLBAR#onFinishInflate, edit toolbar glass disabled", t)
+        }
+    }
+
+    /** 编辑工具条玻璃开关（TTL [EDIT_TOOLBAR_GLASS_TTL_MS] 重读，开关切换无需重启 Launcher）。 */
+    private fun editToolbarGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedEditToolbarGlassAtMs > EDIT_TOOLBAR_GLASS_TTL_MS) {
+            cachedEditToolbarGlassAtMs = now
+            cachedEditToolbarGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read edit_toolbar_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedEditToolbarGlass
+    }
+
+    /** 在按压宿主的 onDraw canvas 上画液态玻璃（坐标系 = 按钮局部坐标，无需平移）。
+     *  返回 true = 已画玻璃（拦截侧跳过原平色）；false = 任一门控/快照失败，回退原平色（零黑屏）。
+     *  每帧全量重绑 uniform（单个小按钮，成本可忽略）。 */
+    private fun drawPressGlassOnCanvas(canvas: Canvas, btn: View, handlerRadius: Float, slot: PressGlassSlot): Boolean {
+        if (isPowerSaveGlassOff()) return false
+        if (!slot.enabled()) return false
+        if (!Prefs.glassEnabled(api)) return false
+        val w = btn.width
+        val h = btn.height
+        if (w <= 0 || h <= 0) return false
+        if (!btn.isAttachedToWindow) return false
+        val id = System.identityHashCode(btn)
+        GlassRegistry.bind(id, btn, slot.cardClass)
+        registerHostView(btn)
+        val loc = IntArray(2)
+        try {
+            btn.getLocationOnScreen(loc)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher press-glass: ${slot.name} getLocationOnScreen failed", t)
+            return false
+        }
+        val region = RectF(
+            loc[0].toFloat(),
+            loc[1].toFloat(),
+            (loc[0] + w).toFloat(),
+            (loc[1] + h).toFloat(),
+        )
+        val renderSource = resolveRenderSource(id, region)
+        if (renderSource == null) {
+            logRenderMode(id, "BLUR", "no snapshot source")
+            return false
+        }
+        val corner = if (handlerRadius > 0f) handlerRadius else minOf(w, h) / 2f
+        val params = buildParams(w.toFloat(), h.toFloat(), corner, elementId = id)
+        val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
+        shaderOwnerSet.add(shader)
+        if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        val tier = LowResTier.tierShaderOf(renderSource.source, renderSource.srcRect, wantDiv)
+        LiquidGlassShader.setUniforms(
+            shader, params, sourceShader, tier?.shader ?: sourceShader,
+            sourceRect = renderSource.srcRect,
+            lowResSourceRect = tier?.lowResSrcRect ?: renderSource.srcRect,
+        )
+        return try {
+            canvas.save()
+            try {
+                pressGlassPaint.shader = shader
+                canvas.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), corner, corner, pressGlassPaint)
+            } finally {
+                pressGlassPaint.shader = null
+                canvas.restore()
+            }
+            logRenderMode(id, "GLASS")
+            true
+        } catch (t: Throwable) {
+            Lg.e(TAG, "launcher press-glass: ${slot.name} draw failed", t)
+            logRenderMode(id, "BLUR", "draw failed")
+            false
+        }
+    }
+
+    // ------------------------------------------------------------ 桌面长按菜单底衬玻璃
+
+    /**
+     * 长按菜单全屏底衬玻璃接管 —— hook `PopupBlurView.dispatchDraw`：底衬是系统离线位图管线
+     * （模糊壁纸层 + 模糊 dragLayer 层，与 posteffect 漏斗零关系）→ 必须 View 级接管。
+     * 开关关/源位图未就绪/任一门控失败 → 原样 proceed（系统两层照画）。玻璃命中时先画玻璃
+     * 再把两层字段临时置空 → proceed 只画子 View（菜单项在玻璃上），finally 还原字段保系统
+     * 回收链（onDetachedFromWindow 按位图身份回收，字段必须是原对象）。
+     * 底衬创建即 setAlpha(0)+330ms 动画 → **严禁 alpha<=0 守卫**（alpha=0 帧照画，合成期
+     * RenderNode alpha 自然乘掉；按 alpha skip 会永久空背景）。
+     */
+    private fun mountPopupMenuGlass(api: XposedInterface) {
+        try {
+            val popupCls = hostForName(CLASS_POPUP_BLUR_VIEW)
+            mPopupWmField = popupCls.getDeclaredField(FIELD_POPUP_WM_DRAWABLE).apply { isAccessible = true }
+            mPopupDlField = popupCls.getDeclaredField(FIELD_POPUP_DL_DRAWABLE).apply { isAccessible = true }
+            val dispatch = popupCls.getDeclaredMethod(METHOD_POPUP_DISPATCH_DRAW, Canvas::class.java)
+            api.hook(dispatch)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    var glassDrawn = false
+                    try {
+                        val view = chain.getThisObject() as? View
+                        val canvas = chain.getArgs()?.getOrNull(0) as? Canvas
+                        if (view != null && canvas != null && popupMenuGlassActive() && drawPopupGlassOnCanvas(canvas, view)) {
+                            glassDrawn = true
+                            val wm = mPopupWmField?.get(view)
+                            val dl = mPopupDlField?.get(view)
+                            mPopupWmField?.set(view, null)
+                            mPopupDlField?.set(view, null)
+                            try {
+                                chain.proceed()
+                            } finally {
+                                mPopupWmField?.set(view, wm)
+                                mPopupDlField?.set(view, dl)
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "launcher popup-glass: dispatchDraw intercept error", t)
+                    }
+                    if (!glassDrawn) chain.proceed()
+                }
+            // 分离清理：合成缓存位图是我们侧分配的，系统只回收它自己的两层源位图
+            try {
+                val detach = popupCls.getDeclaredMethod(METHOD_POPUP_ON_DETACHED)
+                api.hook(detach)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            val id = System.identityHashCode(chain.getThisObject())
+                            popupBackdropMap.remove(id)?.let {
+                                if (!it.bitmap.isRecycled) it.bitmap.recycle()
+                            }
+                        } catch (t: Throwable) {
+                            Lg.w(TAG, "launcher popup-glass: backdrop cleanup failed", t)
+                        }
+                        result
+                    }
+            } catch (t: Throwable) {
+                Lg.w(TAG, "launcher popup-glass: onDetachedFromWindow hook failed, backdrop cache may linger", t)
+            }
+            Lg.i(TAG, "LauncherHook mounted: $CLASS_POPUP_BLUR_VIEW#$METHOD_POPUP_DISPATCH_DRAW(Canvas) (popup menu backdrop glass)")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "LauncherHook mount FAILED: $CLASS_POPUP_BLUR_VIEW#$METHOD_POPUP_DISPATCH_DRAW, popup menu glass disabled", t)
+        }
+    }
+
+    /** 长按菜单玻璃总门控（TTL [POPUP_MENU_GLASS_TTL_MS] 重读；热路径 volatile 读）。 */
+    private fun popupMenuGlassEnabled(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - cachedPopupMenuGlassAtMs > POPUP_MENU_GLASS_TTL_MS) {
+            cachedPopupMenuGlassAtMs = now
+            cachedPopupMenuGlass = try {
+                api?.let {
+                    Prefs.read(it).getBoolean(Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
+                } ?: false
+            } catch (t: Throwable) {
+                Lg.w(TAG, "prefs read popup_menu_glass_enable failed, default false", t)
+                false
+            }
+        }
+        return cachedPopupMenuGlass
+    }
+
+    /** dispatchDraw 拦截前置门控（draw 内部还有各层细门控，任一失败回退原绘制）。 */
+    private fun popupMenuGlassActive(): Boolean =
+        popupMenuGlassEnabled() && !isPowerSaveGlassOff() && Prefs.glassEnabled(api)
+
+    /** 取/建两层系统位图的合成背景（任一层 drawable 身份变化 → 重建并回收旧合成）。 */
+    private fun resolvePopupBackdrop(popup: View, wm: Drawable, dl: Drawable): PopupBackdrop? {
+        val wmKey = System.identityHashCode(wm)
+        val dlKey = System.identityHashCode(dl)
+        val id = System.identityHashCode(popup)
+        popupBackdropMap[id]?.let { hit ->
+            if (hit.wallpaperKey == wmKey && hit.dragLayerKey == dlKey && !hit.bitmap.isRecycled) return hit
+            if (!hit.bitmap.isRecycled) hit.bitmap.recycle()
+            popupBackdropMap.remove(id)
+        }
+        if (popupBackdropMap.size > 4) {
+            for ((k, v) in popupBackdropMap) {
+                if (!v.bitmap.isRecycled) v.bitmap.recycle()
+                popupBackdropMap.remove(k)
+            }
+        }
+        return try {
+            val wmBmp = (wm as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return null
+            val dlBmp = (dl as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return null
+            if (wmBmp.isRecycled || dlBmp.isRecycled) return null
+            if (wmBmp.config == Bitmap.Config.HARDWARE || dlBmp.config == Bitmap.Config.HARDWARE) {
+                logOncePerSecond("popup-glass-hw-bitmap") {
+                    Lg.w(TAG, "launcher popup-glass: hardware bitmap source, glass skipped")
+                }
+                return null
+            }
+            val bw = wm.bounds.width().takeIf { it > 0 } ?: wmBmp.width
+            val bh = wm.bounds.height().takeIf { it > 0 } ?: wmBmp.height
+            val composite = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+            val c = Canvas(composite)
+            wm.draw(c)
+            dl.draw(c)
+            PopupBackdrop(wmKey, dlKey, composite).also { popupBackdropMap[id] = it }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher popup-glass: composite backdrop failed", t)
+            null
+        }
+    }
+
+    /** 在底衬 dispatchDraw 的 canvas 上画全屏液态玻璃（坐标系 = View 局部，全屏无圆角）。
+     *  返回 true = 已画玻璃（拦截侧再置空两层字段 proceed 只画子 View）；false = 回退原绘制。 */
+    private fun drawPopupGlassOnCanvas(canvas: Canvas, popup: View): Boolean {
+        if (isPowerSaveGlassOff()) return false
+        if (!popupMenuGlassEnabled()) return false
+        if (!Prefs.glassEnabled(api)) return false
+        val w = popup.width
+        val h = popup.height
+        if (w <= 0 || h <= 0) return false
+        if (!popup.isAttachedToWindow) return false
+        val wm = try {
+            mPopupWmField?.get(popup) as? Drawable
+        } catch (t: Throwable) {
+            null
+        }
+        val dl = try {
+            mPopupDlField?.get(popup) as? Drawable
+        } catch (t: Throwable) {
+            null
+        }
+        if (wm == null || dl == null) {
+            logOncePerSecond("popup-glass-src-pending") {
+                Lg.i(TAG, "launcher popup-glass: source layers not ready yet")
+            }
+            return false
+        }
+        val backdrop = resolvePopupBackdrop(popup, wm, dl) ?: return false
+        val id = System.identityHashCode(popup)
+        GlassRegistry.bind(id, popup, CLASS_POPUP_BLUR_VIEW)
+        registerHostView(popup)
+        // 全屏底衬：无元素圆角（SDF 角效应只在屏幕边界，避免短边比例折射失控）
+        val params = buildParams(w.toFloat(), h.toFloat(), 0f, elementId = id)
+        val shader = shaderCache.getOrPut(id) { ShaderInstancePool.pollOrCreate() }
+        shaderOwnerSet.add(shader)
+        if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(backdrop.bitmap)
+        val srcRect = RectF(0f, 0f, backdrop.bitmap.width.toFloat(), backdrop.bitmap.height.toFloat())
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        val tier = LowResTier.tierShaderOf(backdrop.bitmap, srcRect, wantDiv)
+        LiquidGlassShader.setUniforms(
+            shader, params, sourceShader, tier?.shader ?: sourceShader,
+            sourceRect = srcRect,
+            lowResSourceRect = tier?.lowResSrcRect ?: srcRect,
+            sourceSizeX = backdrop.bitmap.width.toFloat(),
+            sourceSizeY = backdrop.bitmap.height.toFloat(),
+        )
+        return try {
+            canvas.save()
+            try {
+                popupGlassPaint.shader = shader
+                canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), popupGlassPaint)
+            } finally {
+                popupGlassPaint.shader = null
+                canvas.restore()
+            }
+            logRenderMode(id, "GLASS")
+            true
+        } catch (t: Throwable) {
+            Lg.w(TAG, "launcher popup-glass: draw failed", t)
+            logRenderMode(id, "BLUR", "draw failed")
+            false
         }
     }
 
@@ -2239,9 +2961,13 @@ object LauncherHook {
         if (shaderCache.size > 128) { shaderCache.clear(); shaderOwnerSet.clear() }
         val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius, elementId = id)
         val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
+        // σ 分档三档源（texel≈σ 根除点阵）：命中绑档位 shader + 折算 lowResSrcRect，
+        // miss 回退现状源并记实际档 4
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        val tier = LowResTier.tierShaderOf(source, srcRect, wantDiv)
         LiquidGlassShader.setUniforms(
-            shader, params, sourceShader, sourceShader,
-            sourceRect = srcRect, lowResSourceRect = srcRect,
+            shader, params, sourceShader, tier?.shader ?: sourceShader,
+            sourceRect = srcRect, lowResSourceRect = tier?.lowResSrcRect ?: srcRect,
         )
         appliedUniformsMap[id] = AppliedKey(
             System.identityHashCode(source),
@@ -2254,6 +2980,7 @@ object LauncherHook {
                 api,
             ),
             materialHash = params.hashCode(),
+            lowResDiv = if (tier != null) wantDiv else 4,
         )
         if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
         return LiquidShaderBuild(shader)
@@ -2279,27 +3006,36 @@ object LauncherHook {
         )
         val params = buildParams(bounds.width().toFloat(), bounds.height().toFloat(), entry.cornerRadius, elementId = id)
         val materialHash = params.hashCode()
+        val wantDiv = LowResTier.tierOf(0.807f * params.blurRadius)
+        // 档位变（含 miss 回退后下帧重试）→ 禁早退，走全量重绑
+        val lowResTierChanged = applied != null && applied.lowResDiv != wantDiv
         if (applied != null && applied.sourceBitmapId == sourceBitmapId &&
             applied.viewport == viewport && applied.srcRect == srcRect &&
             applied.cornerRadius == entry.cornerRadius &&
             applied.refractionHeight == refractionHeight &&
-            applied.materialHash == materialHash
+            applied.materialHash == materialHash && !lowResTierChanged
         ) {
             return true
         }
-            if (applied == null || applied.sourceBitmapId != sourceBitmapId) {
+            var boundDiv = applied?.lowResDiv ?: 4
+            if (applied == null || applied.sourceBitmapId != sourceBitmapId || lowResTierChanged) {
+                // 源或档位变：重建 source shader 并按 σ 档重绑 lowRes（miss → 回退现状源记实际档 4）
+                val tier = LowResTier.tierShaderOf(renderSource.source, srcRect, wantDiv)
                 val sourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
                 LiquidGlassShader.setUniforms(
-                    shader, params, sourceShader, sourceShader,
-                    sourceRect = srcRect, lowResSourceRect = srcRect,
+                    shader, params, sourceShader, tier?.shader ?: sourceShader,
+                    sourceRect = srcRect, lowResSourceRect = tier?.lowResSrcRect ?: srcRect,
                 )
+                boundDiv = if (tier != null) wantDiv else 4
             } else {
+                // 源与档位均未变：shader 保留上次绑定，lowRes rect 按【已绑档位】折算（miss → 现状 rect）
                 LiquidGlassShader.setUniforms(
                     shader, params, null, null,
-                    sourceRect = srcRect, lowResSourceRect = srcRect,
+                    sourceRect = srcRect,
+                    lowResSourceRect = LowResTier.divRectOf(renderSource.source, srcRect, boundDiv) ?: srcRect,
                 )
             }
-            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight, materialHash)
+            appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight, materialHash, boundDiv)
             if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()
             return true
         } catch (t: Throwable) {
@@ -2501,6 +3237,7 @@ object LauncherHook {
                         prev.region == bg.region &&
                         prev.wallpaperZoomAtCapture == bg.wallpaperZoomAtCapture &&
                         sameBitmapContent(prev.bitmap, bg.bitmap)
+                    LowResTier.prebuild(bg.bitmap)
                     screenSnapshot = bg
                     elementCaptureRetries[id] = 0
                     elementCaptureQuitAt.remove(id)
