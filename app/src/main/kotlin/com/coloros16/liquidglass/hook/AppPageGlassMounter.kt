@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
  * - **A 型**（drawable 背景：GradientDrawable / VectorDrawable / 实色 ColorDrawable）——
  *   形态规则自动发现；
  * - **B 型**（HighlightShadow 族 onDraw 自绘背板）——类名单命中 + 同一 A 族通道挂玻璃，
- *   并经 [Y0.m#b] 咽喉条件化抑制实底填充（仅已玻璃化宿主抑制，未登记元素自绘照常）；
+ *   并经填充咽喉条件化抑制实底（仅已玻璃化宿主抑制，未登记元素自绘照常）；
  * - **硬编码兜底**（无 drawable 背景、形态规则扫不到但需挂的容器/整卡）。
  *
  * 扫描触发：Activity.onResume（进页）+ View.setBackground（背景变更信号），延迟一帧到
@@ -63,7 +63,7 @@ object AppPageGlassMounter {
         Prefs.KEY_QUICK_SEARCH_PAGE_GLASS to Prefs.DEFAULT_QUICK_SEARCH_PAGE_GLASS,
     )
 
-    /** B 型族类（真名稳定锚，common-legacy 库不混淆）。 */
+    /** B 型族类（真名稳定锚，common-legacy 库不混淆；ButtonView 真机版本已删，保留条目防版本回摆）。 */
     private val HIGHLIGHT_SHADOW_CLASSES = setOf(
         "com.coloros.common.widget.HighlightShadowConstraintLayout",
         "com.coloros.common.widget.HighlightShadowImageView",
@@ -76,9 +76,9 @@ object AppPageGlassMounter {
         "com.heytap.quicksearchbox.ui.card.AppSuggestCardView",
     )
 
-    /** 抑制咽喉（R8 混淆名，按 jadx 产物版本锚定 + 方法签名锚校验）。 */
-    private const val CLASS_FILL_THROAT = "Y0.m"
-    private const val CLASS_FILL_STROKE = "Y0.b"
+    /** 抑制咽喉（R8 混淆名，按真机 APK 版本锚定 + 方法签名锚校验）。 */
+    private const val CLASS_FILL_THROAT = "tc.u"
+    private const val CLASS_FILL_STROKE = "tc.b"
 
     private const val FAMILY_A = "A"
     private const val FAMILY_B = "B"
@@ -106,7 +106,7 @@ object AppPageGlassMounter {
 
     private var hooksMounted = false
 
-    /** 抑制桥：族类 onDraw 已玻璃化宿主 set，Y0.m.b 读（同线程顺序调用，onDraw 返回即清）。 */
+    /** 抑制桥：族类 onDraw 已玻璃化宿主 set，填充咽喉读（同线程顺序调用，onDraw 返回即清）。 */
     private val suppressHost = ThreadLocal<View?>()
 
     private class PageGlassState(view: View, val family: String) {
@@ -140,6 +140,21 @@ object AppPageGlassMounter {
         mountHighlightOnDrawHooks(api, classLoader)
         mountFillSuppressHook(api, classLoader)
         mountResumeScanHook(api)
+        precompileSelfCheck()
+    }
+
+    /** install 期预编译自检：固定样例触发 shader 编译，装机日志直接见编译真凶。 */
+    private fun precompileSelfCheck() {
+        try {
+            val effect = AppGlassBackdropShader.createEffect(100, 100, 20f, cornerIsConic = true)
+            if (effect != null) {
+                Lg.i(TAG, "page shader precompile OK")
+            } else {
+                Lg.w(TAG, "page shader precompile skipped: createEffect returned null")
+            }
+        } catch (t: Throwable) {
+            Lg.w(TAG, "page shader precompile failed: ${t.javaClass.name}: ${t.message}")
+        }
     }
 
     /** B 型族类 onDraw 前置：已玻璃化宿主在 draw 期间架抑制桥（未登记元素零干预）。 */
@@ -175,7 +190,7 @@ object AppPageGlassMounter {
         }
     }
 
-    /** Y0.m#b 咽喉抑制：签名锚（b/f/c 三方法交叉校验）防同名错 hook，锚不过则不挂。 */
+    /** 咽喉抑制：签名锚（c/d/i 三方法交叉校验）防同名错 hook，锚不过则不挂。 */
     private fun mountFillSuppressHook(api: XposedInterface, classLoader: ClassLoader) {
         val clazz = try {
             hostForName(CLASS_FILL_THROAT, classLoader)
@@ -184,21 +199,26 @@ object AppPageGlassMounter {
             return
         }
         try {
-            val bMethod = clazz.getMethod("b", Canvas::class.java, Path::class.java)
-            if (bMethod.returnType != Void.TYPE) {
-                throw IllegalStateException("b returns ${bMethod.returnType.name}")
+            val cMethod = clazz.getMethod(
+                "c",
+                Canvas::class.java,
+                Path::class.java,
+                java.lang.Float.TYPE,
+            )
+            if (cMethod.returnType != Void.TYPE) {
+                throw IllegalStateException("c returns ${cMethod.returnType.name}")
             }
-            val fMethod = clazz.getMethod(
-                "f",
+            val iMethod = clazz.getMethod(
+                "i",
                 java.lang.Float.TYPE,
                 java.lang.Integer.TYPE,
                 java.lang.Integer.TYPE,
             )
-            if (!Pair::class.java.isAssignableFrom(fMethod.returnType)) {
-                throw IllegalStateException("f returns ${fMethod.returnType.name}")
+            if (!Pair::class.java.isAssignableFrom(iMethod.returnType)) {
+                throw IllegalStateException("i returns ${iMethod.returnType.name}")
             }
-            clazz.getMethod("c", Canvas::class.java, Path::class.java, hostForName(CLASS_FILL_STROKE, classLoader))
-            api.hook(bMethod)
+            clazz.getMethod("d", Canvas::class.java, Path::class.java, hostForName(CLASS_FILL_STROKE, classLoader))
+            api.hook(cMethod)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     val host = suppressHost.get()
@@ -213,7 +233,7 @@ object AppPageGlassMounter {
                         chain.proceed()
                     }
                 }
-            Lg.i(TAG, "mounted fill suppression: $CLASS_FILL_THROAT#b(Canvas,Path) (anchors OK)")
+            Lg.i(TAG, "mounted fill suppression: $CLASS_FILL_THROAT#c(Canvas,Path,float) (anchors OK)")
         } catch (t: Throwable) {
             Lg.w(TAG, "fill suppression hook FAILED $CLASS_FILL_THROAT: ${t.message}")
         }
@@ -374,7 +394,7 @@ object AppPageGlassMounter {
         val effect = AppGlassHook.cachedGlassEffect(view.width, view.height, corner)
         if (effect == null) {
             state.compileFailed = true
-            Lg.w(TAG, "page glass compile failed, decor fallback view=${view.javaClass.name}")
+            Lg.w(TAG, "page glass compile failed, decor fallback view=${view.javaClass.name} error=${AppGlassHook.lastGlassCompileError}")
             AppGlassHook.ensureBDecor(view)
             return
         }

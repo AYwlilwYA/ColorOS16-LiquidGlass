@@ -439,7 +439,7 @@ object AppGlassHook {
         val effect = cachedGlassEffect(view.width, view.height, corner)
         if (effect == null) {
             state.compileFailed = true
-            Lg.w(TAG, "button glass compile failed, fallback decor view=${view.javaClass.name}")
+            Lg.w(TAG, "button glass compile failed, fallback decor view=${view.javaClass.name} error=$lastGlassCompileError")
             ensureBDecor(view)
             return
         }
@@ -478,6 +478,11 @@ object AppGlassHook {
         }
     }
 
+    /** 最近一次背板 shader 编译失败全文（compile failed 日志回显真凶）。 */
+    @Volatile
+    internal var lastGlassCompileError: String? = null
+        private set
+
     /** 背板玻璃效果 w×h×corner 编译缓存（失败不缓存，由 [ButtonGlassState.compileFailed] 停试）。 */
     internal fun cachedGlassEffect(width: Int, height: Int, cornerRadius: Float): RenderEffect? {
         val key = "${width}x$height@${cornerRadius.toInt()}"
@@ -485,6 +490,7 @@ object AppGlassHook {
         val effect = try {
             AppGlassBackdropShader.createEffect(width, height, cornerRadius, cornerIsConic = true)
         } catch (t: Throwable) {
+            lastGlassCompileError = "${t.javaClass.name}: ${t.message}"
             null
         }
         if (effect != null) {
