@@ -1347,8 +1347,6 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchVolumePanelClean, Prefs.KEY_VOLUME_PANEL_CLEAN, Prefs.DEFAULT_VOLUME_PANEL_CLEAN)
         bindGlassSwitch(view, R.id.switchVolumePanelBackdrop, Prefs.KEY_VOLUME_PANEL_BACKDROP, Prefs.DEFAULT_VOLUME_PANEL_BACKDROP)
         bindGlassSwitch(view, R.id.switchNotificationPopupGlass, Prefs.KEY_NOTIFICATION_POPUP_GLASS, Prefs.DEFAULT_NOTIFICATION_POPUP_GLASS)
-        bindGlassSwitch(view, R.id.switchDeviceEntranceGlass, Prefs.KEY_DEVICE_ENTRANCE_GLASS, Prefs.DEFAULT_DEVICE_ENTRANCE_GLASS)
-        bindGlassSwitch(view, R.id.switchQsDetailGlass, Prefs.KEY_QS_DETAIL_GLASS, Prefs.DEFAULT_QS_DETAIL_GLASS)
         bindGlassSwitch(view, R.id.switchGalleryGlass, Prefs.KEY_GALLERY_GLASS, Prefs.DEFAULT_GALLERY_GLASS)
         bindGlassSwitch(view, R.id.switchCalculatorGlass, Prefs.KEY_CALCULATOR_GLASS, Prefs.DEFAULT_CALCULATOR_GLASS)
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)

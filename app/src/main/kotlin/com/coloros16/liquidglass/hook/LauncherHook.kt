@@ -3028,12 +3028,25 @@ object LauncherHook {
                 )
                 boundDiv = if (tier != null) wantDiv else 4
             } else {
-                // 源与档位均未变：shader 保留上次绑定，lowRes rect 按【已绑档位】折算（miss → 现状 rect）
-                LiquidGlassShader.setUniforms(
-                    shader, params, null, null,
-                    sourceRect = srcRect,
-                    lowResSourceRect = LowResTier.divRectOf(renderSource.source, srcRect, boundDiv) ?: srcRect,
-                )
+                // 源与档位均未变：命中 → 保留上次绑定，rect 按已绑档位折算；
+                // miss → 绑定与坐标同退化到全分辨率，防 /N 绑定配全分辨率坐标出晶格；
+                // 记实际档 4，下帧 want≠4 → lowResTierChanged → 重试重绑
+                val divRect = LowResTier.divRectOf(renderSource.source, srcRect, boundDiv)
+                if (divRect != null) {
+                    LiquidGlassShader.setUniforms(
+                        shader, params, null, null,
+                        sourceRect = srcRect,
+                        lowResSourceRect = divRect,
+                    )
+                } else {
+                    val fullSourceShader = LiquidGlassShader.createSourceBitmapShader(renderSource.source)
+                    LiquidGlassShader.setUniforms(
+                        shader, params, fullSourceShader, fullSourceShader,
+                        sourceRect = srcRect,
+                        lowResSourceRect = srcRect,
+                    )
+                    boundDiv = 4
+                }
             }
             appliedUniformsMap[id] = AppliedKey(sourceBitmapId, viewport, srcRect, entry.cornerRadius, refractionHeight, materialHash, boundDiv)
             if (appliedUniformsMap.size > 128) appliedUniformsMap.clear()

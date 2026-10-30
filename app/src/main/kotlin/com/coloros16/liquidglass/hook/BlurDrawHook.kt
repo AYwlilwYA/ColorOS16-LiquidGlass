@@ -5142,16 +5142,6 @@ object BlurDrawHook {
                 "semantic-rebind: ${hostView.javaClass.simpleName} -> $semantic"
             }
         }
-        // 每元素开关门：入口卡/展开卡各归各开关，关 = 不登记（渲染链无 entry → BLUR 回退）
-        if (effectiveCardClass != null &&
-            (effectiveCardClass.endsWith(SUFFIX_ENTRANCE_CARD_VIEW) && !Prefs.deviceEntranceGlassEnabled(api) ||
-                effectiveCardClass.endsWith(SUFFIX_QS_DETAIL) && !Prefs.qsDetailGlassEnabled(api))
-        ) {
-            logThrottled("$logTag-skip-switch-off", Log.DEBUG) {
-                "$logTag: skip register —— $effectiveCardClass switch off"
-            }
-            return false
-        }
         GlassRegistry.bind(System.identityHashCode(target), target, effectiveCardClass)
         // [spec/38 修复 2026-08-13] ScrimView（面板背景 scrim，ScrimControllerExImp.refreshBehindDrawable 的
         // hostView）恒透明不渲染玻璃：**不写入 screenRegionMap**——否则全屏 region 令 isOverGlassRegion 对
@@ -12760,13 +12750,15 @@ object BlurDrawHook {
             } else {
                 null
             }
-            // 源位图未变（仅 srcRect 变）→ lowResShader=null：uSourceLowRes 保留上次绑定（与 sourceShader
-            // 同实例，同一坐标空间），setUniforms 仍更新 uSourceRect/uSourceLowResRect → 跟手无需重建。
-            // 源/档位变时按 σ 档重绑：档位缓存 miss（未预构建/实例不匹配）→ 回退现状源并记实际档 4
+            // 源位图未变（仅 srcRect 变）且档位缓存命中 → lowResShader=null：uSourceLowRes 保留上次绑定，
+            // setUniforms 仍更新 uSourceRect/uSourceLowResRect → 跟手无需重建。
+            // 源/档位变、或档位缓存 miss → 按 σ 档重绑；miss → 回退全分辨率源并记实际档 4
             //（下帧 want≠4 → lowResTierChanged → 重试，直到预构建就绪）。
             val lowResShader: Shader?
             val lowResSrcRect: RectF
             var boundLowResDiv = 4
+            // 保留分支缓存 miss 的全分辨率重绑帧：轻量分支不重绑 uSourceLowRes，必须禁入走全量
+            var lowResRebind = false
             if (bindBitmap != null && (sourceBitmapChanged || lowResTierChanged)) {
                 val tier = buildLowResTierShader(bindBitmap, bindSrcRect, wantLowResDiv)
                 if (tier != null) {
@@ -12779,15 +12771,26 @@ object BlurDrawHook {
                     boundLowResDiv = 4
                 }
             } else {
-                // 源与档位均未变（或无位图）：shader 保留上次绑定；rect 按【已绑档位】折算
-                //（÷ 实际缩放比；缓存 miss → 现状 rect 自洽）
-                lowResShader = null
-                lowResSrcRect = if (applied != null && bindBitmap != null) {
-                    lowResDivRectOf(bindBitmap, bindSrcRect, applied.lowResDiv) ?: bindSrcRect
+                // 源与档位均未变（或无位图）：命中 → shader 保留上次绑定，rect 按已绑档位折算；
+                // miss → 绑定与坐标同退化到全分辨率，防 /N 绑定配全分辨率坐标出晶格
+                val prevDiv = applied?.lowResDiv
+                if (prevDiv != null && bindBitmap != null) {
+                    val divRect = lowResDivRectOf(bindBitmap, bindSrcRect, prevDiv)
+                    if (divRect != null) {
+                        lowResShader = null
+                        lowResSrcRect = divRect
+                        boundLowResDiv = prevDiv
+                    } else {
+                        lowResShader = LiquidGlassShader.createSourceBitmapShader(bindBitmap)
+                        lowResSrcRect = bindSrcRect
+                        boundLowResDiv = 4
+                        lowResRebind = true
+                    }
                 } else {
-                    bindSrcRect
+                    lowResShader = null
+                    lowResSrcRect = bindSrcRect
+                    boundLowResDiv = prevDiv ?: 4
                 }
-                boundLowResDiv = applied?.lowResDiv ?: 4
             }
 
             // [doc/spec/24 任务 A2 2026-08-13] 轻量分支 1：仅 srcRect 变化（滑动跟手）→ 只重设
@@ -12795,7 +12798,7 @@ object BlurDrawHook {
             // [doc/spec/95] 轻量分支条件补 !materialChanged：否则材质（含折射区域比例）变化恰逢 srcRect
             // 变化时会被轻量分支吃掉、要等下一帧才补全量 —— 材质变化一律走全量 setUniforms（同帧生效）。
             // [spec/127] 轻量分支不重绑 uSourceLowRes → 档位变化（lowResTierChanged）禁入，走全量重绑。
-            if (srcRectChanged && !sourceBitmapChanged && !viewportChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged && !lowResTierChanged) {
+            if (srcRectChanged && !sourceBitmapChanged && !viewportChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged && !lowResTierChanged && !lowResRebind) {
                 LiquidGlassShader.setSourceRectOnly(shader, bindSrcRect, lowResSrcRect)
                 appliedUniformsMap[id] = applied!!.copy(srcRect = bindSrcRect)
                 // [coord 诊断] 与全量路径同一计数（每 64 次 + 距上次 ≥2s 打一条，验证 srcRect 跟手）
@@ -12817,7 +12820,7 @@ object BlurDrawHook {
             // 重设 uViewport + uSourceRect/uSourceLowResRect（3~4 个 uniform），跳过全量 setUniforms。
             // [doc/spec/95] 同上：材质变化不走 viewport+srcRect 轻量分支（漏设 uRefractionHeight 等材质 uniform）
             // [spec/127] 同分支 1：档位变化禁入（不重绑 uSourceLowRes），走全量。
-            if (srcRectChanged && !sourceBitmapChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged && !lowResTierChanged) {
+            if (srcRectChanged && !sourceBitmapChanged && !maskChanged && !cornerChanged && !maskOverlayChanged && !materialChanged && !metaBallChanged && !tiltChanged && !lowResTierChanged && !lowResRebind) {
                 LiquidGlassShader.setViewportAndSourceRect(shader, viewport, bindSrcRect, lowResSrcRect, cg.maskRect)
                 appliedUniformsMap[id] = applied!!.copy(viewport = viewport, srcRect = bindSrcRect)
                 refreshUniformCount++
