@@ -1,0 +1,2 @@
+--------- beginning of main
+I/ParticleProbe( 3469): PASS {"scaledSnapshotCoordinates":true,"coverage":"[64325, 46085, 11981, 0]","escapedPixels":1894,"shaderCompiled":true,"zeroProgressIdentity":true,"endTransparent":true,"detachReleasesOverlay":true,"hardwareSnapshot":true,"cancelReleasesOverlay":true,"completionReleasesOverlay":true,"physicalDeviceTested":false}

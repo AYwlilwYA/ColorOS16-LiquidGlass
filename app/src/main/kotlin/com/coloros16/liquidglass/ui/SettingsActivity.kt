@@ -44,6 +44,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.hook.ParticleDissolveHook
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.log.Lg
@@ -1530,6 +1531,19 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 倾斜与透视二级页：开关 + 倾斜强度 + 透视扭曲程度。改动需重启桌面进程生效。 */
     private fun bindTilt(view: View) {
+        bindGlassSwitch(view, R.id.switchNotificationDissolve, ParticleDissolveHook.KEY_ENABLED, false)
+        bindIntSeekBarStep(
+            seek = view.findViewById(R.id.seekNotificationDissolveSpeed),
+            valueText = view.findViewById(R.id.notificationDissolveSpeedValue),
+            key = ParticleDissolveHook.KEY_SPEED, default = ParticleDissolveHook.DEFAULT_SPEED,
+            max = ParticleDissolveHook.MAX_SPEED-ParticleDissolveHook.MIN_SPEED, step = 1,
+            offset = ParticleDissolveHook.MIN_SPEED,
+            format = { v -> getString(R.string.settings_notification_dissolve_speed_value, v/100f) },
+        )
+        if (Build.VERSION.SDK_INT < 33) {
+            view.findViewById<Switch>(R.id.switchNotificationDissolve).isEnabled = false
+            view.findViewById<SeekBar>(R.id.seekNotificationDissolveSpeed).isEnabled = false
+        }
         val switch = view.findViewById<Switch>(R.id.switchAnimTilt)
         val listener = CompoundButton.OnCheckedChangeListener { _, checked ->
             writePrefBoolean(Prefs.KEY_ANIM_TILT_ENABLED, checked)
