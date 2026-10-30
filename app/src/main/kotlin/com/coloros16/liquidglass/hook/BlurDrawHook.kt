@@ -577,14 +577,8 @@ object BlurDrawHook {
     private const val VOLUME_PANEL_BACKDROP_TTL_MS = 500L
     /** 展开面板黑遮罩色：黑 8%（透明度 0x14）。 */
     private const val VOLUME_PANEL_MASK_COLOR = 0x14000000
-    /** srcRect 塌缩回退记忆有效期（ms）：超龄不回退（防采样陈旧内容），仅治滑入动画超屏帧。 */
+    /** srcRect 塌缩回退记忆日志分级阈值（ms）：超龄回退照用，仅在日志标注 stale-used。 */
     private const val SRC_RECT_FALLBACK_MAX_AGE_MS = 500L
-    /** 主线程同步抓屏源白名单：内容指纹 unchanged 也强制发布（关键 UI 事件补抓不被旧基准否决）。 */
-    private val SYNC_CAPTURE_FORCE_PUBLISH_SOURCES = setOf(
-        "volume-expand-main-thread",
-        "volume-appear-main-thread",
-        "heads-up-main-thread",
-    )
     /** 音量元素（音量条 / ···按钮）玻璃折射强度衰减系数：小面积元素强折射在快照上放大成扭曲倒影。 */
     private const val VOLUME_REFRACTION_DAMP = 0.25f
     /** 音量元素色散衰减系数（0 = 关闭彩虹边）。 */
@@ -616,8 +610,12 @@ object BlurDrawHook {
     private const val NOTIFICATION_POPUP_HOST_ACTIVE_MS = 5_000L
     /** 菜单桥默认 blendShape（px）：系统长按路径只写 blendRange=1（1px 无可见桥），本侧合成取 demo 基准。 */
     private const val MENU_BRIDGE_BLEND_SHAPE_PX = 30f
+    /** 菜单桥总闸：off=不注伴球不出桥（通知卡/菜单自身玻璃渲染不受影响）；恢复=true。 */
+    private const val MENU_BRIDGE_ENABLED = false
 
     // ---- [doc/spec/141] 通用邻近黏连一期 ----
+    /** 邻近黏连总闸：off=不扫邻近不注伴球（通知卡自身玻璃渲染不受影响）；恢复=true。 */
+    private const val PROXIMITY_BRIDGE_ENABLED = false
     /** 邻近触发阈值（vp）：间隙 < 此值互注合成伴球；常量不进 Prefs（二期按控件开关另行）。 */
     private const val PROXIMITY_BRIDGE_GAP_VP = 60f
     /** 邻近扫描活跃通知卡元素上限：超过则跳过扫描 + 一次性节流诊断（对数 ≤120，微秒级）。 */
@@ -911,7 +909,7 @@ object BlurDrawHook {
         val atMs: Long,
     )
 
-    /** 塌缩回退记忆表：id → 上一帧成功 srcRect（[SRC_RECT_FALLBACK_MAX_AGE_MS] 内且快照未换才可用） */
+    /** 塌缩回退记忆表：id → 上一帧成功 srcRect（快照几何未换即可用，年龄只作日志分级） */
     private val lastGoodSrcRectById = ConcurrentHashMap<Int, LastGoodSrcRect>()
 
     /** 整屏快照（@Volatile：worker 线程写入，渲染线程读取；内容变化时重抓，静止不抓） */
@@ -5462,6 +5460,7 @@ object BlurDrawHook {
         }
         // 咽喉点语义派生：显式 cardClass 优先；无则按宿主父链派生（设备卡/CC 滑杆预设独立命中）
         val effectiveCardClass = cardClass ?: hostSemanticCardClass(hostView)?.also { semantic ->
+            GlassRegistry.touch(semantic)
             logThrottled("semantic-rebind", Log.INFO) {
                 "semantic-rebind: ${hostView.javaClass.simpleName} -> $semantic"
             }
@@ -5789,6 +5788,12 @@ object BlurDrawHook {
         bgView: View,
         region: RectF,
     ) {
+        if (!MENU_BRIDGE_ENABLED) {
+            logThrottled("adhesion-menu-off", Log.INFO) {
+                "adhesion-menu-off: menu bridge gated, id=$key"
+            }
+            return
+        }
         if (!notificationPopupGlassEnabled()) return
         val menu = menuBridgeHost?.get() ?: return
         if (!menu.isAttachedToWindow) return
@@ -5868,6 +5873,12 @@ object BlurDrawHook {
         bgView: View,
         region: RectF,
     ) {
+        if (!PROXIMITY_BRIDGE_ENABLED) {
+            logThrottled("adhesion-proximity-off", Log.INFO) {
+                "adhesion-proximity-off: proximity bridge gated, id=$key"
+            }
+            return
+        }
         val vpW = entry.autoBounds.width().toFloat()
         val vpH = entry.autoBounds.height().toFloat()
         if (vpW < 1f || vpH < 1f) return
@@ -8729,18 +8740,23 @@ object BlurDrawHook {
                     try {
                         val wrapper = chain.getThisObject() as? View
                         val host = menuBridgeHost?.get()
-                        if (wrapper != null && wrapper === host && notificationPopupGlassEnabled()) {
-                            val bg = try {
-                                wrapper.background
-                            } catch (t: Throwable) {
-                                null
-                            }
-                            if (bg !is NotificationPopupGlassDrawable) {
-                                val corner = resolveMenuCornerPx(wrapper)
-                                wrapper.background = NotificationPopupGlassDrawable(wrapper, bg, corner)
-                                logThrottled("menu-attach-reapply", Log.INFO) {
-                                    "notif-popup: glass reapplied on attach host=${wrapper.javaClass.simpleName} " +
-                                        "corner=$corner from=${bg?.javaClass?.simpleName ?: "null"}"
+                        if (wrapper != null && wrapper === host) {
+                            // attach 即刻补解析：排除表无需等负缓存过期（防淡入期快照含菜单自己）
+                            menuPopupSfcMissAt = 0L
+                            resolveMenuPopupSfc()
+                            if (notificationPopupGlassEnabled()) {
+                                val bg = try {
+                                    wrapper.background
+                                } catch (t: Throwable) {
+                                    null
+                                }
+                                if (bg !is NotificationPopupGlassDrawable) {
+                                    val corner = resolveMenuCornerPx(wrapper)
+                                    wrapper.background = NotificationPopupGlassDrawable(wrapper, bg, corner)
+                                    logThrottled("menu-attach-reapply", Log.INFO) {
+                                        "notif-popup: glass reapplied on attach host=${wrapper.javaClass.simpleName} " +
+                                            "corner=$corner from=${bg?.javaClass?.simpleName ?: "null"}"
+                                    }
                                 }
                             }
                         }
@@ -13673,28 +13689,59 @@ object BlurDrawHook {
             var srcRight = (screenRegion.right - snap.region.left) * scaleX
             var srcBottom = (screenRegion.bottom - snap.region.top) * scaleY
             // region 超屏（弹窗滑入动画起点等）→ srcRect 可整体越出快照 → discard 恒真玻璃整条透明；
-            // 钳进快照 bounds 后仍可采到可见部分；真无交集（clamp 后 left≥right）才回退系统模糊
+            // 钳进快照 bounds 后仍可采到可见部分；真无交集（clamp 后 left≥right）才走塌缩回退
             val bmpW = snap.bitmap.width.toFloat()
             val bmpH = snap.bitmap.height.toFloat()
+            val rawLeft = srcLeft
+            val rawTop = srcTop
+            val rawRight = srcRight
+            val rawBottom = srcBottom
             srcLeft = srcLeft.coerceIn(0f, bmpW)
             srcTop = srcTop.coerceIn(0f, bmpH)
             srcRight = srcRight.coerceIn(0f, bmpW)
             srcBottom = srcBottom.coerceIn(0f, bmpH)
+            if (srcLeft != rawLeft || srcTop != rawTop || srcRight != rawRight || srcBottom != rawBottom) {
+                logThrottled("seedling-src-clamp", Log.INFO, 1000L) {
+                    "resolve: srcRect clamped id=$id raw=($rawLeft,$rawTop,$rawRight,$rawBottom) " +
+                        "-> ($srcLeft,$srcTop,$srcRight,$srcBottom) bmp=${bmpW}x$bmpH"
+                }
+            }
             if (srcLeft >= srcRight || srcTop >= srcBottom) {
-                // 滑入动画超屏帧塌缩（region 整体越出快照）：≤SRC_RECT_FALLBACK_MAX_AGE_MS 内该 id
-                // 上一帧成功 srcRect 且快照未换 → 回退旧 rect 继续画玻璃；超龄/换快照才 null
+                // 滑入动画超屏帧塌缩（region 整体越出快照，如 seekbar 瞬时坐标越屏）：玻璃画在 view
+                // 自身 canvas、采样仅需近似该屏区内容 → 先用该 id 上一成功 srcRect（几何一致即用，
+                // 年龄只作日志分级）；无记忆/几何不一致再折算登记 entry.region；双兑底均塌缩才 null
                 val now = SystemClock.uptimeMillis()
                 val lastGood = lastGoodSrcRectById[id]
                 val usable = lastGood != null &&
-                    now - lastGood.atMs <= SRC_RECT_FALLBACK_MAX_AGE_MS &&
                     lastGood.bmpW == snap.bitmap.width && lastGood.bmpH == snap.bitmap.height &&
                     lastGood.snapRegion == snap.region
                 if (usable) {
                     logThrottled("seedling-src-fallback", Log.INFO, 1000L) {
+                        val age = now - lastGood.atMs
                         "resolve: srcRect collapsed -> fallback id=$id region=$screenRegion " +
-                            "lastGood=${lastGood.srcRect} age=${now - lastGood.atMs}ms"
+                            "lastGood=${lastGood.srcRect} age=${age}ms" +
+                            (if (age > SRC_RECT_FALLBACK_MAX_AGE_MS) " (stale-used)" else "")
                     }
                     return RenderSource(snap.bitmap, RectF(lastGood.srcRect), isElementSource = true)
+                }
+                // 兜底：登记 entry.region 折算（与 resolve 同为 getLocationOnScreen 同源；登记帧自洽）
+                val entryRegion = screenRegionMap[id]?.region
+                if (entryRegion != null) {
+                    var eLeft = (entryRegion.left - snap.region.left) * scaleX
+                    var eTop = (entryRegion.top - snap.region.top) * scaleY
+                    var eRight = (entryRegion.right - snap.region.left) * scaleX
+                    var eBottom = (entryRegion.bottom - snap.region.top) * scaleY
+                    eLeft = eLeft.coerceIn(0f, bmpW)
+                    eTop = eTop.coerceIn(0f, bmpH)
+                    eRight = eRight.coerceIn(0f, bmpW)
+                    eBottom = eBottom.coerceIn(0f, bmpH)
+                    if (eLeft < eRight && eTop < eBottom) {
+                        logThrottled("seedling-src-entry-fallback", Log.INFO, 1000L) {
+                            "resolve: srcRect collapsed -> entry-fallback id=$id region=$screenRegion " +
+                                "entry=$entryRegion srcRect=($eLeft,$eTop,$eRight,$eBottom)"
+                        }
+                        return RenderSource(snap.bitmap, RectF(eLeft, eTop, eRight, eBottom), isElementSource = true)
+                    }
                 }
                 logThrottled("seedling-src-collapse", Log.WARN, 1000L) {
                     "resolve: srcRect collapsed id=$id region=$screenRegion snapRegion=${snap.region} " +
@@ -14973,18 +15020,13 @@ object BlurDrawHook {
             // fp==0 = 位图不可读（硬件位图等）→ 按「有变化」处理，保证不错过更新。
             val fp = snapshotContentFingerprint(bg.bitmap)
             if (fp != 0 && fp == lastSnapshotFingerprint) {
-                // 关键 UI 事件（音量展开/出现）的同步补抓不被指纹否决：脏基准滞留时
-                // 强制发布本帧（连 postInvalidateHosts），指纹去重只挡高频路径
-                if (mainThreadSync && source in SYNC_CAPTURE_FORCE_PUBLISH_SOURCES) {
+                // 主线程同步补抓（关键 UI 事件）一律不被指纹否决：脏基准滞留时强制发布本帧
+                //（连 postInvalidateHosts），指纹去重只挡 worker 高频路径
+                if (mainThreadSync) {
                     logThrottled("sync-capture-force-publish", Log.INFO) {
                         "bg-element: sync capture force-published (source=$source, fingerprint unchanged)"
                     }
                 } else {
-                    if (mainThreadSync) {
-                        logThrottled("sync-capture-unchanged", Log.INFO) {
-                            "bg-element: sync capture unchanged, frame dropped (source=$source)"
-                        }
-                    }
                     logThrottled("snapshot-unchanged", Log.DEBUG) {
                         "bg-element: snapshot unchanged, frame dropped (no invalidate)"
                     }
@@ -15601,8 +15643,9 @@ object BlurDrawHook {
     /**
      * 解析长按菜单 popup 窗口根 SurfaceControl（供 [collectExcludes] 第 7 路排除，防菜单卡玻璃自采样 popup 自己）：
      * 宿主 = [menuBridgeHost]（菜单主体，show 时写入），popup 装饰根类名不可靠（PopupWindow$PopupView）
-     * → 一律身份直取 `host.rootView` 引用，禁类名匹配。正缓存有效直接复用；宿主缺失/未 attach/解析失败
-     * 记负缓存（[MENU_PANEL_SFC_NEG_CACHE_MS] 内不重解析）；装玻璃时清负缓存、dismiss 清正缓存。
+     * → 一律身份直取 `host.rootView` 引用，禁类名匹配。正缓存有效直接复用；宿主缺失/解析失败
+     * 记负缓存（[MENU_PANEL_SFC_NEG_CACHE_MS] 内不重解析），未 attach 不记（attach 后即刻可解析，
+     * attach 钩子补解析）；装玻璃时清负缓存、dismiss 清正缓存。
      * 双通道取 sfc：先方法反射（[reflectViewRootSurfaceControl]），失败再直读 ViewRootImpl.mSurfaceControl
      * 字段（[fieldViewRootSurfaceControl]），都失败才 miss。
      */
@@ -15618,8 +15661,14 @@ object BlurDrawHook {
         if (now < menuPopupSfcMissAt) return null
         val host = menuBridgeHost?.get()
         if (host == null || !host.isAttachedToWindow) {
-            menuPopupSfcMissAt = now + MENU_PANEL_SFC_NEG_CACHE_MS
-            logMenuPopupSfc("false", "null", if (host == null) "no-host" else "not-attached")
+            if (host == null) {
+                // 宿主未就绪：记负缓存挡短窗重复解析
+                menuPopupSfcMissAt = now + MENU_PANEL_SFC_NEG_CACHE_MS
+                logMenuPopupSfc("false", "null", "no-host")
+            } else {
+                // 未 attach 不记负缓存：attach 后即刻可解析，等负缓存过期纯浪费（淡入期自采样根因）
+                logMenuPopupSfc("false", "null", "not-attached")
+            }
             return null
         }
         val rootView = try {

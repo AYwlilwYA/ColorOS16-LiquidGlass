@@ -1,5 +1,6 @@
 package com.coloros16.liquidglass.hook
 
+import android.graphics.Outline
 import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.drawable.Drawable
@@ -28,11 +29,13 @@ import java.util.WeakHashMap
  *
  * 本 hook 在目标进程内拦截这两族的挂载点，把命中的元素按 **View 类名** 登记进 [GlassRegistry]
  * （组件清单出现该组件、预设可按组件命中）。渲染腿现状：
- * - A 族：shader input 覆盖范围探针（[Prefs.KEY_GALLERY_SHADER_PROBE]，默认关）——
+ * - A 族：相册 BlurButtonWrapperView 五钮直接施加背板玻璃（[AppGlassBackdropShader]，
+ *   input=节点下方已绘内容，每帧 GPU 自动喂入；[Prefs.KEY_GALLERY_GLASS] 控，探针开时让位）；
+ *   shader input 覆盖范围探针（[Prefs.KEY_GALLERY_SHADER_PROBE]，默认关）保留——
  *   把背景 RenderEffect 临时换成越界采样染色探针（[AppGlassProbeShader]），判定折射环带可行性；
- *   相册进程另挂 BlurButtonWrapperView 自调用探针（[mountSelfProbeHook]），宿主零调用也能出环；
+ *   自调用挂载点（[mountSelfProbeHook]）同时调度探针与五钮玻璃；
  * - B 族：边缘光学装饰层（高光描边 + 内发光，[AppGlassDecorDrawable]）——随该 App 玻璃开关
- *   生效，经 View.overlay 覆盖绘制，系统 SF 模糊保持原样当底。
+ *   生效，经 View.overlay 覆盖绘制，系统 SF 模糊保持原样当底；五钮玻璃编译失败时同层兜底。
  *
  * 开关按 App 独立（默认 false，TTL 500ms 重读）：关闭时拦截体只读 volatile 后直接放行。
  */
@@ -115,6 +118,25 @@ object AppGlassHook {
 
     /** 已挂 preDraw 等布局的 View → 监听器（防尺寸变化回调重复调度叠监听）。 */
     private val selfProbeScheduled = WeakHashMap<View, ViewTreeObserver.OnPreDrawListener>()
+
+    /** A 族拦截记录的宿主原 effect（view → 宿主设过的值；玻璃还原依据，原值无公开 getter）。 */
+    private val lastHostEffect = WeakHashMap<View, RenderEffect?>()
+
+    /** 五钮背板玻璃状态（持续 preDraw 同步启停，模式同 [BDecorState]）。 */
+    private class ButtonGlassState(view: View) {
+        val viewRef = WeakReference(view)
+        var applied = false
+        var compileFailed = false
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            viewRef.get()?.let { syncButtonGlass(it) }
+            true
+        }
+    }
+
+    private val buttonGlassStates = WeakHashMap<View, ButtonGlassState>()
+
+    /** 背板玻璃效果 w×h×corner 编译缓存（RuntimeShader 编译昂贵，同参数效果对象复用）。 */
+    private val glassEffectCache = ConcurrentHashMap<String, RenderEffect>()
 
     /** A/B 族命中类名是否已打过日志（只打一次，防刷屏）。 */
     private val loggedClasses = ConcurrentHashMap.newKeySet<String>()
@@ -233,7 +255,10 @@ object AppGlassHook {
                     .intercept { chain ->
                         val result = chain.proceed()
                         try {
-                            (chain.getThisObject() as? View)?.let { scheduleSelfProbe(it) }
+                            (chain.getThisObject() as? View)?.let {
+                                scheduleSelfProbe(it)
+                                ensureButtonGlass(it)
+                            }
                         } catch (t: Throwable) {
                             Lg.w(TAG, "self-probe schedule error", t)
                         }
@@ -260,6 +285,7 @@ object AppGlassHook {
                                     override fun onViewAttachedToWindow(attached: View) {
                                         attached.removeOnAttachStateChangeListener(this)
                                         scheduleSelfProbe(attached)
+                                        ensureButtonGlass(attached)
                                     }
 
                                     override fun onViewDetachedFromWindow(detached: View) = Unit
@@ -359,18 +385,164 @@ object AppGlassHook {
         return effect
     }
 
-    /** A 族拦截体：登记元素；探针开关开时把背景 RenderEffect 换成覆盖范围探针（LibXposed 无 setArg，走 proceed(newArgs)）。 */
+    /** 五钮背板玻璃挂载：首见建状态并挂持续 preDraw；重绑时换挂到当前 ViewTreeObserver。 */
+    private fun ensureButtonGlass(view: View) {
+        val existing = buttonGlassStates[view]
+        if (existing != null) {
+            try {
+                view.viewTreeObserver.removeOnPreDrawListener(existing.listener)
+            } catch (_: Throwable) {
+            }
+            try {
+                view.viewTreeObserver.addOnPreDrawListener(existing.listener)
+            } catch (t: Throwable) {
+                Lg.w(TAG, "button glass preDraw re-add failed", t)
+            }
+            return
+        }
+        val state = ButtonGlassState(view)
+        buttonGlassStates[view] = state
+        try {
+            view.viewTreeObserver.addOnPreDrawListener(state.listener)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "button glass preDraw add failed", t)
+        }
+    }
+
+    /**
+     * preDraw 同步五钮背板玻璃：探针开 → 还原玻璃（探针优先，互斥）；玻璃关 → 还原宿主原 effect；
+     * 玻璃开且尺寸就绪 → 施加背板玻璃。
+     */
+    private fun syncButtonGlass(view: View) {
+        val state = buttonGlassStates[view] ?: return
+        if (state.compileFailed) return
+        if (probeEnabled()) {
+            if (state.applied) restoreButtonGlass(view, state)
+            return
+        }
+        if (!glassEnabled()) {
+            if (state.applied) restoreButtonGlass(view, state)
+            return
+        }
+        if (state.applied) return
+        if (view.width > 1 && view.height > 1) {
+            glassifyButton(view, state)
+        }
+    }
+
+    /** 施加背板玻璃：取缓存效果经静态挂载点写进 View 背景；编译失败转装饰层兜底并停试。 */
+    private fun glassifyButton(view: View, state: ButtonGlassState) {
+        val setBg = selfProbeSetBg ?: return
+        val corner = resolveButtonCornerRadius(view)
+        val effect = cachedGlassEffect(view.width, view.height, corner)
+        if (effect == null) {
+            state.compileFailed = true
+            Lg.w(TAG, "button glass compile failed, fallback decor view=${view.javaClass.name}")
+            ensureBDecor(view)
+            return
+        }
+        selfProbeActive = true
+        try {
+            setBg.invoke(null, effect, view)
+            state.applied = true
+            registerElement(view, view.javaClass.name, "G")
+            logOnce(
+                "glass:button:${view.javaClass.name}",
+                "button glass applied view=${view.javaClass.name} ${view.width}x${view.height} corner=$corner",
+            )
+        } catch (t: Throwable) {
+            logOnce("glass:button-error", "button glass invoke failed: ${t.message}")
+        } finally {
+            selfProbeActive = false
+        }
+    }
+
+    /** 还原宿主原 effect（A 族拦截记录值，无记录 = null 清效果）。 */
+    private fun restoreButtonGlass(view: View, state: ButtonGlassState) {
+        val setBg = selfProbeSetBg ?: return
+        val orig = lastHostEffect[view]
+        selfProbeActive = true
+        try {
+            setBg.invoke(null, orig, view)
+            state.applied = false
+            logOnce(
+                "glass:button-restore:${view.javaClass.name}",
+                "button glass restored view=${view.javaClass.name} origEffect=${if (orig == null) "null" else "held"}",
+            )
+        } catch (t: Throwable) {
+            logOnce("glass:button-restore-error", "button glass restore failed: ${t.message}")
+        } finally {
+            selfProbeActive = false
+        }
+    }
+
+    /** 背板玻璃效果 w×h×corner 编译缓存（失败不缓存，由 [ButtonGlassState.compileFailed] 停试）。 */
+    private fun cachedGlassEffect(width: Int, height: Int, cornerRadius: Float): RenderEffect? {
+        val key = "${width}x$height@${cornerRadius.toInt()}"
+        glassEffectCache[key]?.let { return it }
+        val effect = try {
+            AppGlassBackdropShader.createEffect(width, height, cornerRadius, cornerIsConic = true)
+        } catch (t: Throwable) {
+            null
+        }
+        if (effect != null) {
+            if (glassEffectCache.size >= 16) glassEffectCache.clear()
+            glassEffectCache[key] = effect
+        }
+        return effect
+    }
+
+    /**
+     * 五钮圆角解析：outline provider 优先（ColorOS 钮多为胶囊/圆钮）；
+     * 兜底短边 ≤96px 取 min/2（胶囊），大元素取短边×0.3（防圆团）。
+     */
+    private fun resolveButtonCornerRadius(view: View): Float {
+        val w = view.width
+        val h = view.height
+        val short = minOf(w, h).toFloat()
+        try {
+            val outline = Outline()
+            view.outlineProvider.getOutline(view, outline)
+            val r = outline.radius
+            if (r > 0f && r <= short) return r
+        } catch (_: Throwable) {
+        }
+        return if (short <= 96f) short * 0.5f else short * 0.3f
+    }
+
+    /** A 族拦截体：登记元素；记档宿主原 effect；已玻璃化元素被覆写时换回玻璃；探针开关开时换探针。 */
     private fun aFamilyIntercept(chain: XposedInterface.Chain): Any? {
         try {
             if (selfProbeActive) return chain.proceed()
-            if (glassEnabled()) {
-                val view = try {
-                    chain.getArg(1) as? View
+            val view = try {
+                chain.getArg(1) as? View
+            } catch (t: Throwable) {
+                null
+            }
+            if (view != null) {
+                // 宿主原 effect 记档：本调用经上方旁路 return 后必来自宿主，arg0 即还原值
+                val orig = try {
+                    chain.getArg(0) as? RenderEffect
                 } catch (t: Throwable) {
                     null
                 }
-                if (view != null) {
+                lastHostEffect[view] = orig
+                if (glassEnabled()) {
                     registerElement(view, view.javaClass.name, "A")
+                    val state = buttonGlassStates[view]
+                    if (state != null && state.applied && !state.compileFailed && !probeEnabled()) {
+                        // 宿主覆写已玻璃化元素：换回玻璃（宿主新值已记档，还原时取它）
+                        cachedGlassEffect(view.width, view.height, resolveButtonCornerRadius(view))
+                            ?.let { glass ->
+                                val args = chain.getArgs().toTypedArray()
+                                args[0] = glass
+                                logOnce(
+                                    "glass:remount:${view.javaClass.name}",
+                                    "button glass remount view=${view.javaClass.name}",
+                                )
+                                return chain.proceed(args)
+                            }
+                    }
                     if (switchKey == Prefs.KEY_GALLERY_GLASS && probeEnabled()) {
                         val probe = cachedProbeEffect(view.width, view.height)
                         if (probe != null) {

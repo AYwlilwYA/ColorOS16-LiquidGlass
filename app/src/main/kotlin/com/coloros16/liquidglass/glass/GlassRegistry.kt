@@ -230,8 +230,10 @@ object GlassRegistry {
         if (cur != null && cur.clazz === clazz) {
             if (cardClass != null && cardClass != cur.cardClass) {
                 bound[id] = Bound(clazz, cur.name, cardClass)
-                touch(cardClass)
             }
+            // cardClass 非 null 恒 touch：语义名低频出现（媒体卡/入口卡），只在变化时 touch 会让它
+            // 被 24h 清理踢出清单后永不回清单（重绑 cardClass 相等 → 只 touch 绘制类）
+            if (cardClass != null) touch(cardClass)
             touch(cur.name)
             return
         }
@@ -407,7 +409,8 @@ object GlassRegistry {
     /** 清单/对话框展示用：该类的位置描述字符串资源名；未登记 → null。 */
     fun classLocationKey(cls: String): String? = CLASS_LOCATION_KEYS[cls]
 
-    private fun touch(name: String) {
+    /** 登记类出现：进 seen 并节流 flush 进 KEY_GLASS_CLASSES 清单（语义派生路径显式调用）。 */
+    fun touch(name: String) {
         try {
             val now = SystemClock.uptimeMillis()
             val prev = seen[name]

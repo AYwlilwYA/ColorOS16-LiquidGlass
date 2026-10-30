@@ -453,6 +453,13 @@ object LauncherHook {
     private var mCardBlurRadiusTagId = 0
     /** [doc/spec/78] 卡片映射诊断日志计数（原因 → 已打条数，每原因最多 3 条） */
     private val cardDiagCount = ConcurrentHashMap<String, Int>()
+    /** page-ind 诊断时间窗节流表（key → 上次打印时刻）。 */
+    private val pageIndDiagAtMs = ConcurrentHashMap<String, Long>()
+    /** 工作区页码胶囊资源 id（惰性解析缓存；0=解析失败）。 */
+    @Volatile
+    private var pageIndicatorResId = 0
+    @Volatile
+    private var pageIndicatorResIdResolved = false
     /** 卡片开关是否已打过首读值日志（只打一次，防刷屏） */
     @Volatile
     private var cardSwitchLogged = false
@@ -1723,20 +1730,22 @@ object LauncherHook {
      *  getBlurDrawable() 返回 null 时回退（不登记 = 保持系统磨砂），回退原因打节流诊断日志。 */
     private fun registerPageIndicatorRegion(chain: XposedInterface.Chain) {
         val indicator = chain.getThisObject() as? View ?: return
+        // 文件夹页码实例（id≠工作区 page_indicator）诊断配额与工作区实例隔离
+        val indReasonSuffix = if (isWorkspacePageIndicator(indicator)) "" else "-folder"
         val layer = try {
             mPageIndicatorGetBlurDrawable?.invoke(indicator)
         } catch (t: Throwable) {
             Lg.e(TAG, "launcher page-indicator: getBlurDrawable failed", t); null
         } ?: run {
             logCardDiag(
-                "page-ind-null-layer",
+                "page-ind-null-layer$indReasonSuffix",
                 "coord: PageIndicator skip —— getBlurDrawable null（背景层缺失，保持系统磨砂）",
             )
             return
         }
         if (mLayerCls?.isInstance(layer) != true) {
             logCardDiag(
-                "page-ind-not-layer",
+                "page-ind-not-layer$indReasonSuffix",
                 "coord: PageIndicator skip —— getBlurDrawable 返回 ${layer?.javaClass?.name ?: "null"} 非 LayerBlurDrawable",
             )
             return
@@ -1747,7 +1756,7 @@ object LauncherHook {
             Lg.e(TAG, "launcher page-indicator: read LayerBlurDrawable.mBlurDrawable failed", t); null
         } ?: run {
             logCardDiag(
-                "page-ind-null-inner",
+                "page-ind-null-inner$indReasonSuffix",
                 "coord: PageIndicator skip —— LayerBlurDrawable.mBlurDrawable null",
             )
             return
@@ -1758,20 +1767,53 @@ object LauncherHook {
             Lg.w(TAG, "launcher page-indicator: getBackgroundRadius failed, fallback min(w,h)/2", t)
             0f
         }
-        // 编辑态缩放几何诊断：raw 布局尺寸 vs 屏幕 loc vs 自身缩放（每 reason 节流 3 条）
+        // 编辑态缩放几何诊断：scale≠1 特征帧 2s 节流优先可见；常态 60s 节流兜底（不烧配额）
+        val geomSx = indicator.scaleX
+        val geomSy = indicator.scaleY
         val geomLoc = IntArray(2)
         indicator.getLocationOnScreen(geomLoc)
-        logCardDiag(
-            "page-ind-geom",
+        val geomGlobal = Rect()
+        val geomHasGlobal = try {
+            indicator.getGlobalVisibleRect(geomGlobal)
+        } catch (t: Throwable) {
+            false
+        }
+        val geomMsg =
             "coord: PageIndicator geom raw=${indicator.width}x${indicator.height} loc=[${geomLoc[0]},${geomLoc[1]}] " +
-                "scale=(${indicator.scaleX},${indicator.scaleY}) pivot=(${indicator.pivotX},${indicator.pivotY}) " +
-                "trans=(${indicator.translationX},${indicator.translationY})",
-        )
+                "global=$geomGlobal hasGlobal=$geomHasGlobal scale=($geomSx,$geomSy) pivot=(${indicator.pivotX},${indicator.pivotY}) " +
+                "trans=(${indicator.translationX},${indicator.translationY})"
+        if (geomSx != 1f || geomSy != 1f) {
+            logPageIndDiag("page-ind-geom-ed", geomMsg, 2000L)
+        } else {
+            logPageIndDiag("page-ind-geom-normal", geomMsg, 60_000L)
+        }
         registerBlurRegion(
             inner, indicator, corner,
             hostName = "PageIndicator", cardClass = CLASS_OPLUS_PAGE_INDICATOR,
             blurLayerForCorner = layer,
         )
+    }
+
+    /** 工作区页码胶囊判定：id == 宿主包 page_indicator 资源 id（惰性一次解析）。 */
+    private fun isWorkspacePageIndicator(view: View): Boolean {
+        if (!pageIndicatorResIdResolved) {
+            pageIndicatorResIdResolved = true
+            pageIndicatorResId = try {
+                view.resources.getIdentifier("page_indicator", "id", view.context.packageName)
+            } catch (t: Throwable) {
+                0
+            }
+        }
+        return pageIndicatorResId != 0 && view.id == pageIndicatorResId
+    }
+
+    /** page-ind 诊断时间窗节流：正文以 [key] 起头（grep 可达），每 key 每 windowMs 最多一条。 */
+    private fun logPageIndDiag(key: String, msg: String, windowMs: Long) {
+        val now = SystemClock.uptimeMillis()
+        val prev = pageIndDiagAtMs[key] ?: 0L
+        if (now - prev < windowMs) return
+        pageIndDiagAtMs[key] = now
+        Lg.i(TAG, "[$key] $msg")
     }
 
     /** [doc/spec/76] 问小布玻璃开关（TTL [PAGE_INDICATOR_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
@@ -1915,12 +1957,12 @@ object LauncherHook {
         })
     }
 
-    /** [doc/spec/78] 卡片映射诊断日志：每种原因最多打 3 条。 */
+    /** [doc/spec/78] 卡片映射诊断日志：每种原因最多打 3 条；正文以 [reason] 起头（grep 可达）。 */
     private fun logCardDiag(reason: String, msg: String) {
         val n = cardDiagCount[reason] ?: 0
         if (n >= 3) return
         cardDiagCount[reason] = n + 1
-        Lg.i(TAG, msg)
+        Lg.i(TAG, "[$reason] $msg")
     }
 
     /** [doc/spec/78] 卡片玻璃开关（TTL [CARD_GLASS_TTL_MS] 重读，改动无需重启 Launcher）。 */
@@ -2324,24 +2366,31 @@ object LauncherHook {
             logCardDiag("$hostName-not-attached", "coord: $hostName 跳过 —— 宿主 ${hostView.javaClass.name} 未 attach")
             return
         }
-        val loc = IntArray(2)
-        try {
-            hostView.getLocationOnScreen(loc)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "launcher preview: getLocationOnScreen failed", t); return
-        }
         val bw = hostView.width
         val bh = hostView.height
         if (bw <= 0 || bh <= 0) {
             logCardDiag("$hostName-zero-size", "coord: $hostName 跳过 —— 宿主尺寸 ${bw}x${bh}（通常= 布局尚未完成）")
             return
         }
-        val region = RectF(
-            loc[0].toFloat(),
-            loc[1].toFloat(),
-            (loc[0] + bw).toFloat(),
-            (loc[1] + bh).toFloat(),
-        )
+        // 登记区域用变换后可见矩形（getGlobalVisibleRect：祖先缩放/平移后的真实屏幕占地，
+        // scale=1 全可见时与 loc+布局尺寸一致）；不可见/读失败回退 loc+布局尺寸
+        val globalRect = Rect()
+        val hasGlobal = try {
+            hostView.getGlobalVisibleRect(globalRect)
+        } catch (t: Throwable) {
+            false
+        }
+        val region = if (hasGlobal && !globalRect.isEmpty) {
+            RectF(globalRect)
+        } else {
+            val loc = IntArray(2)
+            try {
+                hostView.getLocationOnScreen(loc)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "launcher preview: getLocationOnScreen failed", t); return
+            }
+            RectF(loc[0].toFloat(), loc[1].toFloat(), (loc[0] + bw).toFloat(), (loc[1] + bh).toFloat())
+        }
         val key = System.identityHashCode(inner)
         GlassRegistry.bind(key, inner, cardClass)
         val resolvedCorner = if (corner > 0f) corner else minOf(bw, bh) / 2f
@@ -2360,8 +2409,8 @@ object LauncherHook {
             if (screenRegionMap.size > 512) screenRegionMap.clear()
             Lg.i(
                 TAG,
-                "coord: $hostName id=$key view=${hostView.javaClass.simpleName} loc=[${loc[0]},${loc[1]}] " +
-                    "size=${bw}x${bh} cornerRadius=$resolvedCorner"
+                "coord: $hostName id=$key view=${hostView.javaClass.simpleName} region=$region raw=${bw}x${bh} " +
+                    "cornerRadius=$resolvedCorner"
             )
             // [doc/spec/07] 新映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
             triggerBackgroundCapture()

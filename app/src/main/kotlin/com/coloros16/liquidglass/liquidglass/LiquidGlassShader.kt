@@ -614,6 +614,9 @@ object LiquidGlassShader {
             // 原实证：cc=1.5×radius 必然 > halfSize → 贝塞尔角区判定 any(|p|<=b-cc) 恒 false →
             // 整个元素被当角区送进按 [0,cc]² 定义的贝塞尔 → sdRaw 失真 → 高光带/圆角裁剪全部错位。
             float sdRaw = mbShapeSDF(centeredCoord, halfSize);
+            // 本体原始 SDF（union 前快照）：掩码段用它分离「本体」与「桥区/伴球」——
+            // 桥区豁免 = 融合场 ∧ 本体之外，见掩码段 max(sdRaw, -sdBody)。
+            float sdBody = sdRaw;
             float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
 
             // [doc/spec/100 方案2] metaball 并集：本体 ↔ ≤3 伴球 pairwise smooth-min 融合。
@@ -793,6 +796,12 @@ object LiquidGlassShader {
                 }
             } else {
                 sdMask = sdRoundedRect(coord - maskCenter, maskHalf, 0.0);
+            }
+            // [doc/spec/141] 桥区豁免：融合场（本体∪伴球∪桥）中本体之外的部分不被掩码裁剪——黏连桥画进扩充区。
+            // max(sdRaw,-sdBody)≤0 ⟺ 形内 ∧ 本体外（桥区）；非 metaball 恒不进本分支；
+            // metaball 无有效伴球时 sdRaw≡sdBody → |sdBody|≥0 → min 不变（零回归）。
+            if (uMetaballEnable > 0.5) {
+                sdMask = min(sdMask, max(sdRaw, -sdBody));
             }
             glass *= smoothstep(0.0, -2.0, sdMask);
 
@@ -982,12 +991,14 @@ object LiquidGlassShader {
      * 统一设置全部 uniform（含输入原图）。每帧重绘前调用。
      *
      * @param source uSource 输入：未模糊原图（全分辨率）的 BitmapShader（见 [createSourceBitmapShader]）。
-     *               null 时保留上一次的输入（uSourceRect/uSourceLowResRect 仍更新——srcRect 变化无需
+     *               null 时保留上一次的 uSource 输入（uSourceRect 等 uniform 仍更新——srcRect 变化无需
      *               重建/重绑 shader，仅重设 uniform 即可跟手）；首次为 null 则 shader 无输入，画面为黑
      *               ——调用方须先喂帧。
-     * @param lowResSource uSourceLowRes 输入：1/4 降采样原图的 BitmapShader（见
-     *               [createLowResSourceBitmapShader]）。null 时回退使用 [source]（等效旧的全分辨率模糊，
-     *               渲染不中断）。
+     * @param lowResSource uSourceLowRes 输入：降采样原图的 BitmapShader（见
+     *               [createLowResSourceBitmapShader]）。**非 null 时无条件重绑 uSourceLowRes**（独立于
+     *               [source] 是否为 null：miss/档位重绑帧源位图未变、source 传 null，低分辨率绑定仍须
+     *               真下发，否则旧 ÷N 绑定配新 rect 出晶格/放大）；null 且 [source] 非 null 时回退使用
+     *               [source]（等效旧的全分辨率模糊，渲染不中断）；双 null 保留上次输入。
      * @param sourceRect uSourceRect：uSource 原图 srcRect（xy=元素区域在 bitmap 中的原点, zw=尺寸 px）。
      *               AGSL 侧用它把元素局部 coord 手动换算到 bitmap 像素坐标（shader.eval 忽略 localMatrix）。
      * @param lowResSourceRect uSourceLowResRect：uSourceLowRes 低分辨率 srcRect（低分辨率位图坐标，
@@ -1038,7 +1049,14 @@ object LiquidGlassShader {
     ) {
         if (source != null) {
             shader.setInputShader("uSource", source)
-            shader.setInputShader("uSourceLowRes", lowResSource ?: source)
+        }
+        // uSourceLowRes 重绑意图独立于 uSource：lowResSource 非 null 即须真下发（miss/档位重绑帧
+        // 源位图未变、source 传 null，若整体挂 source 门则旧 ÷N 绑定配新 rect = 晶格/放大）；
+        // lowResSource 为 null 时回退 source；双 null 保留上次输入（滑动跟手热路径不受影响）
+        if (lowResSource != null) {
+            shader.setInputShader("uSourceLowRes", lowResSource)
+        } else if (source != null) {
+            shader.setInputShader("uSourceLowRes", source)
         }
         // uSourceRect/uSourceLowResRect 只影响 AGSL 侧 srcCoord() 坐标换算（shader.eval 忽略 localMatrix），
         // 与 BitmapShader 实例无关（createSourceBitmapShader 是纯单位矩阵 CLAMP，无 localMatrix）。因此
