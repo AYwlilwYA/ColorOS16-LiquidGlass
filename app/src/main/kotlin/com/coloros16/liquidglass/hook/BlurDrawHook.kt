@@ -352,6 +352,11 @@ object BlurDrawHook {
     // public final）读真实角半径。加为 pathProvider 级第 2 来源。
     private const val CLASS_BASE_ROUND_RECT_PATH_PROVIDER = "com.oplus.posteffect.path.BaseRoundRectPathProvider"
     private const val METHOD_GET_MAX_RADIUS = "getMaxRadius"
+    // [doc/spec/143 缺口 A] BaseRoundRectPathProvider 族写口方法名（基类 final；getWeight 与 CornerParams 共用 METHOD_GET_WEIGHT）
+    private const val METHOD_SET_CORNER_RADII = "setCornerRadii"
+    private const val METHOD_GET_CORNER_RADII = "getCornerRadii"
+    private const val METHOD_SET_WEIGHT = "setWeight"
+    private const val METHOD_UPDATE_PATH = "updatePath"
     // ---- [doc/spec/106 方案 A] 统一圆角「写穿」反射（写口；读口见上方任务 D） ----
     private const val METHOD_SET_CORNER_RADIUS = "setCornerRadius"
     private const val METHOD_SET_LEFT_TOP_CORNER_RADIUS = "setLeftTopCornerRadius"
@@ -359,6 +364,8 @@ object BlurDrawHook {
     private const val METHOD_SET_LEFT_BOTTOM_CORNER_RADIUS = "setLeftBottomCornerRadius"
     private const val METHOD_SET_RIGHT_BOTTOM_CORNER_RADIUS = "setRightBottomCornerRadius"
     private const val METHOD_SET_RADIUS = "setRadius"
+    // [doc/spec/143 缺口 B] NBV 白底/着色层 mCornerRadii（public final float[8]，反编译 NBV.java:38）
+    private const val FIELD_NBV_CORNER_RADII = "mCornerRadii"
     private const val METHOD_GET_CORNER_WEIGHT = "getCornerWeight"
     private const val FIELD_CORNER_RADII = "cornerRadii"
     private const val METHOD_APPLY_BLUR_CONFIG = "applyBlurConfig"
@@ -1082,6 +1089,15 @@ object BlurDrawHook {
     private var mRoundRectOutlineProviderGetCornerWeight: Method? = null
     private var mViewProxyApplyBlurConfig: Method? = null
     private var mViewProxyInvalidatePath: Method? = null
+    // ---- [doc/spec/143 缺口 A] BaseRoundRectPathProvider 族写口（基类 final 成员，全子类通用） ----
+    private var mBaseRoundRectSetCornerRadii: Method? = null
+    private var mBaseRoundRectSetCornerRadiiArray: Method? = null
+    private var mBaseRoundRectGetCornerRadii: Method? = null
+    private var mBaseRoundRectSetWeight: Method? = null
+    private var mBaseRoundRectGetWeight: Method? = null
+    private var mBaseDrawableUpdatePath: Method? = null
+    /** BlurConfig.getEnableStaticBlurCorner()（lg-143-branch 诊断分类用；null=反射失败打 ?） */
+    private var mBlurConfigGetEnableStaticBlurCorner: Method? = null
     // ---- [spec/39 文字反色复用系统黑白通道] QsColorUtil.getQsColorState() 反射（public static final int；
     // applyLocalTextContrast 遮罩关闭分支采样来源，替代逐文字整屏快照 sampleInjectedColor；mountQsColorUtil 解析）----
     private var mQsColorUtilGetState: Method? = null
@@ -2746,6 +2762,8 @@ object BlurDrawHook {
         mountVolumePanelBackdropBackground(api, classLoader)
         // 音量弹窗 dismissH：消失即清音量窗排除登记（volumeGlassHost + sfc 缓存）
         mountVolumeDialogDismiss(api, classLoader)
+        // [doc/spec/143 缺口 B] NBV 白底/着色层 setRadius 重放（覆盖生效期白底角跟随覆盖值）
+        mountNotificationBackgroundRadius(api, classLoader)
         // [doc/spec/134 第二轮] ···展开按钮玻璃（attach 时白底容器换玻璃 drawable，默认关）
         mountVolumeMoreButtonGlass(api, classLoader)
         // [doc/spec/135] 通知长按菜单玻璃（show 时菜单主体换玻璃 drawable + dismiss 还原，默认关）
@@ -3154,6 +3172,31 @@ object BlurDrawHook {
             Lg.i(TAG, "Hook B BaseRoundRectPathProvider.getMaxRadius() resolved (smooth-round pathProvider 级)")
         } catch (t: Throwable) {
             Lg.e(TAG, "Hook B resolve BaseRoundRectPathProvider.getMaxRadius() failed, smooth-round pathProvider 圆角级跳过", t)
+        }
+        // [doc/spec/143 缺口 A] BaseRoundRectPathProvider 族写口：基类 final setCornerRadii/getCornerRadii/
+        // setWeight/getWeight（RoundRectPathProvider/SmoothRoundRectPathProvider/AutoRoundRectPathProvider 全子类通用）
+        // + BaseDrawable.updatePath(boolean)（写后强制重建，绕开 setPathProvider 同实例早退）。独立 try-catch。
+        try {
+            val prCls = mBaseRoundRectPathProviderClass
+                ?: Class.forName(CLASS_BASE_ROUND_RECT_PATH_PROVIDER, false, classLoader)
+            mBaseRoundRectSetCornerRadii = prCls.getMethod(
+                METHOD_SET_CORNER_RADII, Float::class.javaPrimitiveType, Float::class.javaPrimitiveType,
+            )
+            mBaseRoundRectSetCornerRadiiArray = prCls.getMethod(METHOD_SET_CORNER_RADII, FloatArray::class.java)
+            mBaseRoundRectGetCornerRadii = prCls.getMethod(METHOD_GET_CORNER_RADII)
+            mBaseRoundRectSetWeight = prCls.getMethod(METHOD_SET_WEIGHT, Float::class.javaPrimitiveType)
+            mBaseRoundRectGetWeight = prCls.getMethod(METHOD_GET_WEIGHT)
+            val baseCls = Class.forName(CLASS_BASE_DRAWABLE, false, classLoader)
+            mBaseDrawableUpdatePath = baseCls.getMethod(METHOD_UPDATE_PATH, Boolean::class.javaPrimitiveType)
+            Lg.i(TAG, "lg-hook: BaseRoundRectPathProvider.setCornerRadii/weight + BaseDrawable.updatePath resolved (缺口 A 写口)")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "lg-hook: BaseRoundRect write reflect resolve failed, base-round provider not unified", t)
+            mBaseRoundRectSetCornerRadii = null
+            mBaseRoundRectSetCornerRadiiArray = null
+            mBaseRoundRectGetCornerRadii = null
+            mBaseRoundRectSetWeight = null
+            mBaseRoundRectGetWeight = null
+            mBaseDrawableUpdatePath = null
         }
         // 侧滑按钮真实圆角：SystemUI R.dimen.notification_corner_radius（16dp，dimens.xml:3027 实证；
         // NotificationMenuRowMetaBallController2.getBlurMenuCornerRadius() line 35-36 读它做按钮圆角）。
@@ -3681,6 +3724,8 @@ object BlurDrawHook {
         /** cornerRadii[8] 原值副本（形状出口读的就是它；非均匀时不能只写 cornerRadius） */
         val radii: FloatArray,
         val weight: Float?,
+        /** true = BaseRoundRectPathProvider 族（还原走 setCornerRadii+setWeight，无 cornerRadius 字段） */
+        val viaBaseRoundRect: Boolean = false,
     )
 
     /** [doc/spec/106] BlurConfig identityHashCode → 影子 */
@@ -3707,6 +3752,21 @@ object BlurDrawHook {
 
     /** [doc/spec/143] 元素 id → 上次写穿的覆盖半径：注册期每帧快判，命中 = 零反射跳过写穿核心 */
     private val overrideCornerWritten = ConcurrentHashMap<Int, Float>()
+
+    // ---- [doc/spec/143 缺口 B] NBV 白底/着色层 setRadius 重放通道 ----
+    /** NBV.setRadius 重放防重入（主线程；重放内层 hookAfter 直接放行 proceed 结果，环路深度 2 有界） */
+    private val nbvRadiusReentry = ThreadLocal.withInitial { false }
+    /** nbvOverrideDesired/nbvRadiusShadow 的锁（applyCornerWriteThrough 可能跑 RenderThread，setRadius 在主线程） */
+    private val nbvRadiusLock = Any()
+    /** 覆盖生效期 NBV View → desired：覆盖写穿时登记，setRadius hookAfter 据此重放 */
+    private val nbvOverrideDesired = WeakHashMap<View, Float>()
+    /** NBV View → 系统最近一次 setRadius 意图 (top, bottom)：覆盖删除/关闭时回写原值的影子 */
+    private val nbvRadiusShadow = WeakHashMap<View, FloatArray>()
+    /** NBV.mCornerRadii 字段（public final，getField 即得；null=解析失败整特性降级） */
+    private var mNbvCornerRadiiField: Field? = null
+    /** NBV.setRadius(float,float,boolean)（系统类不在编译 classpath，重放/还原走反射） */
+    private var mNbvSetRadiusMethod: Method? = null
+    private var nbvRadiusMounted = false
 
     /**
      * [doc/spec/101] 统一界面圆角作用域白名单判定（**注册期算一次**，写入 [RegionEntry.unifiedScope]）。
@@ -4058,7 +4118,8 @@ object BlurDrawHook {
                 logThrottled("lg-ucorner-rewrite", Log.INFO) {
                     "unified-corner: radius change ${existing.lastWritten} -> $u (${view.javaClass.name})"
                 }
-                val providerWritten = writeUnifiedCornerToConfig(cfg, u, existing)
+                val providerWritten = writeUnifiedCornerToConfig(cfg, u, existing, target)
+                reportProviderWriteResult(cfg, providerWritten, "uc-layerB")
                 existing.lastWritten = u
                 unifiedCornerApplied = true
                 return providerWritten
@@ -4086,7 +4147,8 @@ object BlurDrawHook {
             logThrottled("lg-ucorner-write", Log.INFO) {
                 "unified-corner: write-through ${view.javaClass.name} own=${info.radius}(${info.source}) -> U=$u cap=${minOf(w, h) / 2f} w=${w.toInt()}h=${h.toInt()}"
             }
-            val providerWritten = writeUnifiedCornerToConfig(cfg, u, shadow)
+            val providerWritten = writeUnifiedCornerToConfig(cfg, u, shadow, target)
+            reportProviderWriteResult(cfg, providerWritten, "uc-layerB")
             unifiedCornerApplied = true
             return providerWritten
         } catch (t: Throwable) {
@@ -4168,8 +4230,9 @@ object BlurDrawHook {
                     "corner-override: radius change ${existing.lastWritten} -> $desired path=$pathTag (${view.javaClass.name})"
                 }
                 existing.fromOverride = true
-                writeUnifiedCornerToConfig(cfg, desired, existing)
+                reportProviderWriteResult(cfg, writeUnifiedCornerToConfig(cfg, desired, existing, target), pathTag)
                 existing.lastWritten = desired
+                registerNbvCornerOverride(view, desired)
                 // 覆盖写穿不置 unifiedCornerApplied：该标志只表统一圆角写过；覆盖记账
                 // 归 overrideShadowActive/overrideCornerWritten 管（置位会让 unified OFF
                 // 时门1 全量还原清遍覆盖记账 → 与写穿每 ~2s 拉锯重发）
@@ -4198,9 +4261,10 @@ object BlurDrawHook {
             logThrottled("lg-143-write", Log.INFO) {
                 "corner-override: write-through path=$pathTag own=${info.radius}(${info.source}) -> $desired cap=${minOf(w, h) / 2f} w=${w.toInt()}h=${h.toInt()}"
             }
-            writeUnifiedCornerToConfig(cfg, desired, shadow)
+            reportProviderWriteResult(cfg, writeUnifiedCornerToConfig(cfg, desired, shadow, target), pathTag)
             // 覆盖写穿不置 unifiedCornerApplied（语义见 rewrite 分支注释）
             overrideShadowActive = true
+            registerNbvCornerOverride(view, desired)
             overrideCornerWritten[elementId] = desired
             applyBlurConfigAndInvalidate(vbp)
             return true
@@ -4285,6 +4349,7 @@ object BlurDrawHook {
             unifiedCornerShadow.remove(key)
             val target = resolveProxyPostEffectDrawable(vbp)
             if (target != null) overrideCornerWritten.remove(System.identityHashCode(target))
+            unregisterNbvCornerOverride(vbp)
             overrideShadowActive = unifiedCornerShadow.values.any { it.fromOverride }
             if (unifiedCornerShadow.isEmpty() && unifiedProviderShadow.isEmpty()) unifiedCornerApplied = false
             logThrottled("lg-143-restore", Log.INFO) {
@@ -4370,7 +4435,7 @@ object BlurDrawHook {
 
     /** [doc/spec/106] 把统一半径 U 写进 BlurConfig（四角 + CONIC 描边角）与其 pathProvider。
      *  @return true = 改了 pathProvider（共享实例，需 proceed 后强制重建 path） */
-    private fun writeUnifiedCornerToConfig(cfg: Any, u: Float, shadow: UnifiedCornerShadow): Boolean {
+    private fun writeUnifiedCornerToConfig(cfg: Any, u: Float, shadow: UnifiedCornerShadow, drawable: Any?): Boolean {
         // ① 四角 + cornerRadius：BlurConfig.setCornerRadius 一次写完（BlurConfig.java:232-244）
         mBlurConfigSetCornerRadius?.invoke(cfg, u)
         // ② CONIC 描边角：**仅系统原本就用它（原半径>0）才写**。BaseDrawable.updatePath 里
@@ -4384,11 +4449,25 @@ object BlurDrawHook {
                 logThrottled("lg-ucorner-cp-fail", Log.WARN) { "unified-corner: CornerParams.setRadius failed" }
             }
         }
+        val pp = try {
+            mBlurConfigGetPathProvider?.invoke(cfg)
+        } catch (t: Throwable) {
+            null
+        }
+        // 三分支分类诊断：装机一次下拉即可把每个覆盖元素归入「缺口 A / 缺口 B / 已生效」（per-cfg 节流）
+        val staticCorner = try {
+            mBlurConfigGetEnableStaticBlurCorner?.invoke(cfg) as? Boolean
+        } catch (t: Throwable) {
+            null
+        }
+        logThrottled("lg-143-branch-${System.identityHashCode(cfg)}", Log.INFO) {
+            "corner-override: branch pp=${pp?.javaClass?.simpleName ?: "null"} weight=${shadow.weight} " +
+                "staticCorner=$staticCorner cpRadius=${shadow.cornerParamsRadius}"
+        }
         // ③ pathProvider（QS 磁贴 RoundRectOutlineProvider）：形状出口读的是 cornerRadii[8] 而非
         //    cornerRadius 字段 → 必须调 update(float)（一次写字段 + 填满 radii）；Oval 系不是它的实例，
         //    isInstance 天然排除。
         return try {
-            val pp = mBlurConfigGetPathProvider?.invoke(cfg)
             if (pp != null && mRoundRectOutlineProviderClass?.isInstance(pp) == true) {
                 // [doc/spec/108 M1] 影子捕获失败 ⇒ **不写该 provider**：写穿了却没有还原依据，
                 // OFF 后永久残留统一圆角（与 captureProviderShadowIfAbsent 注释、spec/106 §六.1 一致）。
@@ -4404,12 +4483,169 @@ object BlurDrawHook {
                     upd.invoke(pp, u)
                     true
                 }
+            } else if (pp != null && mBaseRoundRectPathProviderClass?.isInstance(pp) == true) {
+                // ④ BaseRoundRectPathProvider 族（缺口 A）：applyBlurConfig 的 provider 分支完全不读
+                //    四角字段 → 必须直写 provider。基类 final setCornerRadii(u,u) 变才返回 true；
+                //    变了再 BaseDrawable.updatePath(false) 强制重建（setPathProvider 同实例早退，靠
+                //    invalidatePath 重建出来还是旧角）。Oval 系非本族实例，isInstance 天然排除。
+                //    [spec/108 M1] 影子失败不写（无还原依据）。
+                val setter = mBaseRoundRectSetCornerRadii
+                val captured = captureProviderShadowIfAbsent(pp)
+                if (!captured || setter == null || mBaseDrawableUpdatePath == null) {
+                    logThrottled("lg-ucorner-pp-noshadow", Log.WARN) {
+                        "unified-corner: base-round provider NOT written " +
+                            "(setterResolved=${setter != null} updatePathResolved=${mBaseDrawableUpdatePath != null}) (spec/108 M1)"
+                    }
+                    false
+                } else {
+                    val changed = try {
+                        setter.invoke(pp, u, u) as? Boolean ?: false
+                    } catch (t: Throwable) {
+                        logThrottled("lg-ucorner-pp-fail", Log.WARN) {
+                            "unified-corner: BaseRoundRect.setCornerRadii failed ${t.javaClass.simpleName}"
+                        }
+                        false
+                    }
+                    if (changed && drawable != null) {
+                        try {
+                            mBaseDrawableUpdatePath?.invoke(drawable, false)
+                        } catch (t: Throwable) {
+                            logThrottled("lg-ucorner-pp-fail", Log.WARN) {
+                                "unified-corner: BaseDrawable.updatePath failed ${t.javaClass.simpleName}"
+                            }
+                        }
+                    }
+                    true
+                }
             } else {
                 false
             }
         } catch (t: Throwable) {
-            logThrottled("lg-ucorner-pp-fail", Log.WARN) { "unified-corner: RoundRectOutlineProvider.update failed" }
+            logThrottled("lg-ucorner-pp-fail", Log.WARN) { "unified-corner: pathProvider write failed ${t.javaClass.simpleName}" }
             false
+        }
+    }
+
+    /** [doc/spec/143 件1] provider 写结果诊断：false 且非已知两类 provider = 静默跳过实锤（缺口 A 未知类）。
+     *  已知类的 false 只会是影子/写口未解析（自带 lg-ucorner-pp-noshadow 日志），不重复打。 */
+    private fun reportProviderWriteResult(cfg: Any, wrotePp: Boolean, pathTag: String) {
+        if (wrotePp) return
+        val pp = try {
+            mBlurConfigGetPathProvider?.invoke(cfg)
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        if (mRoundRectOutlineProviderClass?.isInstance(pp) == true) return
+        if (mBaseRoundRectPathProviderClass?.isInstance(pp) == true) return
+        logThrottled("lg-143-pp-unhandled", Log.WARN) {
+            "corner-override: pathProvider unhandled class=${pp.javaClass.name} — corner fields will NOT reach path path=$pathTag"
+        }
+    }
+
+    /** [doc/spec/143 缺口 B] NBV 宿主登记：覆盖写穿时把 desired 记到宿主 View，setRadius hookAfter 据此重放。 */
+    private fun registerNbvCornerOverride(view: View, desired: Float) {
+        if (view.javaClass.name != CLASS_NOTIFICATION_BACKGROUND_VIEW) return
+        synchronized(nbvRadiusLock) {
+            nbvOverrideDesired[view] = desired
+        }
+    }
+
+    /** [doc/spec/143 缺口 B] hook NotificationBackgroundView.setRadius(float,float,boolean)：
+     *  hookBefore 捕系统最近意图作影子；hookAfter 覆盖生效期重放为覆盖值（系统在展开动画/语义变化时
+     *  反复调 setRadius，一次性写必被冲——重放语义）。重放内层再进 hookAfter 被 reentry 旗挡住，
+     *  环路深度 2 有界；重放 proceed → mExt.updateRadius → applyBlurConfig → Layer B hookBefore
+     *  重写 desired（幂等），无拉锯。 */
+    private fun mountNotificationBackgroundRadius(api: XposedInterface, classLoader: ClassLoader) {
+        if (nbvRadiusMounted) return
+        try {
+            val clazz = hostForName(CLASS_NOTIFICATION_BACKGROUND_VIEW, classLoader)
+            val method = clazz.getMethod(
+                METHOD_SET_RADIUS,
+                Float::class.javaPrimitiveType,
+                Float::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+            )
+            val radiiField = clazz.getField(FIELD_NBV_CORNER_RADII)
+            mNbvCornerRadiiField = radiiField
+            mNbvSetRadiusMethod = method
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    try {
+                        // 影子只捕系统意图：重放内层（reentry=true）是我们的覆盖值，捕了会把还原依据冲掉
+                        if (nbvRadiusReentry.get() != true) {
+                            val v0 = chain.getThisObject() as? View
+                            if (v0 != null) {
+                                val top = chain.getArg(0) as? Float
+                                val bottom = chain.getArg(1) as? Float
+                                if (top != null && bottom != null) {
+                                    synchronized(nbvRadiusLock) { nbvRadiusShadow[v0] = floatArrayOf(top, bottom) }
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        // 影子失败不挡系统路径
+                    }
+                    val result = chain.proceed()
+                    try {
+                        if (nbvRadiusReentry.get() != true) {
+                            val v = chain.getThisObject() as? View
+                            val desired = v?.let { w -> synchronized(nbvRadiusLock) { nbvOverrideDesired[w] } }
+                            if (desired != null) {
+                                val bottomFlag = try {
+                                    chain.getArg(2) as? Boolean ?: true
+                                } catch (t: Throwable) {
+                                    true
+                                }
+                                nbvRadiusReentry.set(true)
+                                try {
+                                    mNbvSetRadiusMethod?.invoke(v, desired, desired, bottomFlag)
+                                } finally {
+                                    nbvRadiusReentry.set(false)
+                                }
+                                logThrottled("lg-143-nbv-replay", Log.INFO) {
+                                    "corner-override: NBV setRadius replay -> $desired"
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "corner-override: NBV setRadius replay failed ${t.javaClass.simpleName}")
+                    }
+                    result
+                }
+            nbvRadiusMounted = true
+            Lg.i(TAG, "Corner NBV setRadius replay mounted: $CLASS_NOTIFICATION_BACKGROUND_VIEW#$METHOD_SET_RADIUS(float,float,boolean)")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "Corner NBV setRadius replay mount FAILED: $CLASS_NOTIFICATION_BACKGROUND_VIEW#$METHOD_SET_RADIUS", t)
+        }
+    }
+
+    /** [doc/spec/143 缺口 B] 覆盖删除/总开关关时还原 NBV 白底：注销重放登记并回写系统最近意图。 */
+    private fun unregisterNbvCornerOverride(vbp: Any) {
+        val hostView = try {
+            mViewBlurProxyViewField?.get(vbp) as? View
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        restoreNbvRadiusForView(hostView)
+    }
+
+    /** [doc/spec/143 缺口 B] 单 View 还原：注销重放登记并回写系统最近意图（无登记 = 零动作）。 */
+    private fun restoreNbvRadiusForView(hostView: View) {
+        if (hostView.javaClass.name != CLASS_NOTIFICATION_BACKGROUND_VIEW) return
+        val original = synchronized(nbvRadiusLock) {
+            nbvOverrideDesired.remove(hostView)
+            nbvRadiusShadow.remove(hostView)
+        }
+        if (original != null) {
+            try {
+                mNbvSetRadiusMethod?.invoke(hostView, original[0], original[1], original[1] != 0f)
+                logThrottled("lg-143-nbv-restore", Log.INFO) {
+                    "corner-override: NBV radius restored -> (${original[0]}, ${original[1]})"
+                }
+            } catch (t: Throwable) {
+                Lg.w(TAG, "corner-override: NBV radius restore failed ${t.javaClass.simpleName}")
+            }
         }
     }
 
@@ -4434,6 +4670,29 @@ object BlurDrawHook {
                 restoreUnifiedCornerProviders()
                 unifiedProviderShadow.clear()
             }
+        }
+        if (mBaseRoundRectPathProviderClass?.isInstance(pp) == true) {
+            // BaseRoundRectPathProvider 族：影子走 getCornerRadii()/getWeight()（基类 final，全子类通用）
+            val getRadii = mBaseRoundRectGetCornerRadii
+            if (getRadii == null) return false
+            val radii = try {
+                (getRadii.invoke(pp) as? FloatArray)?.clone()
+            } catch (t: Throwable) {
+                null
+            }
+            if (radii == null || radii.isEmpty()) return false
+            unifiedProviderShadow[pk] = UnifiedProviderShadow(
+                providerRef = WeakReference(pp),
+                cornerRadius = 0f,
+                radii = radii,
+                weight = try {
+                    mBaseRoundRectGetWeight?.invoke(pp) as? Float
+                } catch (t: Throwable) {
+                    null
+                },
+                viaBaseRoundRect = true,
+            )
+            return true
         }
         if (mRoundRectOutlineProviderUpdate == null) return false // 写口未解析 → 不登记（登记了也写不了）
         val radii = try {
@@ -4535,6 +4794,9 @@ object BlurDrawHook {
         // [doc/spec/143] 覆盖影子随全量还原一并作废，否则快判缓存恒命中 → 永久错位
         overrideShadowActive = false
         overrideCornerWritten.clear()
+        // [doc/spec/143 缺口 B] NBV 重放登记随全量还原一并回写系统意图
+        val nbvViews = synchronized(nbvRadiusLock) { nbvOverrideDesired.keys.toList() }
+        for (v in nbvViews) restoreNbvRadiusForView(v)
         logThrottled("lg-ucorner-restore", Log.INFO) {
             "unified-corner: switch OFF, restored $restoredConfigs BlurConfig + $restoredProviders pathProvider" +
                 " to system originals (failed cfg=$failedConfigs) caller=$caller (spec/108 m5)"
@@ -4554,6 +4816,25 @@ object BlurDrawHook {
         val fld = mRoundRectOutlineProviderCornerRadiusField
         for ((pk, ph) in unifiedProviderShadow) {
             val pp = ph.providerRef.get() ?: continue
+            if (ph.viaBaseRoundRect) {
+                // BaseRoundRect 族：还原走基类 final setCornerRadii(float[])。weight 我们从不修改 → 不回写。
+                // path 重建由调用方后续 applyBlurConfigAndInvalidate → invalidatePath 兜（OFF 边沿每 config 都跑）。
+                val setter = mBaseRoundRectSetCornerRadiiArray
+                if (setter == null) {
+                    failed++
+                    continue
+                }
+                try {
+                    setter.invoke(pp, ph.radii)
+                    restored++
+                } catch (t: Throwable) {
+                    failed++
+                    logThrottled("lg-ucorner-restore-pp", Log.WARN) {
+                        "unified-corner: restore base-round provider failed key=$pk ${t.javaClass.simpleName}"
+                    }
+                }
+                continue
+            }
             if (upd == null || fld == null) {
                 failed++
                 continue
@@ -4604,6 +4885,13 @@ object BlurDrawHook {
             mBlurConfigSetLeftBottomCornerRadius = null
             mBlurConfigSetRightBottomCornerRadius = null
             mBlurConfigCornerRadiusField = null
+        }
+        try {
+            // [doc/spec/143 件1] 三分支诊断读口：getEnableStaticBlurCorner（独立 try：失败只打 ? 不影响写口）
+            mBlurConfigGetEnableStaticBlurCorner = Class.forName(CLASS_BLUR_CONFIG, false, classLoader)
+                .getMethod("getEnableStaticBlurCorner")
+        } catch (t: Throwable) {
+            mBlurConfigGetEnableStaticBlurCorner = null
         }
         try {
             // [spec/114] 写口同走 根包 → params 子包 → GradientStrokeCornerParams 三级候选链（与读口级 4 同类同名）

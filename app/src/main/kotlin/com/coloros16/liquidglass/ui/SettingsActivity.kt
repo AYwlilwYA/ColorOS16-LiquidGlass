@@ -1910,9 +1910,21 @@ class SettingsActivity : AppCompatActivity() {
         if (framework != null) {
             Lg.i(TAG, "write $key=$value -> framework prefs")
             framework.edit().putBoolean(key, value).apply()
+            // 写后回读校验：写≠读 = 落空（存储被重置 / binder 单向死亡），从此可见
+            try {
+                val readback = framework.getBoolean(key, !value)
+                if (readback == value) {
+                    Lg.i(TAG, "verify $key readback=$readback ok")
+                } else {
+                    Lg.w(TAG, "verify $key MISMATCH wrote=$value readback=$readback (write did not land)")
+                }
+            } catch (t: Throwable) {
+                Lg.w(TAG, "verify $key readback failed ${t.javaClass.simpleName}")
+            }
             return
         }
         Lg.w(TAG, "framework service not ready yet, queue write $key=$value")
+        if (App.serviceLost) showServiceLostNotice()
         val pending = object : App.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
                 if (service != null) {
