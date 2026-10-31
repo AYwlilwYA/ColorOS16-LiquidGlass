@@ -118,6 +118,9 @@ object AppGlassWorkbench {
         mainHandler.postDelayed(tickRunnable, SWITCH_TTL_MS)
     }
 
+    /** 工作台覆盖层根 View（代理扫描时排除自身 UI 用；未挂载 = null）。 */
+    fun layerView(): View? = rootLayer
+
     private fun mountActivityResumeHook(api: XposedInterface) {
         if (hooksMounted) return
         hooksMounted = true

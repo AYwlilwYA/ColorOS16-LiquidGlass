@@ -26,6 +26,10 @@ object HookEngine {
     class MountRequest(
         val spec: HookSpec,
         val effect: HookEffect,
+        /** 预解析方法直挂（动态参数类 Matcher 解析不了的场景）；null = 走 Matcher 按 match 解析。 */
+        val resolvedMethod: java.lang.reflect.Method? = null,
+        /** 挂载期副作用钩子（如挂载时解析私有字段）；抛异常 = 挂载失败走 failedLog。 */
+        val resolveHook: ((ClassLoader) -> Unit)? = null,
         val precondition: (() -> Boolean)? = null,
         val preconditionWarn: String? = null,
         val mountedLog: String,
@@ -52,7 +56,8 @@ object HookEngine {
             return
         }
         try {
-            val method = Matcher.resolveMethod(classLoader, spec.match)
+            request.resolveHook?.invoke(classLoader)
+            val method = request.resolvedMethod ?: Matcher.resolveMethod(classLoader, spec.match)
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->

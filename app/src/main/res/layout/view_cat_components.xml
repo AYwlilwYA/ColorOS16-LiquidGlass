@@ -169,6 +169,32 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- 悬浮球权限引导（无权限时点击跳系统授权页） -->
+        <LinearLayout
+            android:id="@+id/rowGlassBallPermission"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="?attr/selectableItemBackground"
+            android:orientation="vertical"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_glass_ball_permission"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/textGlassBallPermissionStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+        </LinearLayout>
+
         <!-- 相册背景采样范围探针（实验，默认关） -->
         <Switch
             android:id="@+id/switchGalleryShaderProbe"

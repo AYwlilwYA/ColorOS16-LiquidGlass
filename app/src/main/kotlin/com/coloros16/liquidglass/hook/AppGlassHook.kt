@@ -8,7 +8,6 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewTreeObserver
 import com.coloros16.liquidglass.config.Prefs
-import com.coloros16.liquidglass.debug.AppGlassWorkbench
 import com.coloros16.liquidglass.entry.XposedEntry
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.log.Lg
@@ -177,7 +176,7 @@ object AppGlassHook {
         }
         PageGlassEngine.install(api, classLoader, packageName)
         try {
-            AppGlassWorkbench.ensureStarted(api, packageName)
+            AppGlassAgent.ensureStarted(api, packageName)
         } catch (_: Throwable) {
         }
     }

@@ -32,6 +32,9 @@ import com.coloros16.liquidglass.debug.DebugElement
 import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.hook.spec.HookSpec
+import com.coloros16.liquidglass.hook.spec.ProbeRegistry
+import com.coloros16.liquidglass.hook.spec.RestoreEngine
+import com.coloros16.liquidglass.hook.spec.SuppressPolicy
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
@@ -122,7 +125,8 @@ object BlurDrawHook {
     //   DrawableShader.getMetaBallParams()                          —— public final，DrawableShader:135
     //   MetaBallParams.getValid()/getMode()/getIndex()/getBallNParams() —— public，MetaBallParams:497-525
     //   MetaBallParams.BallParams.getPosX()…getBlendShape()          —— public，MetaBallParams:107-…
-    private const val CLASS_META_BALL_DRAWABLE = "com.oplus.posteffect.drawable.MetaBallBlurDrawable"
+    internal const val CLASS_META_BALL_DRAWABLE = "com.oplus.posteffect.drawable.MetaBallBlurDrawable"
+    internal const val METHOD_SET_META_COLOR = "setMetaColor"
     private const val METHOD_MB_GET_META_BALL_PARAMS = "getMetaBallParams"
     private const val METHOD_MB_GET_VALID = "getValid"
     private const val METHOD_MB_GET_MODE = "getMode"
@@ -156,7 +160,7 @@ object BlurDrawHook {
     // strokeShaderProxy != null 时 draw() 不回调 super.draw → AutoBlurDrawable.draw hook 不触发
     // → 无映射回退系统模糊（真机"部分 tile 磨砂"根因）。需单独 hook 其 draw 建立映射。
     private const val CLASS_LIGHT_STYLE_STROKE_DRAWABLE = "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable"
-    private const val CLASS_VIEW_BLUR_PROXY = "com.oplusos.systemui.common.blurability.ViewBlurProxy"
+    internal const val CLASS_VIEW_BLUR_PROXY = "com.oplusos.systemui.common.blurability.ViewBlurProxy"
     internal const val CLASS_PLATFORM_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable"
     // [spec/61 2026-08-23] 系统控制中心模糊力度调整 + 阻止缩小（CLASS_BLUR_CONFIG 已有，见任务 D 常量区）
     private const val CLASS_NOTIFI_QS_PLATFORM_BLUR_KT = "com.oplusos.systemui.common.util.NotifiAndQsPlatformBlurExKt"
@@ -185,8 +189,8 @@ object BlurDrawHook {
     //   （new MixColorTileDrawable(new AutoBlurDrawable(viewBlurProxy, null), ...) line 383），其 draw() 稳态
     //   条件跳过 super.draw → 内层 AutoBlurDrawable.draw 不触发 → 192x192 圆开关 BlurDrawable 恒 map miss。
     private const val CLASS_MASK_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.drawable.MaskBlurDrawable"
-    private const val CLASS_MIX_COLOR_TILE_DRAWABLE = "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable"
-    private const val CLASS_NOTIF_HEADER_MASK = "com.oplus.systemui.statusbar.notification.stack.NotificationChildrenContainerExtImp\$NotificationHeaderMaskColorDrawable"
+    internal const val CLASS_MIX_COLOR_TILE_DRAWABLE = "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable"
+    internal const val CLASS_NOTIF_HEADER_MASK = "com.oplus.systemui.statusbar.notification.stack.NotificationChildrenContainerExtImp\$NotificationHeaderMaskColorDrawable"
     private const val METHOD_GET_DRAWABLE = "getDrawable"
 
     // ---- 通知卡片专属映射 hook（C1）：NotificationBackgroundViewExtImp.draw(Canvas, Drawable) ----
@@ -526,14 +530,14 @@ object BlurDrawHook {
     private const val CLASS_VIEW_BLUR_TYPE = "com.oplusos.systemui.common.blurability.ViewBlurProxy\$BlurType"
     private const val CLASS_BLUR_TYPE_MOTION = "com.oplusos.systemui.common.blurability.ViewBlurProxy\$BlurType\$BlurTypeMotion"
     private const val CLASS_BLUR_TYPE_PLATFORM_STATIC = "com.oplusos.systemui.common.blurability.ViewBlurProxy\$BlurType\$BlurTypePlatformStatic"
-    private const val METHOD_SET_BLUR_TYPE = "setBlurType"
+    internal const val METHOD_SET_BLUR_TYPE = "setBlurType"
     /** [spec/19 修复 2026-08-13] 纯白根因绕过：HeadsUpContainerWindow.isHeadsUpView(View)。
      *  ViewBlurManager.requireBlurProxyForView 的 excludeRules = `headsUpWindow.isHeadsUpView(view)`
      *  （实证 ViewBlurManager.java:1286）——强制 PlatformStatic 后 PlatformBlurHelper.ensureBlurDrawable
      *  因此拒绝创建 PlatformBlurDrawable → getBlurDrawable 返回原 mBackground（#fffafafa 近白）→ 纯白。
      *  本 hook 对"正在玻璃化的 heads-up bgView"单独放行（返回 false），仅持续到 drawable 创建确认。 */
-    private const val CLASS_HEADS_UP_CONTAINER_WINDOW = "com.oplus.systemui.notification.headsup.windowframe.HeadsUpContainerWindow"
-    private const val METHOD_IS_HEADS_UP_VIEW = "isHeadsUpView"
+    internal const val CLASS_HEADS_UP_CONTAINER_WINDOW = "com.oplus.systemui.notification.headsup.windowframe.HeadsUpContainerWindow"
+    internal const val METHOD_IS_HEADS_UP_VIEW = "isHeadsUpView"
     /** [spec/19] heads-up 窗口类型 = TYPE_STATUS_BAR_SUB_PANEL（HeadsUpContainerWindow lp type，反编译实证） */
     private const val WINDOW_TYPE_HEADS_UP = 2017
     // ---- [2026-08-15 轻打扰折叠横幅玻璃化] Simple Banner 管线（独立于普通 heads-up）----
@@ -1211,12 +1215,9 @@ object BlurDrawHook {
     // ---- [spec/19] heads-up 窗口根 SurfaceControl 缓存（与 shadeSfcCache 分开解析，防误当 shade）----
     @Volatile
     private var headsUpSfcCache: SurfaceControl? = null
-    /** [spec/19 修复 2026-08-13] 正在强制玻璃化的 heads-up NotificationBackgroundView（WeakReference）。
-     *  setBlurType 强制 PlatformStatic 时登记；对应 view 的 isHeadsUpView 被 [mountHeadsUpContainerIsHeadsUpView]
-     *  scoped 放行（返回 false）→ PlatformBlurHelper.ensureBlurDrawable 不再因 excludeRules 拒绝创建
-     *  PlatformBlurDrawable。drawable 创建确认（recordNotificationCardRegion 命中）后清除；GC 自动失效。 */
-    @Volatile
-    private var headsUpGlassForceView: WeakReference<View>? = null
+    /** headsup 强制玻璃化探针组名与 ttl（ProbeRegistry；ttl 与 spec 条目 headsup.forcePlatformStatic 对齐）。 */
+    internal const val HEADSUP_PROBE_GROUP = "headsup_glass"
+    internal const val HEADSUP_PROBE_TTL_MS = 5000L
 
     // ---- [spec/51 2026-08-13] 通知（heads-up）首帧主线程抓屏 + 连抓 5~6 帧 + 持续期间兜底抓屏 ----
     /** 当前活跃 heads-up 通知背景 View（WeakReference 防泄漏）。通知出现时登记；消失（detach /
@@ -2682,8 +2683,9 @@ object BlurDrawHook {
             return
         }
         resolveMethods(classLoader)
-        // 引擎挂载：映射/scrim/通知卡材质抑制/主渲染/兜底（原 5 个 mount 迁为 HookSpec，相对顺序不变）
+        // 引擎挂载：映射/scrim/通知卡材质抑制/主渲染/兜底 + tile/header/metaColor/headsup 探针（迁为 HookSpec）
         HookEngine.mountAll(api, classLoader, buildEngineRequests())
+        RestoreEngine.start(ConfigStore.loadDefault())
         // [spec/48 过渡修复 2026-08-13] hook ScrimView.setViewAlpha 捕获 behind_scrim 真实动画 alpha
         //（AutoBlurDrawable.setAlpha 空实现恒 255 → 原黑 tint 读 drawable.alpha 永远=1 无过渡）。
         mountScrimViewAlpha(api, classLoader)
@@ -2692,9 +2694,6 @@ object BlurDrawHook {
         mountCapsuleBackground(api, classLoader)
         mountCapsuleEar(api, classLoader)
         mountMediaCarousel(api, classLoader)
-        mountNotifHeaderMaskColor(api, classLoader)
-        mountMetaColorSuppress(api, classLoader)
-        mountMixColorTileRegion(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountAddBlurDrawable(api, classLoader)
         // [spec/114] 16.00.14 旧架构：无 onDrawContent → 挂 drawBlur 作等价兜底（现役直接返回）
@@ -2715,11 +2714,6 @@ object BlurDrawHook {
         // [doc/spec/112 通知卡倾斜] 驱动事件源：heads-up 弹出/收回 + shade 插入（手指不参与）。
         // 独立 try-catch（函数体内三段各自兜底）：挂失败只禁用倾斜，不影响主渲染。
         mountNotificationTilt(api, classLoader)
-        // [spec/19 Heads-Up 玻璃化] hook ViewBlurProxy.setBlurType：heads-up 背景 Motion → PlatformStatic
-        mountViewBlurProxySetBlurType(api, classLoader)
-        // [spec/19 修复 2026-08-13] 纯白根因：系统 excludeRules = headsUpWindow.isHeadsUpView(view) 阻止
-        // PlatformBlurHelper 创建 PlatformBlurDrawable。scoped 放行（仅强制玻璃化的 bgView 返回 false）。
-        mountHeadsUpContainerIsHeadsUpView(api, classLoader)
         // [spec/44 流体云玻璃化] hook Seedling 宿主容器 dispatchDraw 注入玻璃（SeedlingPlugin 插件渲染，
         // 不走 posteffect）。
         // [2026-09-16 恢复] 原 2026-08-15 停用，理由是"展开大卡片不在本容器"——那条**仍然成立**
@@ -2866,6 +2860,50 @@ object BlurDrawHook {
                 effect = EffectGlassFallback,
                 mountedLog = "Hook B mounted: $CLASS_BASE_DRAWABLE#$METHOD_ON_DRAW_CONTENT(Canvas)",
                 failedLog = "Hook B mount FAILED: $CLASS_BASE_DRAWABLE#$METHOD_ON_DRAW_CONTENT",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("cc.tileRegionAndMaskSkip"),
+                effect = EffectTileRegionSuppress,
+                precondition = {
+                    mTileWrapperGetDrawable != null && mAutoGetViewBlurProxy != null &&
+                        mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B MixColorTileDrawable methods unresolved, tile map fallback disabled",
+                mountedLog = "Hook B mounted: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW(Canvas) (tile map fallback + mask layer skip)",
+                failedLog = "Hook B mount FAILED: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW",
+                registerClass = CLASS_MIX_COLOR_TILE_DRAWABLE,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("notif.headerMask"),
+                effect = EffectHeaderMaskSuppress,
+                resolveHook = { cl -> resolveHeaderMaskInner(cl) },
+                mountedLog = "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)",
+                failedLog = "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("notif.metaColorSuppress"),
+                effect = EffectMetaColorSuppress,
+                mountedLog = "Hook B mounted: MetaBallBlurDrawable#setMetaColor(int) (gradient overlay suppress)",
+                failedLog = "Hook B mount FAILED: MetaBallBlurDrawable#setMetaColor (gradient layer keeps)",
+                registerClass = CLASS_META_BALL_DRAWABLE,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("headsup.forcePlatformStatic"),
+                effect = EffectForcePlatformStatic,
+                resolvedMethod = mViewProxySetBlurType,
+                precondition = {
+                    mViewProxySetBlurType != null && mBlurTypeMotionInstance != null &&
+                        mBlurTypePlatformStaticInstance != null && mNotifBackgroundViewClass != null
+                },
+                preconditionWarn = "headsUp: setBlurType reflection unresolved, skip",
+                mountedLog = "Hook B mounted: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE(BlurType) (heads-up Motion -> PlatformStatic)",
+                failedLog = "Hook B mount FAILED: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("headsup.bypassIsHeadsUpView"),
+                effect = EffectBypassIsHeadsUpView,
+                mountedLog = "Hook B mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW(View) (heads-up glass exclude bypass)",
+                failedLog = "Hook B mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW",
             ),
         )
     }
@@ -5059,43 +5097,23 @@ object BlurDrawHook {
         }
     }
 
-    /**
-     * [任务 3] 普通 1x1 tile 映射兜底 hook：MixColorTileDrawable.draw(Canvas)。
-     * 逆向实证见 recordMixColorTileRegion。该 wrapper 稳态可能跳过内层 AutoBlurDrawable.draw →
-     * 取出内层 AutoBlurDrawable 强制注册。始终 proceed（不拦截绘制），失败只影响该 tile 映射
-     * （回退系统模糊），不崩。
-     */
-    private fun mountMixColorTileRegion(api: XposedInterface, classLoader: ClassLoader) {
-        if (mTileWrapperGetDrawable == null || mAutoGetViewBlurProxy == null ||
-            mViewProxyGetView == null || mViewProxyGetBlurDrawable == null
-        ) {
-            Lg.w(TAG, "Hook B MixColorTileDrawable methods unresolved, tile map fallback disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_MIX_COLOR_TILE_DRAWABLE, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordMixColorTileRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "MixColorTileDrawable.draw: intercept error", t)
-                    }
-                    // [任务 T] 移除玻璃之上的 maskColor 磨砂覆盖层（仅 z=true 时干预；失败回退原始含磨砂）
-                    var handled = false
-                    try {
-                        handled = skipTileMaskColorLayer(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "MixColorTileDrawable.draw: skipTileMaskColorLayer error", t)
-                    }
-                    if (!handled) chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW(Canvas) (tile map fallback + mask layer skip)")
-            GlassRegistry.registerClass(CLASS_MIX_COLOR_TILE_DRAWABLE)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MIX_COLOR_TILE_DRAWABLE#$METHOD_DRAW", t)
+    /** MixColorTileDrawable.draw：tile 映射 + maskColor 覆盖层跳过（原 mount 迁为 spec 条目 cc.tileRegionAndMaskSkip）。 */
+    private object EffectTileRegionSuppress : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordMixColorTileRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "MixColorTileDrawable.draw: intercept error", t)
+            }
+            // [任务 T] 移除玻璃之上的 maskColor 磨砂覆盖层（仅 z=true 时干预；失败回退原始含磨砂）
+            var handled = false
+            try {
+                handled = skipTileMaskColorLayer(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "MixColorTileDrawable.draw: skipTileMaskColorLayer error", t)
+            }
+            if (!handled) return chain.proceed()
+            return null
         }
     }
 
@@ -5337,37 +5355,24 @@ object BlurDrawHook {
         }
     }
 
-    /**
-     * [折叠组头磨砂 2026-08-12] hook NotificationHeaderMaskColorDrawable.draw(Canvas)，跳过 maskColor 色层。
-     *
-     * 逆向实证（c16.1 NotificationChildrenContainerExtImp.java line 82-98）：折叠组头背景 =
-     * NotificationHeaderMaskColorDrawable，draw() 画完内层 drawable 后 **动态叠加 maskColor 色层**
-     * （`int v = maskColor.invoke(); canvas.drawColor(v)`，line 93-97）。折叠组展开动画时 maskColor
-     * 非 0 → 整组头覆盖半透明磨砂，动画后归 0 → 变清晰（与用户观察"盖一层半透明磨砂，过会儿变清晰"吻合）。
-     *
-     * 拦截策略：不 proceed，手动 inner.draw（内层 drawable，玻璃/材质底座）跳过 maskColor 色层。
-     * 内层反射 this.drawable 私有字段。失败 → proceed 原样（含磨砂），强兜底不崩。
-     */
-    private fun mountNotifHeaderMaskColor(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName(CLASS_NOTIF_HEADER_MASK, false, classLoader)
-            mHeaderMaskInner = clazz.getDeclaredField("drawable").apply { isAccessible = true }
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        if (!skipHeaderMaskColor(chain)) {
-                            chain.proceed()
-                        }
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "header-mask: intercept error", t)
-                        chain.proceed()
-                    }
+    /** 挂载期解析折叠组头内层 drawable 私有字段（spec 条目 notif.headerMask 的 resolveHook）。 */
+    private fun resolveHeaderMaskInner(classLoader: ClassLoader) {
+        val clazz = Class.forName(CLASS_NOTIF_HEADER_MASK, false, classLoader)
+        mHeaderMaskInner = clazz.getDeclaredField("drawable").apply { isAccessible = true }
+    }
+
+    /** NotificationHeaderMaskColorDrawable.draw：跳过 maskColor 色层（原 mount 迁为 spec 条目 notif.headerMask）。 */
+    private object EffectHeaderMaskSuppress : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                if (!skipHeaderMaskColor(chain)) {
+                    chain.proceed()
                 }
-            Lg.i(TAG, "Hook B mounted: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW(Canvas) (fold-group maskColor skip)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_NOTIF_HEADER_MASK#$METHOD_DRAW (fold-group keeps mask layer)", t)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "header-mask: intercept error", t)
+                chain.proceed()
+            }
+            return null
         }
     }
 
@@ -5401,30 +5406,11 @@ object BlurDrawHook {
         }
     }
 
-    /**
-     * [MetaBall gradient 色层 2026-08-12] hook MetaBallBlurDrawable#setMetaColor(int)，跳过。
-     *
-     * 逆向实证（c16.1 MetaBallBlurDrawable.java line 416-417 + PlatformBlurDrawable.java line 275-283）：
-     * PlatformBlurDrawable.setOverlayColor → MetaBallBlurDrawable.setMetaColor(i) → setGradientColors(TOP_BOTTOM,[i])
-     * → 写 shader uniform（setMetaBallGradientColorUniform）。这是**shader 内色层**，绕开所有独立
-     * drawable.draw 的 hook 点。点击/展开卡片时系统走 OverlayColor 叠加 gradient 色罩，动画后恢复
-     * config → 色层清除（"盖一层半透明磨砂、过会儿变清晰"吻合）。8 个独立 drawable 候选已全排除，
-     * 这是 shader 内唯一未试的色层。失败 → 不挂，不影响其它。
-     */
-    private fun mountMetaColorSuppress(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("com.oplus.posteffect.drawable.MetaBallBlurDrawable", false, classLoader)
-            val method = clazz.getMethod("setMetaColor", Int::class.javaPrimitiveType)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    Lg.i(TAG, "meta-color: skip setMetaColor (gradient overlay suppress)")
-                    null
-                }
-            Lg.i(TAG, "Hook B mounted: MetaBallBlurDrawable#setMetaColor(int) (gradient overlay suppress)")
-            GlassRegistry.registerClass("com.oplus.posteffect.drawable.MetaBallBlurDrawable")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: MetaBallBlurDrawable#setMetaColor (gradient layer keeps)", t)
+    /** MetaBallBlurDrawable#setMetaColor：shader 内 gradient 色层吞掉（原 mount 迁为 spec 条目 notif.metaColorSuppress）。 */
+    private object EffectMetaColorSuppress : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            Lg.i(TAG, "meta-color: skip setMetaColor (gradient overlay suppress)")
+            return null
         }
     }
 
@@ -6126,41 +6112,13 @@ object BlurDrawHook {
                 Lg.e(TAG, "fuzzy: read materialColorManager holder failed", t); null
             }
         } else vbm
-        // [修3] clickAlpha（点击暗层 clickEffectDrawable alpha，点击动画后归 0）+ stackedNotificationMuskColor
-        // （折叠/堆叠动画 oplusColorBg 色层，progress→0 后消失）——置 0 拦截，finally 恢复。独立于 vbm。
-        val origClick = try { mExtImpClickAlpha?.getInt(extImp) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: read clickAlpha failed", t); null }
-        val origStack = try { mExtImpStackedMuskColor?.getInt(extImp) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: read stackedNotificationMuskColor failed", t); null }
-        if (origClick != null && origClick != 0) {
-            try { mExtImpClickAlpha?.setInt(extImp, 0) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: clear clickAlpha failed", t) }
-        }
-        if (origStack != null && origStack != 0) {
-            try { mExtImpStackedMuskColor?.setInt(extImp, 0) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: clear stackedNotificationMuskColor failed", t) }
-        }
-        val original = try {
-            mViewBlurManagerMaterialColor?.getInt(colorHost)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "fuzzy: read currentMaterialColor failed", t); null
-        }
-        if (original != null && original != 0) {
-            try {
-                mViewBlurManagerMaterialColor?.setInt(colorHost, 0)
-            } catch (t: Throwable) {
-                Lg.e(TAG, "fuzzy: clear currentMaterialColor failed", t)
-            }
-        }
-        try {
-            chain.proceed()
-        } finally {
-            if (original != null) {
-                try { mViewBlurManagerMaterialColor?.setInt(colorHost, original) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore currentMaterialColor failed", t) }
-            }
-            if (origClick != null) {
-                try { mExtImpClickAlpha?.setInt(extImp, origClick) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore clickAlpha failed", t) }
-            }
-            if (origStack != null) {
-                try { mExtImpStackedMuskColor?.setInt(extImp, origStack) } catch (t: Throwable) { Lg.e(TAG, "fuzzy: restore stackedNotificationMuskColor failed", t) }
-            }
-        }
+        // [修3] clickAlpha + stackedNotificationMuskColor + currentMaterialColor 三字段抑制（SuppressPolicy 驱动）
+        val bindings = listOfNotNull(
+            mExtImpClickAlpha?.let { SuppressPolicy.FieldBinding("clickAlpha", it, { extImp }) },
+            mExtImpStackedMuskColor?.let { SuppressPolicy.FieldBinding("stackedNotificationMuskColor", it, { extImp }) },
+            mViewBlurManagerMaterialColor?.let { SuppressPolicy.FieldBinding("currentMaterialColor", it, { colorHost }) },
+        )
+        SuppressPolicy.suppressFieldsThenProceed(chain, bindings)
     }
 
     /**
@@ -6175,7 +6133,7 @@ object BlurDrawHook {
         }
     }
 
-    /** [磨砂根因·修 2] 辅助：proceed 前置 blurMaskColor=0（跳过 drawRect 磨砂层），finally 恢复。 */
+    /** [磨砂根因·修 2] 辅助：proceed 前置 blurMaskColor=0（跳过 drawRect 磨砂层），finally 恢复（SuppressPolicy 驱动）。 */
     private fun suppressPlatformBlurMaskColor(chain: XposedInterface.Chain) {
         val pbd = try {
             chain.getThisObject()
@@ -6186,29 +6144,13 @@ object BlurDrawHook {
         if (pbd == null) {
             chain.proceed(); return
         }
-        val original = try {
-            mPlatformBlurMaskColor?.getInt(pbd)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "fuzzy: read blurMaskColor failed", t); null
+        val field = mPlatformBlurMaskColor ?: run {
+            chain.proceed(); return
         }
-        if (original != null && original != 0) {
-            try {
-                mPlatformBlurMaskColor?.setInt(pbd, 0)
-            } catch (t: Throwable) {
-                Lg.e(TAG, "fuzzy: clear blurMaskColor failed", t)
-            }
-        }
-        try {
-            chain.proceed()
-        } finally {
-            if (original != null) {
-                try {
-                    mPlatformBlurMaskColor?.setInt(pbd, original)
-                } catch (t: Throwable) {
-                    Lg.e(TAG, "fuzzy: restore blurMaskColor failed", t)
-                }
-            }
-        }
+        SuppressPolicy.suppressFieldsThenProceed(
+            chain,
+            listOf(SuppressPolicy.FieldBinding("blurMaskColor", field, { pbd })),
+        )
     }
 
     /** getBgView 拿不到时回填宿主戳：取同 extImp 实例最近一次成功读到的 bgView。 */
@@ -6285,12 +6227,9 @@ object BlurDrawHook {
         if (mPlatformGetBlurDrawable == null || !mPlatformGetBlurDrawable!!.declaringClass.isInstance(blurDrawable)) {
             return
         }
-        // [spec/19 修复 2026-08-13] 该 heads-up bgView 的 PlatformBlurDrawable 已确认存在
-        // （getBlurDrawable 返回了 PlatformBlurDrawable）→ 解除 isHeadsUpView 排除绕过，恢复系统原判定。
-        // 仅当本次绘制的 bgView 正是强制玻璃化的那个 view 才清除（防其他卡片绘制误清）。
-        if (headsUpGlassForceView?.get() === bgView) {
-            headsUpGlassForceView = null
-        }
+        // [spec/19 修复] drawable 创建确认 → 解除 isHeadsUpView 排除绕过（仅当本次绘制的 bgView
+        // 正是强制玻璃化的那个才清，防其他卡片绘制误清；ProbeRegistry.clearIfMatch）。
+        ProbeRegistry.clearIfMatch(HEADSUP_PROBE_GROUP, bgView)
         val target = try {
             mPlatformGetBlurDrawable?.invoke(blurDrawable)
         } catch (t: Throwable) {
@@ -7612,108 +7551,68 @@ object BlurDrawHook {
     // ------------------------------------------------------------ [spec/19] Heads-Up 玻璃化：setBlurType 强制 PlatformStatic
 
     /**
-     * [spec/19] hook ViewBlurProxy.setBlurType(BlurType)（单一漏斗，blurForHeadsUp:808 /
-     * NotificationChildrenContainerExtImp:214 全汇聚）。
-     *
-     * 根因（实证）：heads-up 期间系统把背景强制切 BlurTypeMotion → getBlurDrawable() 返回 framework
-     * BackgroundBlurDrawable（surface 级模糊，draw 空实现）→ posteffect drawBlurShader hook 够不到 →
-     * 恒磨砂/无玻璃。hook 在此把 heads-up 背景（NotificationBackgroundView）的 Motion 强制改
-     * PlatformStatic，回到我们管线。
-     *
+     * [spec/19] ViewBlurProxy.setBlurType：heads-up 背景 Motion 强制改 PlatformStatic（原 mount 迁为
+     * spec 条目 headsup.forcePlatformStatic，方法经 resolvedMethod 直挂——blurTypeCls 动态 Matcher 解析不了）。
      * 判定（防误伤）：arg0 引用等于 BlurTypeMotion.INSTANCE 且 this.view 是 NotificationBackgroundView
-     * （heads-up 背景；shade/锁屏走 PlatformStatic/BlendWallpaper → 不命中；FullScreenBackgroundView
-     * extends View 非 NotificationBackgroundView 子类 → 全屏横幅不被误改）。
+     * （shade/锁屏走 PlatformStatic/BlendWallpaper 不命中；FullScreenBackgroundView 非 NBV 子类不被误改）。
      */
-    private fun mountViewBlurProxySetBlurType(api: XposedInterface, classLoader: ClassLoader) {
-        val setBlurType = mViewProxySetBlurType
-        val motion = mBlurTypeMotionInstance
-        val platformStatic = mBlurTypePlatformStaticInstance
-        val notifBg = mNotifBackgroundViewClass
-        if (setBlurType == null || motion == null || platformStatic == null || notifBg == null) {
-            Lg.w(TAG, "headsUp: setBlurType reflection unresolved, skip")
-            return
-        }
-        try {
-            api.hook(setBlurType)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    val arg0 = try {
-                        chain.getArg(0)
-                    } catch (t: Throwable) {
-                        null
-                    }
-                    if (arg0 === motion) {
-                        val proxy = try {
-                            chain.getThisObject()
-                        } catch (t: Throwable) {
-                            null
-                        }
-                        val view = try {
-                            if (proxy != null) mViewProxyGetView?.invoke(proxy) else null
-                        } catch (t: Throwable) {
-                            null
-                        }
-                        // [2026-08-15 轻打扰折叠横幅方案撤销] 曾对 FullScreenBanner 强制 BlurTypePlatformStatic，
-                        // 但真机 logcat 实证：系统 `ensurePlatformStaticBlurDrawable failed`（静态模糊 drawable
-                        // 创建失败）→ 背景丢失变白。**撤销 BlurProxy 替换路线**（恢复系统原 Motion 模糊背景，
-                        // 不碰 BlurProxy）；横幅玻璃改走 mountSimpleBannerGlass（dispatchDraw 画玻璃，方案 B）。
-                        if (proxy != null && view != null && notifBg.isInstance(view)) {
-                            // [spec/19 修复 2026-08-13] 纯白根因：系统 excludeRules =
-                            // `HeadsUpContainerWindow.isHeadsUpView(view)`（ViewBlurManager.requireBlurProxyForView
-                            // :1286 实证）→ PlatformBlurHelper.ensureBlurDrawable 拒绝为 heads-up 创建
-                            // PlatformBlurDrawable → getBlurDrawable 返回原白色 mBackground → 纯白。
-                            // proceed 前登记 scoped 绕过（对应 bgView 的 isHeadsUpView 返回 false），
-                            // 让 setBlurType(PlatformStatic) 内部 ensureBlurDrawable 能创建 drawable。
-                            // drawable 创建确认后（recordNotificationCardRegion）自动清除；GC 兜底。
-                            headsUpGlassForceView = WeakReference(view as View)
-                            val args = chain.getArgs().toTypedArray()
-                            args[0] = platformStatic
-                            logThrottled("headsup-force-platformstatic", Log.INFO) {
-                                "headsUp: force PlatformStatic (was Motion) for ${view.javaClass.simpleName}, exclude bypass armed"
-                            }
-                            return@intercept chain.proceed(args)
-                        }
-                    }
-                    chain.proceed()
+    private object EffectForcePlatformStatic : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val motion = mBlurTypeMotionInstance
+            val platformStatic = mBlurTypePlatformStaticInstance
+            val notifBg = mNotifBackgroundViewClass
+            if (motion == null || platformStatic == null || notifBg == null) {
+                return chain.proceed()
+            }
+            val arg0 = try {
+                chain.getArg(0)
+            } catch (t: Throwable) {
+                null
+            }
+            if (arg0 === motion) {
+                val proxy = try {
+                    chain.getThisObject()
+                } catch (t: Throwable) {
+                    null
                 }
-            Lg.i(TAG, "Hook B mounted: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE(BlurType) (heads-up Motion -> PlatformStatic)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_VIEW_BLUR_PROXY#$METHOD_SET_BLUR_TYPE", t)
+                val view = try {
+                    if (proxy != null) mViewProxyGetView?.invoke(proxy) else null
+                } catch (t: Throwable) {
+                    null
+                }
+                if (proxy != null && view != null && notifBg.isInstance(view)) {
+                    // excludeRules 排除绕过：proceed 前登记 scoped 探针（ProbeRegistry.arm），
+                    // drawable 创建确认（recordNotificationCardRegion）后清除；GC/ttl 兜底。
+                    ProbeRegistry.arm(HEADSUP_PROBE_GROUP, view, HEADSUP_PROBE_TTL_MS)
+                    val args = chain.getArgs().toTypedArray()
+                    args[0] = platformStatic
+                    logThrottled("headsup-force-platformstatic", Log.INFO) {
+                        "headsUp: force PlatformStatic (was Motion) for ${view.javaClass.simpleName}, exclude bypass armed"
+                    }
+                    return chain.proceed(args)
+                }
+            }
+            return chain.proceed()
         }
     }
 
     /**
-     * [spec/19 修复 2026-08-13] hook `HeadsUpContainerWindow.isHeadsUpView(View)`：
-     * 对 [headsUpGlassForceView] 指向的 heads-up NotificationBackgroundView 返回 false（scoped 放行），
-     * 让 `PlatformBlurHelper.ensureBlurDrawable` 的 excludeRules 检查通过，从而创建 PlatformBlurDrawable
-     * （否则 getBlurDrawable 返回原白色 mBackground → 纯白）。
-     *
-     * 作用域安全：只影响「正在强制玻璃化的那个 bgView」实例——isHeadsUpView 的其他消费方
-     * （OplusExpandableNotificationRowExImpl.isHeadsUpView() 传 row、NotificationChildrenContainerExtImp:214
-     * 传 row）传的是 row 而非 bgView，不命中；excludeRules 传的正是 bgView，命中。drawable 创建确认后
-     * [recordNotificationCardRegion] 清除绕过，恢复系统原判定。挂载失败只禁用本修复（回退现状纯白），不崩。
+     * [spec/19 修复] HeadsUpContainerWindow.isHeadsUpView：对 ProbeRegistry 探针命中的
+     * heads-up bgView 返回 false（scoped 放行，原 mount 迁为 spec 条目 headsup.bypassIsHeadsUpView）。
+     * 作用域安全：其他消费方传 row 而非 bgView，不命中；drawable 创建确认后 clearIfMatch 恢复系统原判定。
      */
-    private fun mountHeadsUpContainerIsHeadsUpView(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName(CLASS_HEADS_UP_CONTAINER_WINDOW, false, classLoader)
-            val method = clazz.getMethod(METHOD_IS_HEADS_UP_VIEW, android.view.View::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    val view = try {
-                        chain.getArg(0) as? View
-                    } catch (t: Throwable) {
-                        null
-                    }
-                    if (view != null && headsUpGlassForceView?.get() === view) {
-                        // scoped 放行：excludeRules 视该 bgView 为非 heads-up → 允许创建 PlatformBlurDrawable
-                        return@intercept false
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW(View) (heads-up glass exclude bypass)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW", t)
+    private object EffectBypassIsHeadsUpView : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val view = try {
+                chain.getArg(0) as? View
+            } catch (t: Throwable) {
+                null
+            }
+            if (ProbeRegistry.matches(HEADSUP_PROBE_GROUP, view)) {
+                // scoped 放行：excludeRules 视该 bgView 为非 heads-up → 允许创建 PlatformBlurDrawable
+                return false
+            }
+            return chain.proceed()
         }
     }
 

@@ -23,6 +23,9 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 全局悬浮球（系统最上层 overlay 窗口） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- 包可见性声明（hook 安装分发与设置页读取宿主信息用） -->
     <queries>
         <package android:name="com.android.systemui" />
@@ -49,6 +52,11 @@
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
+
+        <!-- 全局悬浮球宿主服务（球 / 面板 / 标框三窗口） -->
+        <service
+            android:name=".debug.GlobalGlassBallService"
+            android:exported="false" />
 
         <!-- 日志文件分享通道：设置页分享抓取文件（captures/）走 content uri -->
         <provider

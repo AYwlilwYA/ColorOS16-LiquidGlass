@@ -20,6 +20,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewOutlineProvider
@@ -44,6 +45,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.debug.GlobalGlassBall
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.log.Lg
@@ -153,6 +155,9 @@ class SettingsActivity : AppCompatActivity() {
 
         xmlPrefs = Prefs.read(this)
         contentFrame = findViewById(R.id.settings_content)
+
+        // 拉起悬浮球服务（无权限时服务自停；球显隐由「点选元素玻璃」开关驱动）
+        GlobalGlassBall.startFrom(this)
 
         // [spec/88] 状态栏/挖孔避让 + 返回热区几何诊断（根因与实测数据见 doc/spec/88）
         setupWindowInsets(toolbar)
@@ -1366,6 +1371,36 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
         bindGlassSwitch(view, R.id.switchEditToolBtnGlass, Prefs.KEY_EDIT_TOOLBTN_GLASS, Prefs.DEFAULT_EDIT_TOOLBTN_GLASS)
         bindGlassSwitch(view, R.id.switchPopupMenuGlass, Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
+
+        refreshGlassBallPermissionRow(view)
+        view.findViewById<View>(R.id.rowGlassBallPermission).setOnClickListener {
+            if (!Settings.canDrawOverlays(this)) {
+                try {
+                    startActivity(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                    )
+                } catch (t: Throwable) {
+                    Lg.w(TAG, "open overlay settings failed", t)
+                }
+            }
+        }
+    }
+
+    /** 悬浮球权限行状态刷新（授权返回后 onResume 再刷一次）。 */
+    private fun refreshGlassBallPermissionRow(view: View) {
+        val status = view.findViewById<TextView>(R.id.textGlassBallPermissionStatus) ?: return
+        status.text = if (Settings.canDrawOverlays(this)) {
+            getString(R.string.settings_glass_ball_permission_granted)
+        } else {
+            getString(R.string.settings_glass_ball_permission_missing)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (currentCategory == "components") {
+            contentFrame.getChildAt(0)?.let { refreshGlassBallPermissionRow(it) }
+        }
     }
 
     /** 组件级玻璃开关绑定（写 Prefs + 按权威值刷新；hook 端 TTL 500ms 重读，改动即时生效）。 */

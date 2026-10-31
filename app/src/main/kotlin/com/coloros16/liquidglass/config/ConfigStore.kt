@@ -17,6 +17,12 @@ object ConfigStore {
 
     fun loadDefault(): List<HookSpec> = DefaultHooksJson.DEFAULT_HOOK_SPECS
 
+    /** 按 group 过滤出厂表；null = 全量。 */
+    fun load(group: String? = null): List<HookSpec> {
+        val all = DefaultHooksJson.DEFAULT_HOOK_SPECS
+        return if (group == null) all else all.filter { it.group == group }
+    }
+
     /** 解析 JSON 规格数组（"[{...},{...}]"），字段名与 HookSpec 数据类属性同名。 */
     fun parseSpecs(json: String): List<HookSpec> {
         val arr = org.json.JSONArray(json)
