@@ -193,5 +193,82 @@ object DefaultHooksJson {
             channel = ChannelSpec(type = "text", hookPoint = "onDraw"),
             effect = EffectSpec(type = "textOnDrawResample"),
         ),
+        HookSpec(
+            id = "cc.lightStyleStrokeMap",
+            group = SpecGroups.CC,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_LIGHT_STYLE_STROKE_DRAWABLE,
+                methodName = BlurDrawHook.METHOD_DRAW,
+                params = listOf(CANVAS),
+            ),
+            channel = ChannelSpec(type = "background", hookPoint = "draw"),
+            effect = EffectSpec(type = "registerScreenRegion"),
+        ),
+        HookSpec(
+            id = "cc.maskBlurMap",
+            group = SpecGroups.CC,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_MASK_BLUR_DRAWABLE,
+                methodName = BlurDrawHook.METHOD_DRAW,
+                params = listOf(CANVAS),
+            ),
+            channel = ChannelSpec(type = "background", hookPoint = "draw"),
+            effect = EffectSpec(type = "registerSwipeMenuRegion"),
+        ),
+        HookSpec(
+            id = "seedling.capsuleBgMap",
+            group = SpecGroups.SEEDLING,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_CAPSULE_BACKGROUND_HELPER,
+                methodName = BlurDrawHook.METHOD_DRAW_CAPSULE_BG,
+                params = listOf(VIEW, CANVAS),
+            ),
+            channel = ChannelSpec(type = "background", hookPoint = "drawCapsuleBg"),
+            effect = EffectSpec(type = "registerCapsuleBgRegion"),
+        ),
+        HookSpec(
+            id = "seedling.capsuleEarMap",
+            group = SpecGroups.SEEDLING,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_CAPSULE_EAR_VIEW,
+                methodName = BlurDrawHook.METHOD_ON_DRAW,
+                params = listOf(CANVAS),
+            ),
+            channel = ChannelSpec(type = "background", hookPoint = "onDraw"),
+            effect = EffectSpec(type = "registerCapsuleEarRegion"),
+        ),
+        HookSpec(
+            id = "seedling.mediaCarouselMap",
+            group = SpecGroups.SEEDLING,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_MEDIA_CAROUSEL_VIEW,
+                methodName = BlurDrawHook.METHOD_ON_DRAW,
+                params = listOf(CANVAS),
+            ),
+            channel = ChannelSpec(type = "background", hookPoint = "onDraw"),
+            effect = EffectSpec(type = "registerMediaCarouselRegion"),
+        ),
+        HookSpec(
+            id = "volume.panelBackdrop",
+            group = SpecGroups.VOLUME,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_VOLUME_DIALOG_VIEW,
+                methodName = BlurDrawHook.METHOD_EXPAND_PANEL,
+            ),
+            channel = ChannelSpec(type = "after", hookPoint = "expandPanel", order = "after"),
+            effect = EffectSpec(type = "volumePanelBackdrop"),
+        ),
+        HookSpec(
+            id = "seedling.deviceCardAttach",
+            group = SpecGroups.SEEDLING,
+            match = MatchSpec(
+                className = VIEW,
+                methodName = BlurDrawHook.METHOD_ON_ATTACHED_TO_WINDOW,
+                declared = true,
+                accessible = true,
+            ),
+            channel = ChannelSpec(type = "attach", hookPoint = "onAttachedToWindow"),
+            effect = EffectSpec(type = "deviceCardAttachRegister"),
+        ),
     )
 }

@@ -13,11 +13,13 @@ import android.view.View
 import android.view.ViewGroup
 import com.coloros16.liquidglass.config.GlassElementEntry
 import com.coloros16.liquidglass.config.GlassElementRegistry
+import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.debug.ACTION_FREEZE_REQUEST
 import com.coloros16.liquidglass.debug.AppGlassWorkbench
 import com.coloros16.liquidglass.debug.ACTION_FREEZE_RESULT
 import com.coloros16.liquidglass.debug.ACTION_SCAN_REQUEST
 import com.coloros16.liquidglass.debug.ACTION_SCAN_RESULT
+import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
@@ -76,6 +78,8 @@ object AppGlassAgent {
     /** AppGlassHook.install 尾启动：挂 resume 取上下文，Activity 到位后注册广播接收。 */
     fun ensureStarted(api: XposedInterface, packageName: String) {
         Lg.i(TAG, "agent started in $packageName")
+        EngineLog.attach { Prefs.read(api) }
+        EngineLog.log("AppAgent", "started pkg=$packageName")
         hookResume(api)
         tryRegister()
     }
@@ -94,8 +98,10 @@ object AppGlassAgent {
                     val sender = if (Build.VERSION.SDK_INT >= 34) getSentFromPackage() else null
                     if (sender != MODULE_PKG) {
                         Lg.w(TAG, "reject broadcast action=${intent.action} sender=$sender")
+                        EngineLog.log("AppAgent", "reject action=${intent.action} sender=$sender")
                         return
                     }
+                    EngineLog.log("AppAgent", "broadcast action=${intent.action} sender=$sender")
                     when (intent.action) {
                         ACTION_SCAN_REQUEST -> handleScanRequest()
                         ACTION_FREEZE_REQUEST -> handleFreezeRequest(intent)
@@ -142,9 +148,11 @@ object AppGlassAgent {
         val now = SystemClock.uptimeMillis()
         if (now - lastScanAtMs < REQUEST_THROTTLE_MS) {
             Lg.i(TAG, "[scan-throttle] scan request throttled")
+            EngineLog.log("AppAgent", "scan-request throttled")
             return
         }
         lastScanAtMs = now
+        EngineLog.log("AppAgent", "scan-request accepted")
         mainHandler.post {
             val decor = decorOrNull()
             if (decor == null) {
@@ -223,6 +231,7 @@ object AppGlassAgent {
 
     private fun sendScanResult(items: JSONArray, truncated: Int) {
         val ctx = appContext ?: return
+        EngineLog.log("AppAgent", "scan-result items=${items.length()} truncated=$truncated")
         try {
             ctx.sendBroadcast(
                 Intent(ACTION_SCAN_RESULT).setPackage(MODULE_PKG)
@@ -241,9 +250,11 @@ object AppGlassAgent {
         val now = SystemClock.uptimeMillis()
         if (now - lastFreezeAtMs < REQUEST_THROTTLE_MS) {
             Lg.i(TAG, "[freeze-throttle] freeze request throttled")
+            EngineLog.log("AppAgent", "freeze-request throttled")
             return
         }
         lastFreezeAtMs = now
+        EngineLog.log("AppAgent", "freeze-request x=${intent.getIntExtra("x", Int.MIN_VALUE)} y=${intent.getIntExtra("y", Int.MIN_VALUE)}")
         val rawX = intent.getIntExtra("x", Int.MIN_VALUE)
         val rawY = intent.getIntExtra("y", Int.MIN_VALUE)
         if (rawX == Int.MIN_VALUE || rawY == Int.MIN_VALUE) {
@@ -283,6 +294,7 @@ object AppGlassAgent {
                 "element-frozen label=${entry.label} cls=${entry.anchorClassName} " +
                     "mount=${entry.mountType} suppress=${entry.suppressMode}",
             )
+            EngineLog.log("AppAgent", "frozen label=${entry.label} cls=${entry.anchorClassName} mount=${entry.mountType} suppress=${entry.suppressMode}")
         }
     }
 
@@ -366,6 +378,7 @@ object AppGlassAgent {
 
     private fun sendFreezeResult(ok: Boolean, label: String, reason: String) {
         val ctx = appContext ?: return
+        EngineLog.log("AppAgent", "freeze-result ok=$ok label=$label reason=$reason")
         try {
             ctx.sendBroadcast(
                 Intent(ACTION_FREEZE_RESULT).setPackage(MODULE_PKG)

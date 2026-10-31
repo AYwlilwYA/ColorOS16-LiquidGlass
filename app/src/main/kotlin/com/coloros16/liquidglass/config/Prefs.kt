@@ -303,6 +303,10 @@ object Prefs {
     /** 引擎全量日志开关默认值（默认关，防刷屏省电） */
     const val DEFAULT_ENGINE_FULL_LOG = false
 
+    /** 用户 hook 覆盖表（JSON 数组，字段与出厂 HookSpec 同名）：按 id 整条覆盖出厂条目。
+     *  框架侧存储，设置页/工作台写入，install 期 ConfigStore.loadMerged 合并。 */
+    const val KEY_USER_HOOK_SPECS = "user_hook_specs"
+
     // ---------- 调试绘制（悬浮球调试工具） ----------
     /** 调试绘制开关：true=显示悬浮球调试工具（抓取控件/输出区/玻璃清单/UI 树）；默认 false。
      *  hook 端 500ms TTL 重读，≤0.5s 生效，无需重启 SystemUI。 */

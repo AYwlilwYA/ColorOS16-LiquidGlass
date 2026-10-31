@@ -9,6 +9,7 @@ import com.coloros16.liquidglass.hook.spec.GuardSpec
 import com.coloros16.liquidglass.hook.spec.HookSpec
 import com.coloros16.liquidglass.hook.spec.LogSpec
 import com.coloros16.liquidglass.hook.spec.MatchSpec
+import com.coloros16.liquidglass.log.Lg
 import com.coloros16.liquidglass.hook.spec.ProbeSpec
 import com.coloros16.liquidglass.hook.spec.RestoreSpec
 import com.coloros16.liquidglass.hook.spec.SuppressSpec
@@ -16,7 +17,39 @@ import com.coloros16.liquidglass.hook.spec.SuppressSpec
 /** hook 规格装配：出厂预置走 Kotlin 常量表，user 覆盖走 JSON（org.json，数组形与 parseSpecs 同构）。 */
 object ConfigStore {
 
+    private const val TAG = "LiquidGlass"
+
     fun loadDefault(): List<HookSpec> = DefaultHooksJson.DEFAULT_HOOK_SPECS
+
+    /**
+     * 出厂表 + 用户 JSON 覆盖合并（install 期一次）：user 条目按 id **整条替换**出厂条目
+     * （user JSON 需携带完整字段，缺省字段走 parseSpecs 默认值）；user 独有 id 追加。
+     * 读失败 / 空键 → 纯出厂表（零变化）。
+     */
+    fun loadMerged(prefs: android.content.SharedPreferences?): List<HookSpec> {
+        val factory = DefaultHooksJson.DEFAULT_HOOK_SPECS
+        val userJson = try {
+            prefs?.getString(Prefs.KEY_USER_HOOK_SPECS, null)
+        } catch (t: Throwable) {
+            null
+        }
+        if (userJson.isNullOrBlank()) {
+            EngineLog.log("ConfigStore", "loadMerged user-json=none factory=${factory.size}")
+            return factory
+        }
+        val user = try {
+            parseSpecs(userJson)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "user hook specs parse failed, factory only", t)
+            EngineLog.log("ConfigStore", "loadMerged user-json parse-failed ${t.javaClass.simpleName}")
+            return factory
+        }
+        val userById = user.associateBy { it.id }
+        val merged = factory.map { userById[it.id] ?: it } + user.filter { u -> factory.none { it.id == u.id } }
+        EngineLog.log("ConfigStore", "loadMerged factory=${factory.size} user=${user.size} merged=${merged.size}")
+        for (u in user) EngineLog.log("ConfigStore", "user-override id=${u.id} enabled=${u.enabled}")
+        return merged
+    }
 
     /** 按 group 过滤出厂表；null = 全量。 */
     fun load(group: String? = null): List<HookSpec> {

@@ -33,6 +33,8 @@ object HookEngine {
         val resolveHook: ((ClassLoader) -> Unit)? = null,
         val precondition: (() -> Boolean)? = null,
         val preconditionWarn: String? = null,
+        /** 挂载成功后回写宿主幂等标志（原 mount 函数体 mounted=true 语义）。 */
+        val onMounted: (() -> Unit)? = null,
         val mountedLog: String,
         val failedLog: String,
         val registerClass: String? = null,
@@ -79,6 +81,7 @@ object HookEngine {
                 }
             EngineLog.log(spec.id, "mounted ${method.declaringClass.name.substringAfterLast('.')}#${method.name}")
             Lg.i(TAG, request.mountedLog)
+            request.onMounted?.invoke()
             request.registerClass?.let { GlassRegistry.registerClass(it) }
         } catch (t: Throwable) {
             EngineLog.log(spec.id, "mount-failed ${t.javaClass.simpleName}: ${t.message}")

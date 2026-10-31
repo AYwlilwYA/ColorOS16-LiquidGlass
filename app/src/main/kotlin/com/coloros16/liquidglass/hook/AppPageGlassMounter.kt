@@ -17,6 +17,7 @@ import com.coloros16.liquidglass.config.GlassElementEntry
 import com.coloros16.liquidglass.config.GlassElementRegistry
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.entry.XposedEntry
+import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
@@ -124,9 +125,11 @@ object PageGlassEngine {
         compatSwitchKey = COMPAT_SWITCH_KEYS[packageName]
         compatSwitchKey?.let { compatSwitchDefault = COMPAT_SWITCH_DEFAULTS[it] ?: false }
         GlassElementRegistry.attach(api)
+        EngineLog.attach { Prefs.read(api) }
         if (hooksMounted) return
         hooksMounted = true
         Lg.i(TAG, "installing page glass engine into $packageName (compat switch=$compatSwitchKey)")
+        EngineLog.log("PageGlass", "install pkg=$packageName compatSwitch=$compatSwitchKey")
         mountResumeScanHook(api)
         precompileSelfCheck()
         ensureRuntimeHooks()
@@ -362,6 +365,7 @@ object PageGlassEngine {
             }
         }
         Lg.i(TAG, "rescanNow roots=${roots.size} entries=${GlassElementRegistry.load().size}")
+        EngineLog.log("PageGlass", "rescanNow roots=${roots.size} entries=${GlassElementRegistry.load().size}")
     }
 
     private fun scheduleScan(root: View) {
@@ -431,6 +435,7 @@ object PageGlassEngine {
             "scan root=${root.javaClass.simpleName} hits=$hits states=${states.size}",
             10_000L,
         )
+        EngineLog.log("PageGlass", "scan root=${root.javaClass.simpleName} hits=$hits states=${states.size}")
     }
 
     /** 旧形态规则降级：形态像背板但未固化 → 只打节流候选日志，不挂。 */
@@ -492,6 +497,7 @@ object PageGlassEngine {
             Lg.w(TAG, "page preDraw add failed", t)
         }
         Lg.i(TAG, "page element matched [${entry.mountType}] view=${view.javaClass.name} label=${entry.label}")
+        EngineLog.log("PageGlass", "matched [${entry.mountType}] view=${view.javaClass.name} label=${entry.label}")
     }
 
     /** preDraw 同步：开关关 / 条目失配还原；开且尺寸就绪挂载；已挂且 bounds 变重挂。 */
@@ -554,6 +560,7 @@ object PageGlassEngine {
         state.lastW = view.width
         state.lastH = view.height
         AppGlassHook.registerElement(view, view.javaClass.name, state.entry.mountType)
+        EngineLog.log("PageGlass", "applied [${state.entry.mountType}] view=${view.javaClass.name} ${view.width}x${view.height} corner=$corner label=${state.entry.label}")
         if (!state.logged) {
             state.logged = true
             Lg.i(
@@ -595,6 +602,7 @@ object PageGlassEngine {
             "page-restore:${view.javaClass.name}",
             "page glass restored view=${view.javaClass.name} (switch off or entry gone)",
         )
+        EngineLog.log("PageGlass", "restored view=${view.javaClass.name} label=${state.entry.label}")
     }
 
     /** 元素是否已被本引擎施加玻璃（A 族拦截换回与抑制桥共用判定）。 */

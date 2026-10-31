@@ -165,7 +165,7 @@ object BlurDrawHook {
     // [任务 I] 描边 tile 专属：LightStyleStrokeDrawable（extends AutoBlurDrawable）在
     // strokeShaderProxy != null 时 draw() 不回调 super.draw → AutoBlurDrawable.draw hook 不触发
     // → 无映射回退系统模糊（真机"部分 tile 磨砂"根因）。需单独 hook 其 draw 建立映射。
-    private const val CLASS_LIGHT_STYLE_STROKE_DRAWABLE = "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable"
+    internal const val CLASS_LIGHT_STYLE_STROKE_DRAWABLE = "com.oplus.systemui.qs.base.widget.LightStyleStrokeDrawable"
     internal const val CLASS_VIEW_BLUR_PROXY = "com.oplusos.systemui.common.blurability.ViewBlurProxy"
     internal const val CLASS_PLATFORM_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable"
     // [spec/61 2026-08-23] 系统控制中心模糊力度调整 + 阻止缩小（CLASS_BLUR_CONFIG 已有，见任务 D 常量区）
@@ -194,7 +194,7 @@ object BlurDrawHook {
     // 任务 3（16.1 逆向）：1x1 tile mBg 背景 = MixColorTileDrawable（TileDrawableWrapper）包装 AutoBlurDrawable
     //   （new MixColorTileDrawable(new AutoBlurDrawable(viewBlurProxy, null), ...) line 383），其 draw() 稳态
     //   条件跳过 super.draw → 内层 AutoBlurDrawable.draw 不触发 → 192x192 圆开关 BlurDrawable 恒 map miss。
-    private const val CLASS_MASK_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.drawable.MaskBlurDrawable"
+    internal const val CLASS_MASK_BLUR_DRAWABLE = "com.oplusos.systemui.common.blurability.drawable.MaskBlurDrawable"
     internal const val CLASS_MIX_COLOR_TILE_DRAWABLE = "com.oplus.systemui.qs.base.res.drawable.MixColorTileDrawable"
     internal const val CLASS_NOTIF_HEADER_MASK = "com.oplus.systemui.statusbar.notification.stack.NotificationChildrenContainerExtImp\$NotificationHeaderMaskColorDrawable"
     private const val METHOD_GET_DRAWABLE = "getDrawable"
@@ -418,11 +418,11 @@ object BlurDrawHook {
     // - 媒体横幅（OplusMediaCarouselView.java:98-124）：onDraw 内同样直接 getBlurDrawable +
     //   setBounds + draw。MediaBgAodWrapper 仅改色不独立绘制（复用同 view）。
     // hook 点 = 各宿主类 draw 方法，反射 viewBlurProxy 字段 → 复用 registerScreenRegionCore。
-    private const val CLASS_CAPSULE_BACKGROUND_HELPER = "com.oplus.systemui.notification.lockscreen.capsule.CapsuleBackgroundHelper"
-    private const val CLASS_CAPSULE_EAR_VIEW = "com.oplus.systemui.notification.lockscreen.capsule.CapsuleEarView"
-    private const val CLASS_MEDIA_CAROUSEL_VIEW = "com.oplus.systemui.media.controls.ui.OplusMediaCarouselView"
-    private const val METHOD_DRAW_CAPSULE_BG = "drawCapsuleBg"
-    private const val METHOD_ON_DRAW = "onDraw"
+    internal const val CLASS_CAPSULE_BACKGROUND_HELPER = "com.oplus.systemui.notification.lockscreen.capsule.CapsuleBackgroundHelper"
+    internal const val CLASS_CAPSULE_EAR_VIEW = "com.oplus.systemui.notification.lockscreen.capsule.CapsuleEarView"
+    internal const val CLASS_MEDIA_CAROUSEL_VIEW = "com.oplus.systemui.media.controls.ui.OplusMediaCarouselView"
+    internal const val METHOD_DRAW_CAPSULE_BG = "drawCapsuleBg"
+    internal const val METHOD_ON_DRAW = "onDraw"
     private const val FIELD_VIEW_BLUR_PROXY = "viewBlurProxy"
     private const val FIELD_REPLACED_DRAWABLE = "replacedDrawable"
     // ---- [spec/48 遮罩走系统自带机制] 背景 scrim 纯黑 tint hook ----
@@ -566,7 +566,7 @@ object BlurDrawHook {
      *  override onAttachedToWindow(:415)/onDetachedFromWindow(:444)——hook 用 getDeclaredMethod 锚定
      *  子类自身 override，防 hook 到框架 View.onAttachedToWindow 全 View 命中）。 */
     private const val CLASS_SHADE_ROOT_VIEW = "com.android.systemui.shade.NotificationShadeWindowView"
-    private const val METHOD_ON_ATTACHED_TO_WINDOW = "onAttachedToWindow"
+    internal const val METHOD_ON_ATTACHED_TO_WINDOW = "onAttachedToWindow"
     private const val METHOD_ON_DETACHED_FROM_WINDOW = "onDetachedFromWindow"
 
     // ---- [doc/spec/09] 音量条液态玻璃化（hook COUIVerticalSeekBar.draw 盖玻璃） ----
@@ -580,8 +580,8 @@ object BlurDrawHook {
     private const val DIMEN_VOLUME_ROW_RADIUS = "volume_vertical_row_radius"
     private const val VOLUME_CORNER_DP_FALLBACK = 11f
     /** 音量面板背景替换：展开面板宿主类（mDialogView 宿主；expandPanel hook 用）。 */
-    private const val CLASS_VOLUME_DIALOG_VIEW = "com.oplus.systemui.volume.view.OplusVolumeDialogView"
-    private const val METHOD_EXPAND_PANEL = "expandPanel"
+    internal const val CLASS_VOLUME_DIALOG_VIEW = "com.oplus.systemui.volume.view.OplusVolumeDialogView"
+    internal const val METHOD_EXPAND_PANEL = "expandPanel"
     private const val METHOD_DISMISS_H = "dismissH"
     /** 音量条「出现」判定间隔（ms）：距上次绘制超过此值的首绘视为弹窗出现，触发即时抓屏。 */
     private const val VOLUME_APPEAR_GAP_MS = 600L
@@ -2703,17 +2703,12 @@ object BlurDrawHook {
         }
         resolveMethods(classLoader)
         // 引擎挂载：映射/scrim/通知卡材质抑制/主渲染/兜底 + tile/header/metaColor/headsup 探针（迁为 HookSpec）
-        HookEngine.mountAll(api, classLoader, buildEngineRequests(classLoader))
+        HookEngine.mountAll(api, classLoader, buildEngineRequests(api, classLoader))
         RestoreEngine.start(ConfigStore.loadDefault())
         registerEngineRestores()
         // [spec/48 过渡修复 2026-08-13] hook ScrimView.setViewAlpha 捕获 behind_scrim 真实动画 alpha
         //（AutoBlurDrawable.setAlpha 空实现恒 255 → 原黑 tint 读 drawable.alpha 永远=1 无过渡）。
         mountScrimViewAlpha(api, classLoader)
-        mountLightStyleStrokeDrawable(api, classLoader)
-        mountMaskBlurDrawable(api, classLoader)
-        mountCapsuleBackground(api, classLoader)
-        mountCapsuleEar(api, classLoader)
-        mountMediaCarousel(api, classLoader)
         mountOnBlurReady(api, classLoader)
         mountAddBlurDrawable(api, classLoader)
         // [spec/114] 16.00.14 旧架构：无 onDrawContent → 挂 drawBlur 作等价兜底（现役直接返回）
@@ -2769,8 +2764,6 @@ object BlurDrawHook {
         mountQsSeekBarActiveDrawable(api, classLoader)
         // [doc/spec/09] 音量条液态玻璃化（hook COUIVerticalSeekBar.draw 盖玻璃，默认关）
         mountVolumeSeekBarGlass(api, classLoader)
-        // [doc/spec/134] 音量面板背景替换（expandPanel 后面板背景换黑遮罩，独立开关，默认关）
-        mountVolumePanelBackdropBackground(api, classLoader)
         // 音量弹窗 dismissH：消失即清音量窗排除登记（volumeGlassHost + sfc 缓存）
         mountVolumeDialogDismiss(api, classLoader)
         // [doc/spec/143 缺口 B] NBV 白底/着色层 setRadius 重放（覆盖生效期白底角跟随覆盖值）
@@ -2780,8 +2773,6 @@ object BlurDrawHook {
         // [doc/spec/135] 通知长按菜单玻璃（show 时菜单主体换玻璃 drawable + dismiss 还原，默认关）
         mountNotificationPopupGlass(api, classLoader)
         mountNotificationPopupDismiss(api, classLoader)
-        // [doc/spec/78 补齐] 设备中心卡片组件登记（卡片语义类进组件清单，供预设按组件命中）
-        mountDeviceCardLabel(api, classLoader)
         // [spec/21 文字反转取色 + spec/35 黑遮罩白字 + spec/63 统一通道] hook 挂载条件（挂载经引擎
         // buildEngineRequests 的 precondition；此处只打编排诊断日志）：
         // - textContrastEnabled：挂 QsColorUtil（亮度判定）+ TextView#setTextColor（反转取色）+ onDraw 节流重采样。
@@ -2823,10 +2814,10 @@ object BlurDrawHook {
     // ------------------------------------------------------------ 引擎装配：5 mount → HookSpec
 
     /** 引擎挂载请求表：spec（DefaultHooksJson 出厂表）+ effect（本对象内实现，可访问私有 helper）。 */
-    private fun buildEngineRequests(classLoader: ClassLoader): List<HookEngine.MountRequest> {
-        val specs = ConfigStore.loadDefault().associateBy { it.id }
+    private fun buildEngineRequests(api: XposedInterface, classLoader: ClassLoader): List<HookEngine.MountRequest> {
+        val specs = ConfigStore.loadMerged(Prefs.read(api)).associateBy { it.id }
         fun spec(id: String): HookSpec = specs.getValue(id)
-        return listOf(
+        val requests = mutableListOf(
             HookEngine.MountRequest(
                 spec = spec("autoBlur.map"),
                 effect = EffectRegisterRegionScrim,
@@ -2949,7 +2940,85 @@ object BlurDrawHook {
                 mountedLog = "text-contrast A mounted: TextView#onDraw(Canvas) (throttled re-sample)",
                 failedLog = "text-contrast A mount FAILED: TextView#onDraw(Canvas)",
             ),
+            HookEngine.MountRequest(
+                spec = spec("cc.lightStyleStrokeMap"),
+                effect = EffectRegisterStrokeRegion,
+                precondition = {
+                    mAutoGetViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B AutoBlurDrawable methods unresolved, stroke-tile map disabled",
+                mountedLog = "Hook B mounted: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW(Canvas) (stroke-tile screen-region map)",
+                failedLog = "Hook B mount FAILED: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW (stroke tiles keep system blur)",
+                registerClass = CLASS_LIGHT_STYLE_STROKE_DRAWABLE,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("cc.maskBlurMap"),
+                effect = EffectRegisterSwipeMenuRegion,
+                precondition = {
+                    mMaskGetViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B MaskBlurDrawable methods unresolved, swipe-menu map disabled",
+                mountedLog = "Hook B mounted: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (swipe-menu screen-region map)",
+                failedLog = "Hook B mount FAILED: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW (swipe buttons keep system blur)",
+                registerClass = CLASS_MASK_BLUR_DRAWABLE,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("seedling.capsuleBgMap"),
+                effect = EffectRegisterCapsuleBgRegion,
+                precondition = {
+                    mCapsuleHelperViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B CapsuleBackgroundHelper fields unresolved, capsule map disabled",
+                mountedLog = "Hook B mounted: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG(View, Canvas) (capsule map)",
+                failedLog = "Hook B mount FAILED: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG (capsule keeps system blur)",
+                registerClass = CLASS_CAPSULE_BACKGROUND_HELPER,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("seedling.capsuleEarMap"),
+                effect = EffectRegisterCapsuleEarRegion,
+                precondition = {
+                    mCapsuleEarViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B CapsuleEarView field unresolved, capsule ear map disabled",
+                mountedLog = "Hook B mounted: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW(Canvas) (capsule ear map)",
+                failedLog = "Hook B mount FAILED: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW (capsule ear keeps system blur)",
+                registerClass = CLASS_CAPSULE_EAR_VIEW,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("seedling.mediaCarouselMap"),
+                effect = EffectRegisterMediaCarouselRegion,
+                precondition = {
+                    mMediaCarouselViewBlurProxy != null && mViewProxyGetView != null && mViewProxyGetBlurDrawable != null
+                },
+                preconditionWarn = "Hook B OplusMediaCarouselView field unresolved, media banner map disabled",
+                mountedLog = "Hook B mounted: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW(Canvas) (media banner map)",
+                failedLog = "Hook B mount FAILED: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW (media banner keeps system blur)",
+                registerClass = CLASS_MEDIA_CAROUSEL_VIEW,
+            ),
+            HookEngine.MountRequest(
+                spec = spec("volume.panelBackdrop"),
+                effect = EffectVolumePanelBackdrop,
+                precondition = { !volumePanelCleanMounted },
+                mountedLog = "Volume panel backdrop mounted: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL()",
+                failedLog = "Volume panel backdrop mount FAILED: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL",
+                onMounted = { volumePanelCleanMounted = true },
+            ),
+            HookEngine.MountRequest(
+                spec = spec("seedling.deviceCardAttach"),
+                effect = EffectDeviceCardAttach,
+                precondition = { !deviceCardMounted },
+                mountedLog = "Device card label mounted: android.view.View#$METHOD_ON_ATTACHED_TO_WINDOW()",
+                failedLog = "Device card label mount FAILED: android.view.View#$METHOD_ON_ATTACHED_TO_WINDOW",
+                onMounted = { deviceCardMounted = true },
+            ),
         )
+        val bound = requests.mapTo(HashSet()) { it.spec.id }
+        for (id in specs.keys) {
+            if (id !in bound) {
+                Lg.w(TAG, "user hook spec id=$id has no MountRequest binding (override-only channel)")
+            }
+        }
+        return requests
     }
 
     /** 解析 `QsColorUtil` 类与 `getQsColorState()` 反射（挂载期一次；isTextNeed 可解析才置位
@@ -3014,6 +3083,111 @@ object BlurDrawHook {
                 if (tv != null) maybeResampleTextContrast(tv)
             } catch (t: Throwable) {
                 Lg.e(TAG, "text-contrast A onDraw error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    // ------------------------------------------------------------ 阶段5第一批 effect（拦截体自 mount 迁入）
+
+    private object EffectRegisterStrokeRegion : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordScreenRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "LightStyleStrokeDrawable.draw: intercept error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    private object EffectRegisterSwipeMenuRegion : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordSwipeMenuRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "MaskBlurDrawable.draw: intercept error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    private object EffectRegisterCapsuleBgRegion : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordCapsuleBgRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "CapsuleBackgroundHelper.drawCapsuleBg: intercept error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    private object EffectRegisterCapsuleEarRegion : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordCapsuleEarRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "CapsuleEarView.onDraw: intercept error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    private object EffectRegisterMediaCarouselRegion : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                recordMediaCarouselRegion(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "OplusMediaCarouselView.onDraw: intercept error", t)
+            }
+            return chain.proceed()
+        }
+    }
+
+    private object EffectVolumePanelBackdrop : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val result = chain.proceed()
+            try {
+                if (volumePanelBackdropEnabled()) {
+                    applyVolumePanelClean(chain.getThisObject())
+                }
+            } catch (t: Throwable) {
+                Lg.e(TAG, "volume-panel-backdrop: apply error", t)
+            }
+            // 展开后面板背景刚被系统重置 → 同步补抓一帧，防玻璃采到展开前的旧快照
+            try {
+                CaptureEngine.triggerFirstFrameCaptureWithBurst(
+                    burstStop = { false },
+                    logTag = "volume-expand",
+                    pauseDuringPanelExpansion = false,
+                    mainThreadSyncFirstFrame = true,
+                    bypassMainSyncDedup = true,
+                )
+            } catch (t: Throwable) {
+                Lg.e(TAG, "volume-expand: first-frame capture error", t)
+            }
+            return result
+        }
+    }
+
+    private object EffectDeviceCardAttach : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                val v = chain.getThisObject() as? View
+                if (v != null) {
+                    deviceCardAuditKind.get(v.javaClass)
+                    if (deviceCardClassKind.get(v.javaClass) == true) {
+                        registerDeviceCardClasses(v)
+                        // 插件卡的模糊背景是 attach 后才插入 → attach 时刻扫扑空是常态；
+                        // 300ms/1500ms 各重扫一次（registerDeviceCardClasses 幂等，deviceCardBound 防重，
+                        // GlassRegistry.bind 同 key 后写 cardClass 覆盖补上语义类）
+                        v.postDelayed({ rescanDeviceCard(v) }, DEVICE_CARD_RESCAN_MS_1ST)
+                        v.postDelayed({ rescanDeviceCard(v) }, DEVICE_CARD_RESCAN_MS_2ND)
+                    }
+                }
+            } catch (t: Throwable) {
+                Lg.e(TAG, "device-card: attach intercept error", t)
             }
             return chain.proceed()
         }
@@ -3591,104 +3765,7 @@ object BlurDrawHook {
      * getViewBlurProxy/defaultDrawable 反射链完全通用）。始终 proceed（不拦截绘制），
      * 挂载失败只影响描边 tile 映射（回退现状），不崩。
      */
-    private fun mountLightStyleStrokeDrawable(api: XposedInterface, classLoader: ClassLoader) {
-        if (mAutoGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B AutoBlurDrawable methods unresolved, stroke-tile map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_LIGHT_STYLE_STROKE_DRAWABLE, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordScreenRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "LightStyleStrokeDrawable.draw: intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW(Canvas) (stroke-tile screen-region map)")
-            GlassRegistry.registerClass(CLASS_LIGHT_STYLE_STROKE_DRAWABLE)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_LIGHT_STYLE_STROKE_DRAWABLE#$METHOD_DRAW (stroke tiles keep system blur)", t)
-        }
-    }
-
-    /**
-     * [任务 2] 侧滑按钮映射 hook：MaskBlurDrawable.draw(Canvas)。
-     * 逆向实证见 recordSwipeMenuRegion。侧滑按钮背景 drawable（MetaBallBlurDrawable）不经
-     * AutoBlurDrawable.draw → 单独 hook 注册。始终 proceed（不拦截绘制），失败只影响侧滑按钮
-     * 映射（回退系统模糊），不崩。
-     */
-    private fun mountMaskBlurDrawable(api: XposedInterface, classLoader: ClassLoader) {
-        if (mMaskGetViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B MaskBlurDrawable methods unresolved, swipe-menu map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_MASK_BLUR_DRAWABLE, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordSwipeMenuRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "MaskBlurDrawable.draw: intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW(Canvas) (swipe-menu screen-region map)")
-            GlassRegistry.registerClass(CLASS_MASK_BLUR_DRAWABLE)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MASK_BLUR_DRAWABLE#$METHOD_DRAW (swipe buttons keep system blur)", t)
-        }
-    }
-
     // ------------------------------------------------------------ 任务 spec/14 补映射：直接绘制路径（不经 AutoBlurDrawable.draw）
-
-    /**
-     * [spec/14] 锁屏通知胶囊背景映射 hook：CapsuleBackgroundHelper.drawCapsuleBg(View, Canvas)。
-     *
-     * 逆向实证（16.1，CapsuleBackgroundHelper.java line 140-148 + CapsuleBackgroundView.java:114-115）：
-     * ```
-     * Drawable blurDrawable = this.replacedDrawable != null ? this.replacedDrawable : viewBlurProxy.getBlurDrawable(null);
-     * blurDrawable.setBounds(clipRect); blurDrawable.draw(canvas);   // 直接 draw，不经 AutoBlurDrawable.draw
-     * ```
-     * 胶囊 MetaBallBlurDrawable 由 CapsuleBackgroundView.onDraw → drawCapsuleBg 直绘，
-     * 从无 AutoBlurDrawable.draw 中间层 → screenRegionMap 恒无胶囊映射（drawBlurShader 查表 miss）。
-     * CapsuleEarView.onDraw（line 160-168）与 CapsuleShardBackgroundDrawableManager（smooth-radius 时
-     * replacedDrawable = shard PlatformBlurDrawable，仍经 drawCapsuleBg 绘制）同链。
-     * 修复：hook drawCapsuleBg，反射 viewBlurProxy 字段 → registerPlatformBlurRegion 注册；
-     * 顺带反射 replacedDrawable（shard 场景实际绘制它）单独注册。始终 proceed（不拦截绘制），
-     * 失败只影响胶囊映射（回退系统模糊），不崩。
-     */
-    private fun mountCapsuleBackground(api: XposedInterface, classLoader: ClassLoader) {
-        if (mCapsuleHelperViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B CapsuleBackgroundHelper fields unresolved, capsule map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_CAPSULE_BACKGROUND_HELPER, false, classLoader)
-            val method = clazz.getMethod(METHOD_DRAW_CAPSULE_BG, View::class.java, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordCapsuleBgRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "CapsuleBackgroundHelper.drawCapsuleBg: intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG(View, Canvas) (capsule map)")
-            GlassRegistry.registerClass(CLASS_CAPSULE_BACKGROUND_HELPER)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_BACKGROUND_HELPER#$METHOD_DRAW_CAPSULE_BG (capsule keeps system blur)", t)
-        }
-    }
 
     /** [spec/14] hookBefore：注册 drawCapsuleBg 实际绘制的 MetaBallBlurDrawable（含 smooth-radius shard 场景）。 */
     private fun recordCapsuleBgRegion(chain: XposedInterface.Chain) {
@@ -3720,36 +3797,6 @@ object BlurDrawHook {
         if (proxy != null) registerPlatformBlurRegion(view, null, proxy, "capsule")
     }
 
-    /**
-     * [spec/14] 锁屏胶囊耳（展开小耳朵）映射 hook：CapsuleEarView.onDraw(Canvas)。
-     * 逆向实证（CapsuleEarView.java line 160-168）：onDraw 内 `viewBlurProxy.getBlurDrawable(null)`
-     * 直接 setBounds(drawBound)+draw，不经 AutoBlurDrawable.draw。hook onDraw，反射 viewBlurProxy 注册。
-     */
-    private fun mountCapsuleEar(api: XposedInterface, classLoader: ClassLoader) {
-        if (mCapsuleEarViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B CapsuleEarView field unresolved, capsule ear map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_CAPSULE_EAR_VIEW, false, classLoader)
-            val method = clazz.getMethod(METHOD_ON_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordCapsuleEarRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "CapsuleEarView.onDraw: intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW(Canvas) (capsule ear map)")
-            GlassRegistry.registerClass(CLASS_CAPSULE_EAR_VIEW)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_CAPSULE_EAR_VIEW#$METHOD_ON_DRAW (capsule ear keeps system blur)", t)
-        }
-    }
-
     /** [spec/14] hookBefore：注册 CapsuleEarView 直接绘制的 MetaBallBlurDrawable。 */
     private fun recordCapsuleEarRegion(chain: XposedInterface.Chain) {
         val view = try {
@@ -3763,38 +3810,6 @@ object BlurDrawHook {
             Lg.e(TAG, "capsuleEar: read viewBlurProxy failed", t); return
         } ?: return
         registerPlatformBlurRegion(view, null, proxy, "capsuleEar")
-    }
-
-    /**
-     * [spec/14] 锁屏/AOD 媒体横幅映射 hook：OplusMediaCarouselView.onDraw(Canvas)。
-     * 逆向实证（OplusMediaCarouselView.java line 98-124）：onDraw 内
-     * `viewBlurProxy.getBlurDrawable(defaultBgDrawable)` 后 setBounds + 直接 draw，不经
-     * AutoBlurDrawable.draw。MediaBgAodWrapper（notification/aod/notification/）仅改色不独立绘制
-     * （复用同 view 的 PlatformBlurDrawable）。hook onDraw，反射 viewBlurProxy 注册。
-     */
-    private fun mountMediaCarousel(api: XposedInterface, classLoader: ClassLoader) {
-        if (mMediaCarouselViewBlurProxy == null || mViewProxyGetView == null || mViewProxyGetBlurDrawable == null) {
-            Lg.w(TAG, "Hook B OplusMediaCarouselView field unresolved, media banner map disabled")
-            return
-        }
-        try {
-            val clazz = Class.forName(CLASS_MEDIA_CAROUSEL_VIEW, false, classLoader)
-            val method = clazz.getMethod(METHOD_ON_DRAW, Canvas::class.java)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        recordMediaCarouselRegion(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "OplusMediaCarouselView.onDraw: intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "Hook B mounted: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW(Canvas) (media banner map)")
-            GlassRegistry.registerClass(CLASS_MEDIA_CAROUSEL_VIEW)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Hook B mount FAILED: $CLASS_MEDIA_CAROUSEL_VIEW#$METHOD_ON_DRAW (media banner keeps system blur)", t)
-        }
     }
 
     /** [spec/14] hookBefore：注册媒体横幅直接绘制的 PlatformBlurDrawable → posteffect。 */
@@ -8153,43 +8168,6 @@ object BlurDrawHook {
      * 每次 expandPanel 都重放（关→开切换后下一次展开系统自动恢复原背景，expandPanel 内无条件 setBackground）。
      * 独立开关 [KEY_VOLUME_PANEL_BACKDROP]。
      */
-    private fun mountVolumePanelBackdropBackground(api: XposedInterface, classLoader: ClassLoader) {
-        if (volumePanelCleanMounted) return
-        try {
-            val clazz = hostForName(CLASS_VOLUME_DIALOG_VIEW, classLoader)
-            val method = clazz.getMethod(METHOD_EXPAND_PANEL)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    val result = chain.proceed()
-                    try {
-                        if (volumePanelBackdropEnabled()) {
-                            applyVolumePanelClean(chain.getThisObject())
-                        }
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "volume-panel-backdrop: apply error", t)
-                    }
-                    // 展开后面板背景刚被系统重置 → 同步补抓一帧，防玻璃采到展开前的旧快照
-                    try {
-                        CaptureEngine.triggerFirstFrameCaptureWithBurst(
-                            burstStop = { false },
-                            logTag = "volume-expand",
-                            pauseDuringPanelExpansion = false,
-                            mainThreadSyncFirstFrame = true,
-                            bypassMainSyncDedup = true,
-                        )
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "volume-expand: first-frame capture error", t)
-                    }
-                    result
-                }
-            volumePanelCleanMounted = true
-            Lg.i(TAG, "Volume panel backdrop mounted: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL()")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Volume panel backdrop mount FAILED: $CLASS_VOLUME_DIALOG_VIEW#$METHOD_EXPAND_PANEL", t)
-        }
-    }
-
     /**
      * hook `OplusVolumeDialogView.dismissH(int)`：弹窗真正消失后清音量窗排除登记（volumeGlassHost + sfc 缓存）。
      * 系统侧 dismissH 被触摸事件流高频调用（isShowing/isDismissing 早退保证无害），清理必须守卫：
@@ -8998,40 +8976,6 @@ object BlurDrawHook {
      * 缺的是**组件级语义类**——本 hook 在卡片 attach 时把其模糊背景 drawable 以卡片 View 类名作
      * cardClass 登记进 GlassRegistry，组件清单里于是出现「设备中心卡片」，预设可按组件命中。
      */
-    private fun mountDeviceCardLabel(api: XposedInterface, classLoader: ClassLoader) {
-        if (deviceCardMounted) return
-        try {
-            val method = View::class.java
-                .getDeclaredMethod(METHOD_ON_ATTACHED_TO_WINDOW)
-                .apply { isAccessible = true }
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        val v = chain.getThisObject() as? View
-                        if (v != null) {
-                            deviceCardAuditKind.get(v.javaClass)
-                            if (deviceCardClassKind.get(v.javaClass) == true) {
-                                registerDeviceCardClasses(v)
-                                // 插件卡的模糊背景是 attach 后才插入 → attach 时刻扫扑空是常态；
-                                // 300ms/1500ms 各重扫一次（registerDeviceCardClasses 幂等，deviceCardBound 防重，
-                                // GlassRegistry.bind 同 key 后写 cardClass 覆盖补上语义类）
-                                v.postDelayed({ rescanDeviceCard(v) }, DEVICE_CARD_RESCAN_MS_1ST)
-                                v.postDelayed({ rescanDeviceCard(v) }, DEVICE_CARD_RESCAN_MS_2ND)
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "device-card: attach intercept error", t)
-                    }
-                    chain.proceed()
-                }
-            deviceCardMounted = true
-            Lg.i(TAG, "Device card label mounted: android.view.View#$METHOD_ON_ATTACHED_TO_WINDOW()")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "Device card label mount FAILED: android.view.View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
-        }
-    }
-
     /** attach 后延迟重扫（View 可能已 detach → 跳过；存活则重走子树登记，幂等补 cardClass）。 */
     private fun rescanDeviceCard(host: View) {
         try {
