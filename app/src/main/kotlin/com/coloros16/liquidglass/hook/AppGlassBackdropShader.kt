@@ -3,6 +3,7 @@ package com.coloros16.liquidglass.hook
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.os.Build
+import kotlin.math.abs
 
 /**
  * 背板单 input 液态玻璃（[spec/146] 路线 A，BlurButtonWrapperView 五钮等 A 族元素专用）。
@@ -236,16 +237,63 @@ internal object AppGlassBackdropShader {
     fun createEffect(width: Int, height: Int, cornerRadius: Float, cornerIsConic: Boolean): RenderEffect? {
         if (Build.VERSION.SDK_INT < 33 || width <= 1 || height <= 1) return null
         val shader = RuntimeShader(AGSL)
-        val short = minOf(width, height).toFloat()
-        shader.setFloatUniform("uSize", width.toFloat(), height.toFloat())
-        shader.setFloatUniform("uCornerRadius", cornerRadius.coerceIn(0f, short))
+        applyStaticUniforms(shader, cornerIsConic)
+        applySizeUniforms(shader, width, height, cornerRadius)
+        return RenderEffect.createRuntimeShaderEffect(shader, "uBackdrop")
+    }
+
+    /**
+     * 同 View 复用实例：RuntimeShader 只编译一次；尺寸/圆角变化走 [update] 的 uniform 热更
+     * （RenderEffect 包同一 shader，setFloatUniform 下帧自动生效，不重建不重挂）。
+     */
+    class Instance internal constructor(
+        private val shader: RuntimeShader,
+        /** 已包装的渲染效果（挂载后不再换对象）。 */
+        val effect: RenderEffect,
+        private var lastW: Int,
+        private var lastH: Int,
+        private var lastCorner: Float,
+    ) {
+
+        /**
+         * 尺寸/圆角热更。变化小于阈值（尺寸 2px / 圆角 1px）返回 false 忽略；
+         * 实际改写 uniform 返回 true（调用方打 uniform-update 日志）。
+         */
+        fun update(width: Int, height: Int, cornerRadius: Float): Boolean {
+            if (abs(width - lastW) < SIZE_EPSILON_PX &&
+                abs(height - lastH) < SIZE_EPSILON_PX &&
+                abs(cornerRadius - lastCorner) < CORNER_EPSILON_PX
+            ) {
+                return false
+            }
+            applySizeUniforms(shader, width, height, cornerRadius)
+            lastW = width
+            lastH = height
+            lastCorner = cornerRadius
+            return true
+        }
+    }
+
+    /** 尺寸阈值（px）：连续渐变动画每 1~2px 抖动不触发热更。 */
+    private const val SIZE_EPSILON_PX = 2f
+
+    /** 圆角阈值（px）。 */
+    private const val CORNER_EPSILON_PX = 1f
+
+    /** 构造可热更实例：编译一次 + 首帧 uniform；失败向上抛（调用方兜底 compileFailed）。 */
+    fun createInstance(width: Int, height: Int, cornerRadius: Float, cornerIsConic: Boolean): Instance? {
+        if (Build.VERSION.SDK_INT < 33 || width <= 1 || height <= 1) return null
+        val shader = RuntimeShader(AGSL)
+        applyStaticUniforms(shader, cornerIsConic)
+        applySizeUniforms(shader, width, height, cornerRadius)
+        val effect = RenderEffect.createRuntimeShaderEffect(shader, "uBackdrop")
+        return Instance(shader, effect, width, height, cornerRadius)
+    }
+
+    /** 与尺寸无关的常量 uniform（编译后一次写死）。 */
+    private fun applyStaticUniforms(shader: RuntimeShader, cornerIsConic: Boolean) {
         shader.setFloatUniform("uCornerIsConic", if (cornerIsConic) 1f else 0f)
         shader.setFloatUniform("uCornerWeight", CORNER_WEIGHT)
-        shader.setFloatUniform("uRefractionHeight", short * 0.5f)
-        shader.setFloatUniform(
-            "uRefractionAmount",
-            (short * REFRACTION_SCALE).coerceIn(REFRACTION_MIN_PX, REFRACTION_MAX_PX),
-        )
         shader.setFloatUniform("uDepth", DEPTH)
         shader.setFloatUniform("uDispersion", DISPERSION)
         shader.setFloatUniform("uHighlight", HIGHLIGHT)
@@ -254,6 +302,17 @@ internal object AppGlassBackdropShader {
         shader.setFloatUniform("uHighlightFloor", HIGHLIGHT_FLOOR)
         shader.setFloatUniform("uVibrancy", VIBRANCY)
         shader.setFloatUniform("uLightAngle", LIGHT_ANGLE_RAD)
-        return RenderEffect.createRuntimeShaderEffect(shader, "uBackdrop")
+    }
+
+    /** 尺寸相关 uniform（uSize/uCornerRadius/uRefraction*随 w×h×corner 联动，热更同源）。 */
+    private fun applySizeUniforms(shader: RuntimeShader, width: Int, height: Int, cornerRadius: Float) {
+        val short = minOf(width, height).toFloat()
+        shader.setFloatUniform("uSize", width.toFloat(), height.toFloat())
+        shader.setFloatUniform("uCornerRadius", cornerRadius.coerceIn(0f, short))
+        shader.setFloatUniform("uRefractionHeight", short * 0.5f)
+        shader.setFloatUniform(
+            "uRefractionAmount",
+            (short * REFRACTION_SCALE).coerceIn(REFRACTION_MIN_PX, REFRACTION_MAX_PX),
+        )
     }
 }

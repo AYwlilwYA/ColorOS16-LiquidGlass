@@ -2,6 +2,7 @@ package com.coloros16.liquidglass.config
 
 import com.coloros16.liquidglass.hook.BlurDrawHook
 import com.coloros16.liquidglass.hook.spec.ChannelSpec
+import com.coloros16.liquidglass.hook.spec.CornerSpec
 import com.coloros16.liquidglass.hook.spec.EffectSpec
 import com.coloros16.liquidglass.hook.spec.HookSpec
 import com.coloros16.liquidglass.hook.spec.MatchSpec
@@ -15,6 +16,18 @@ object DefaultHooksJson {
     private const val VIEW = "android.view.View"
     private const val CONTEXT = "android.content.Context"
     private const val INT = "int"
+
+    /** 圆角策略索引：元素类全名 → 管辖该类的 spec id（GlassRegistry.cornerPolicyForCls 查询键）。 */
+    val DEFAULT_CORNER_CLASS_INDEX: Map<String, String> = mapOf(
+        BlurDrawHook.CLASS_NBV_EXT_IMP to "notif.cardMap",
+        BlurDrawHook.CLASS_CAPSULE_BACKGROUND_HELPER to "seedling.capsuleBgMap",
+        BlurDrawHook.CLASS_CAPSULE_EAR_VIEW to "seedling.capsuleEarMap",
+        BlurDrawHook.CLASS_MEDIA_CAROUSEL_VIEW to "seedling.mediaCarouselMap",
+        BlurDrawHook.CLASS_VOLUME_DIALOG_VIEW to "volume.panelBackdrop",
+        BlurDrawHook.CLASS_LIGHT_STYLE_STROKE_DRAWABLE to "cc.lightStyleStrokeMap",
+        BlurDrawHook.CLASS_MASK_BLUR_DRAWABLE to "cc.maskBlurMap",
+        BlurDrawHook.CLASS_MIX_COLOR_TILE_DRAWABLE to "cc.tileRegionAndMaskSkip",
+    )
 
     val DEFAULT_HOOK_SPECS: List<HookSpec> = listOf(
         HookSpec(
@@ -39,6 +52,7 @@ object DefaultHooksJson {
             channel = ChannelSpec(type = "familyThroat", hookPoint = "draw"),
             effect = EffectSpec(type = "registerNotifCardSuppressMaterial"),
             probe = ProbeSpec(group = BlurDrawHook.HEADSUP_PROBE_GROUP, role = "clear"),
+            corner = CornerSpec(logKey = "corner.notif", channels = listOf("layerA", "layerB", "nbv")),
         ),
         HookSpec(
             id = "platform.suppressBlurMaskColor",
@@ -97,6 +111,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "draw"),
             effect = EffectSpec(type = "registerRegionSuppressReturn"),
+            corner = CornerSpec(logKey = "corner.cc"),
         ),
         HookSpec(
             id = "notif.headerMask",
@@ -203,6 +218,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "draw"),
             effect = EffectSpec(type = "registerScreenRegion"),
+            corner = CornerSpec(logKey = "corner.cc"),
         ),
         HookSpec(
             id = "cc.maskBlurMap",
@@ -214,6 +230,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "draw"),
             effect = EffectSpec(type = "registerSwipeMenuRegion"),
+            corner = CornerSpec(logKey = "corner.cc"),
         ),
         HookSpec(
             id = "seedling.capsuleBgMap",
@@ -225,6 +242,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "drawCapsuleBg"),
             effect = EffectSpec(type = "registerCapsuleBgRegion"),
+            corner = CornerSpec(logKey = "corner.seedling", shapeClamp = "capsule", channels = listOf("layerA")),
         ),
         HookSpec(
             id = "seedling.capsuleEarMap",
@@ -236,6 +254,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "onDraw"),
             effect = EffectSpec(type = "registerCapsuleEarRegion"),
+            corner = CornerSpec(logKey = "corner.seedling", shapeClamp = "capsule", channels = listOf("layerA")),
         ),
         HookSpec(
             id = "seedling.mediaCarouselMap",
@@ -247,6 +266,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "background", hookPoint = "onDraw"),
             effect = EffectSpec(type = "registerMediaCarouselRegion"),
+            corner = CornerSpec(logKey = "corner.seedling", shapeClamp = "capsule", channels = listOf("layerA")),
         ),
         HookSpec(
             id = "volume.panelBackdrop",
@@ -257,6 +277,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "after", hookPoint = "expandPanel", order = "after"),
             effect = EffectSpec(type = "volumePanelBackdrop"),
+            corner = CornerSpec(logKey = "corner.volume"),
         ),
         HookSpec(
             id = "seedling.deviceCardAttach",
@@ -269,6 +290,7 @@ object DefaultHooksJson {
             ),
             channel = ChannelSpec(type = "attach", hookPoint = "onAttachedToWindow"),
             effect = EffectSpec(type = "deviceCardAttachRegister"),
+            corner = CornerSpec(logKey = "corner.seedling"),
         ),
     )
 }

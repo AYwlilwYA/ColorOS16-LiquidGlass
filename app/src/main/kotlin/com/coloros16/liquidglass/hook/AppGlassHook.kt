@@ -127,6 +127,7 @@ object AppGlassHook {
         val viewRef = WeakReference(view)
         var applied = false
         var compileFailed = false
+        var instance: AppGlassBackdropShader.Instance? = null
         val listener = ViewTreeObserver.OnPreDrawListener {
             viewRef.get()?.let { syncButtonGlass(it) }
             true
@@ -436,12 +437,20 @@ object AppGlassHook {
         }
     }
 
-    /** 施加背板玻璃：取缓存效果经静态挂载点写进 View 背景；编译失败转装饰层兜底并停试。 */
+    /** 施加背板玻璃：同 View 复用 shader 实例经静态挂载点写进 View 背景；编译失败转装饰层兜底并停试。 */
     private fun glassifyButton(view: View, state: ButtonGlassState) {
         val setBg = selfProbeSetBg ?: return
         val corner = resolveButtonCornerRadius(view)
-        val effect = cachedGlassEffect(view.width, view.height, corner)
-        if (effect == null) {
+        val instance = try {
+            state.instance?.also { it.update(view.width, view.height, corner) }
+                ?: AppGlassBackdropShader.createInstance(
+                    view.width, view.height, corner, cornerIsConic = true,
+                )?.also { state.instance = it }
+        } catch (t: Throwable) {
+            lastGlassCompileError = "${t.javaClass.name}: ${t.message}"
+            null
+        }
+        if (instance == null) {
             state.compileFailed = true
             Lg.w(TAG, "button glass compile failed, fallback decor view=${view.javaClass.name} error=$lastGlassCompileError")
             ensureBDecor(view)
@@ -449,7 +458,7 @@ object AppGlassHook {
         }
         selfProbeActive = true
         try {
-            setBg.invoke(null, effect, view)
+            setBg.invoke(null, instance.effect, view)
             state.applied = true
             registerElement(view, view.javaClass.name, "G")
             logOnce(
@@ -486,6 +495,20 @@ object AppGlassHook {
     @Volatile
     internal var lastGlassCompileError: String? = null
         private set
+
+    /** 外部（页挂载器）编译失败时回填真凶，compile failed 日志统一从 [lastGlassCompileError] 取。 */
+    internal fun noteGlassCompileError(t: Throwable) {
+        lastGlassCompileError = "${t.javaClass.name}: ${t.message}"
+    }
+
+    /** 五钮换回专用：复用实例按当前尺寸/圆角热更 uniform；无实例则退回编译缓存。 */
+    private fun freshButtonEffect(view: View, state: ButtonGlassState): RenderEffect? {
+        val instance = state.instance ?: return cachedGlassEffect(
+            view.width, view.height, resolveButtonCornerRadius(view),
+        )
+        instance.update(view.width, view.height, resolveButtonCornerRadius(view))
+        return instance.effect
+    }
 
     /** 背板玻璃效果 w×h×corner 编译缓存（失败不缓存，由 [ButtonGlassState.compileFailed] 停试）。 */
     internal fun cachedGlassEffect(width: Int, height: Int, cornerRadius: Float): RenderEffect? {
@@ -543,8 +566,8 @@ object AppGlassHook {
                     registerElement(view, view.javaClass.name, "A")
                     val state = buttonGlassStates[view]
                     if (state != null && state.applied && !state.compileFailed && !probeEnabled()) {
-                        // 宿主覆写已玻璃化元素：换回玻璃（宿主新值已记档，还原时取它）
-                        cachedGlassEffect(view.width, view.height, resolveButtonCornerRadius(view))
+                        // 宿主覆写已玻璃化元素：换回玻璃（复用实例热更 uniform；宿主新值已记档）
+                        freshButtonEffect(view, state)
                             ?.let { glass ->
                                 val args = chain.getArgs().toTypedArray()
                                 args[0] = glass
@@ -572,9 +595,9 @@ object AppGlassHook {
                         )
                     }
                 }
-                // 整页玻璃元素被宿主覆写：换回挂载器玻璃（记档已在上方完成）
+                // 整页玻璃元素被宿主覆写：换回挂载器玻璃（实例热更；记档已在上方完成）
                 if (PageGlassEngine.isApplied(view)) {
-                    cachedGlassEffect(view.width, view.height, resolveButtonCornerRadius(view))
+                    PageGlassEngine.freshGlassEffect(view)
                         ?.let { glass ->
                             val args = chain.getArgs().toTypedArray()
                             args[0] = glass

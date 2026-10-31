@@ -2,7 +2,9 @@ package com.coloros16.liquidglass.hook
 
 import android.app.Activity
 import android.graphics.Canvas
+import android.graphics.Outline
 import android.graphics.Path
+import android.graphics.RenderEffect
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -52,6 +54,9 @@ object PageGlassEngine {
 
     /** 候选提示最小短边（dp）：挡 divider / 小图标底。 */
     private const val MIN_SHORT_EDGE_DP = 24f
+
+    /** 页卡圆角链兜底值（dp）：不按短边比例（钮观感），大卡套小圆角会画成大胶囊角。 */
+    private const val DEFAULT_CORNER_DP = 28f
 
     /** 旧整页开关键（读兼容；总闸 [Prefs.KEY_ELEMENT_GLASS_ENABLE] 与之 OR）。 */
     private val COMPAT_SWITCH_KEYS = mapOf(
@@ -103,6 +108,7 @@ object PageGlassEngine {
         var logged = false
         var lastW = 0
         var lastH = 0
+        var instance: AppGlassBackdropShader.Instance? = null
         val listener = ViewTreeObserver.OnPreDrawListener {
             viewRef.get()?.let { syncPageGlass(it) }
             true
@@ -500,7 +506,7 @@ object PageGlassEngine {
         EngineLog.log("PageGlass", "matched [${entry.mountType}] view=${view.javaClass.name} label=${entry.label}")
     }
 
-    /** preDraw 同步：开关关 / 条目失配还原；开且尺寸就绪挂载；已挂且 bounds 变重挂。 */
+    /** preDraw 同步：开关关 / 条目失配还原；开且尺寸就绪挂载；已挂且 bounds 变走 uniform 热更。 */
     private fun syncPageGlass(view: View) {
         val state = states[view] ?: run {
             logGuard("guard:state-missing", "preDraw sync skip: state missing view=${view.javaClass.name}", fullDetail = true)
@@ -531,8 +537,21 @@ object PageGlassEngine {
         }
         if (state.applied) {
             if (view.width != state.lastW || view.height != state.lastH) {
-                unapplyPageGlass(view, state)
-                applyPageGlass(view, state)
+                val (corner, _) = resolveCorner(view, state.entry)
+                val updated = state.instance?.update(view.width, view.height, corner) == true
+                state.lastW = view.width
+                state.lastH = view.height
+                if (updated) {
+                    logPageDiag(
+                        "page-uniform:${view.javaClass.name}",
+                        "page glass uniform-update ${view.width}x${view.height} corner=$corner",
+                        2000L,
+                    )
+                    EngineLog.log(
+                        "PageGlass",
+                        "uniform-update view=${view.javaClass.name} ${view.width}x${view.height}",
+                    )
+                }
             }
             return
         }
@@ -544,15 +563,23 @@ object PageGlassEngine {
             logGuard("guard:setbg-null", "apply skipped: A-family mount point unresolved view=${view.javaClass.name}")
             return
         }
-        val corner = resolveCorner(view, state.entry)
-        val effect = AppGlassHook.cachedGlassEffect(view.width, view.height, corner)
-        if (effect == null) {
+        val (corner, cornerSource) = resolveCorner(view, state.entry)
+        val instance = try {
+            state.instance?.also { it.update(view.width, view.height, corner) }
+                ?: AppGlassBackdropShader.createInstance(
+                    view.width, view.height, corner, cornerIsConic = true,
+                )?.also { state.instance = it }
+        } catch (t: Throwable) {
+            AppGlassHook.noteGlassCompileError(t)
+            null
+        }
+        if (instance == null) {
             state.compileFailed = true
             Lg.w(TAG, "page glass compile failed, decor fallback view=${view.javaClass.name} error=${AppGlassHook.lastGlassCompileError}")
             AppGlassHook.ensureBDecor(view)
             return
         }
-        if (!AppGlassHook.applyGlassEffect(view, effect)) {
+        if (!AppGlassHook.applyGlassEffect(view, instance.effect)) {
             logGuard("guard:apply-failed:${view.javaClass.name}", "applyGlassEffect failed view=${view.javaClass.name} (detail in AppGlass log)")
             return
         }
@@ -560,35 +587,70 @@ object PageGlassEngine {
         state.lastW = view.width
         state.lastH = view.height
         AppGlassHook.registerElement(view, view.javaClass.name, state.entry.mountType)
-        EngineLog.log("PageGlass", "applied [${state.entry.mountType}] view=${view.javaClass.name} ${view.width}x${view.height} corner=$corner label=${state.entry.label}")
+        EngineLog.log("PageGlass", "applied [${state.entry.mountType}] view=${view.javaClass.name} ${view.width}x${view.height} corner=$corner[$cornerSource] label=${state.entry.label}")
         if (!state.logged) {
             state.logged = true
             Lg.i(
                 TAG,
                 "page glass applied [${state.entry.mountType}] view=${view.javaClass.name} " +
-                    "${view.width}x${view.height} corner=$corner label=${state.entry.label}",
+                    "${view.width}x${view.height} corner=$corner[$cornerSource] label=${state.entry.label}",
             )
         }
     }
 
-    /** 圆角取值：条目 overrides（px / dp）优先，缺省跟随实测 outline。 */
-    private fun resolveCorner(view: View, entry: GlassElementEntry): Float {
-        entry.overrides["cornerRadius"]?.let { return it }
-        entry.overrides["cornerRadiusDp"]?.let { return it * view.resources.displayMetrics.density }
-        return AppGlassHook.resolveButtonCornerRadius(view)
+    /**
+     * 页卡圆角解析链：①条目 overrides ②outline 实测 ③背景 drawable 圆角 ④兜底 28dp。
+     * 返回 (值, 来源标记)，来源进挂载日志对照。
+     */
+    private fun resolveCorner(view: View, entry: GlassElementEntry): Pair<Float, String> {
+        entry.overrides["cornerRadius"]?.let { return it to "overrides" }
+        entry.overrides["cornerRadiusDp"]?.let { return it * view.resources.displayMetrics.density to "overrides" }
+        try {
+            val outline = Outline()
+            view.outlineProvider.getOutline(view, outline)
+            val r = outline.radius
+            if (r > 0f && r <= minOf(view.width, view.height)) return r to "outline"
+        } catch (_: Throwable) {
+        }
+        drawableCorner(view)?.let { return it to "drawable" }
+        return DEFAULT_CORNER_DP * view.resources.displayMetrics.density to "default"
     }
 
-    private fun unapplyPageGlass(view: View, state: PageGlassState) {
-        if (!state.applied) {
-            logGuard("guard:unapply-idle", "unapply no-op: not applied view=${view.javaClass.name}", fullDetail = true)
-            return
+    /** 背景 drawable 圆角：unwrap Inset 后取 GradientDrawable 四角最大值 / 单角值。 */
+    private fun drawableCorner(view: View): Float? {
+        val bg = try {
+            view.background
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        val d = unwrapInset(bg)
+        if (d is GradientDrawable) {
+            val radii = try {
+                d.cornerRadii
+            } catch (_: Throwable) {
+                null
+            }
+            if (radii != null) {
+                val maxR = radii.maxOrNull() ?: 0f
+                if (maxR > 0f) return maxR
+            }
+            val single = try {
+                d.cornerRadius
+            } catch (_: Throwable) {
+                0f
+            }
+            if (single > 0f) return single
         }
-        AppGlassHook.restoreHostEffect(view)
-        state.applied = false
-        logOnce(
-            "page-unapply:${view.javaClass.name}",
-            "page glass unbound for rebind view=${view.javaClass.name} ${state.lastW}x${state.lastH}",
-        )
+        return null
+    }
+
+    /** A 族覆写换回专用：复用该 View 实例按当前尺寸/圆角热更 uniform，返回可换回的 effect。 */
+    internal fun freshGlassEffect(view: View): RenderEffect? {
+        val state = states[view] ?: return null
+        if (!state.applied) return null
+        val instance = state.instance ?: return null
+        instance.update(view.width, view.height, resolveCorner(view, state.entry).first)
+        return instance.effect
     }
 
     private fun restorePageGlass(view: View, state: PageGlassState) {

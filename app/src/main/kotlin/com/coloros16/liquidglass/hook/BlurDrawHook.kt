@@ -4127,17 +4127,62 @@ object BlurDrawHook {
         return applyUnifiedCornerOverlay(entry, base, w, h)
     }
 
-    /** 写穿轨 desired：基准取按类圆角覆盖写入值（[GlassRegistry.writeCornerBaseFor]，「圆角自适应」
-     *  开钳短边一半 / 关原样，与「玻璃圆角跟随外部形状」开关无关），再叠统一圆角规则（与渲染侧同规则叠加）。 */
+    /** 写穿轨 desired 唯一收口：所有写穿腿（layerB / layerA-reg / Launcher 对齐口径）都经此钳制，
+     *  不许腿内自带 desired。钳制公式统一走 [GlassRegistry.clampCornerByShape]，形状档 =
+     *  spec 显式档 > BlurConfig 半径几何判定 > 不判（unknown，不钳 + 节流日志），再叠统一圆角规则。 */
     private fun resolveWriteThroughCorner(
         entry: RegionEntry,
         ov: Float,
         elementId: Int,
         w: Float,
         h: Float,
+        vbp: Any? = null,
     ): Float {
-        val base = GlassRegistry.writeCornerBaseFor(elementId, w, h) ?: ov
+        val policy = GlassRegistry.cornerPolicyFor(elementId)
+        var base = ov
+        if (policy.adaptiveOn && ov > 0f) {
+            val shape = policy.shapeClamp.takeIf { it != "auto" }
+                ?: classifyCornerShape(vbp, w, h)
+            val clamped = GlassRegistry.clampCornerByShape(ov, w, h, shape, true)
+            if (clamped != ov) {
+                logThrottled("lg-corner-clamp", Log.DEBUG) {
+                    "corner-spec: clamp id=$elementId ov=$ov shape=$shape cap=${minOf(w, h) / 2f} -> $clamped"
+                }
+            }
+            if (shape == "unknown") {
+                logThrottled("lg-corner-shape-unknown", Log.WARN) {
+                    "corner-spec: shape unknown, clamp skipped id=$elementId ov=$ov w=$w h=$h"
+                }
+            }
+            base = clamped
+        }
         return applyUnifiedCornerOverlay(entry, base, w, h)
+    }
+
+    /** 形状档判定：spec 显式档之外的运行时判定——BlurConfig 半径几何 > unknown（实测半径腿预留未接线）。
+     *  半径 ≈ 短边一半（容差 max(2px, 3%)）→ capsule；小于 → rect；大于上限（数据异常）→ free（不钳）。 */
+    private fun classifyCornerShape(vbp: Any?, w: Float, h: Float): String {
+        if (w <= 0f || h <= 0f) return "unknown"
+        val half = minOf(w, h) / 2f
+        val r = readProxyCornerConfigRadius(vbp)?.takeIf { it > 0f }
+        if (r == null) return "unknown"
+        val tol = maxOf(2f, 0.03f * minOf(w, h))
+        return when {
+            r > half + tol -> "free"
+            abs(r - half) <= tol -> "capsule"
+            else -> "rect"
+        }
+    }
+
+    /** 读 ViewBlurProxy 的 BlurConfig 当前圆角（install 期已解析的 field；无 vbp / 反射失败 → null）。 */
+    private fun readProxyCornerConfigRadius(vbp: Any?): Float? {
+        if (vbp == null || mBlurConfigCornerRadiusField == null || mViewBlurProxyBlurConfigField == null) return null
+        return try {
+            val cfg = mViewBlurProxyBlurConfigField?.get(vbp) ?: return null
+            mBlurConfigCornerRadiusField?.get(cfg) as? Float
+        } catch (t: Throwable) {
+            null
+        }
     }
 
     /** 统一界面圆角叠加：作用域内 + 开关开 + 非锁屏 → min(max(U, base), min(w,h)/2)；否则 base 原样。 */
@@ -4239,7 +4284,7 @@ object BlurDrawHook {
                                 "override",
                                 unifiedScope = isUnifiedCornerScope(viewB, targetB, "map"),
                             )
-                            val desiredB = resolveWriteThroughCorner(entryB, ovB, idB, wB, hB)
+                            val desiredB = resolveWriteThroughCorner(entryB, ovB, idB, wB, hB, vbp)
                             if (desiredB > 0f) return applyCornerWriteThrough(vbp, desiredB, "layerB")
                         }
                     }
@@ -4477,6 +4522,7 @@ object BlurDrawHook {
             logThrottled("lg-143-write", Log.INFO) {
                 "corner-override: write-through path=$pathTag own=${info.radius}(${info.source}) -> $desired cap=${minOf(w, h) / 2f} w=${w.toInt()}h=${h.toInt()}"
             }
+            EngineLog.log("corner", "write-through path=$pathTag id=$elementId own=${info.radius}(${info.source}) -> $desired cap=${minOf(w, h) / 2f}")
             reportProviderWriteResult(cfg, writeUnifiedCornerToConfig(cfg, desired, shadow, target), pathTag)
             // 覆盖写穿不置 unifiedCornerApplied（语义见 rewrite 分支注释）
             overrideShadowActive = true
@@ -4587,7 +4633,7 @@ object BlurDrawHook {
         val ov = GlassRegistry.cornerOverrideFor(elementId)
         if (ov != null) {
             if (!Prefs.glassEnabled(api)) return
-            val desired = resolveWriteThroughCorner(entry, ov, elementId, w, h)
+            val desired = resolveWriteThroughCorner(entry, ov, elementId, w, h, proxy)
             if (desired <= 0f) return
             val cached = overrideCornerWritten[elementId]
             if (cached != null && desired == cached) return  // 每帧零反射快判
@@ -4595,6 +4641,7 @@ object BlurDrawHook {
             logThrottled("lg-143-reg", Log.INFO) {
                 "corner-override: register write path=$pathTag id=$elementId ov=$ov desired=$desired wrote=$wrote"
             }
+            EngineLog.log("corner", "register-write path=$pathTag id=$elementId ov=$ov desired=$desired wrote=$wrote")
         } else if (overrideShadowActive) {
             restoreCornerOverrideShadow(proxy)
         }
@@ -5702,7 +5749,13 @@ object BlurDrawHook {
             unifiedScope = isUnifiedCornerScope(hostView, target, logTag),
             sourceTag = logTag,
         )
-        applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-$logTag")
+        if (targetBounds != null) {
+            applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-$logTag")
+        } else {
+            logThrottled("lg-143-reg-nogeom-$logTag", Log.INFO) {
+                "corner-override: register write skipped, live bounds unavailable path=layerA-$logTag"
+            }
+        }
         val previous = screenRegionMap[key]
         val coreSeenMs = SystemClock.uptimeMillis()
         entry.lastSeenMs = coreSeenMs
@@ -6389,11 +6442,12 @@ object BlurDrawHook {
             logThrottled("nbv-null-target", Log.INFO) { "nbv: PlatformBlurDrawable.getBlurDrawable null, skip registration" }
             return
         }
-        val bounds = try {
+        val targetBounds = try {
             mGetBounds?.invoke(target) as? Rect
         } catch (t: Throwable) {
             Lg.e(TAG, "nbv: posteffect getBounds failed", t); null
-        } ?: Rect(0, 0, bgView.width, bgView.height)
+        }
+        val bounds = targetBounds ?: Rect(0, 0, bgView.width, bgView.height)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
             logThrottled("nbv-skip-empty-bounds", Log.INFO) { "nbv: skip empty bounds $bounds, id=${System.identityHashCode(target)}" }
             restoreNbvHostStamp(extImp)
@@ -6437,7 +6491,13 @@ object BlurDrawHook {
         previous?.lastSeenMs = notifSeenMs
         // 每帧重绑（幂等，同 clazz 只 touch）：动画态重建的 target 换实例后 cardClass 不丢
         GlassRegistry.bind(key, target, CLASS_NBV_EXT_IMP)
-        applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-nbv")
+        if (targetBounds != null) {
+            applyCornerOverrideAtRegister(proxy, key, entry, bounds.width().toFloat(), bounds.height().toFloat(), "layerA-nbv")
+        } else {
+            logThrottled("lg-143-reg-nogeom-nbv", Log.INFO) {
+                "corner-override: register write skipped, live bounds unavailable path=layerA-nbv"
+            }
+        }
         // [doc/spec/99] 每次绘制都刷新 clip（父容器 clip 随动画/布局逐帧可能变）：
         // map 快照 + 新 entry 镜像 + 稳态仍存活的旧 entry 镜像（region/bounds 未变时不换 entry）。
         applyHostClip(key, entry, previous, hostClip)
@@ -8524,16 +8584,24 @@ object BlurDrawHook {
         } catch (t: Throwable) {
             Lg.e(TAG, "volume-seekbar: getLocationOnScreen failed", t); return
         }
-        val screenRegion = RectF(
+        val viewRegion = RectF(
             loc[0].toFloat(), loc[1].toFloat(),
             (loc[0] + w).toFloat(), (loc[1] + h).toFloat(),
         )
+        // 抓屏/登记 region = 以控件为中心的暴力正方形（边长 = 对角线×2）：弹出动画位置瞬移越屏时，
+        // 采样塌缩可经 entry.region 兜底折算到正方形的屏内部分，玻璃不断档；采样仍按当前位置矩形
+        // （正方形整体喂采样会把内容缩成控件内的缩略图）
+        val side = sqrt((w * w + h * h).toDouble()).toFloat() * 2f
+        val cx = loc[0] + w * 0.5f
+        val cy = loc[1] + h * 0.5f
+        val captureRegion = RectF(cx - side * 0.5f, cy - side * 0.5f, cx + side * 0.5f, cy + side * 0.5f)
+        logVolumeDiag("region-square", "volume-seekbar: 抓屏 region 原矩形=$viewRegion 正方形=$captureRegion")
         val id = System.identityHashCode(seekbar)
         registerSeedlingCardRegion(
-            id, screenRegion, Rect(0, 0, w, h), seekbar,
+            id, captureRegion, Rect(0, 0, w, h), seekbar,
             source = "volume-seekbar", cornerRadiusOverride = resolveVolumeCornerPx(seekbar),
         )
-        drawSeedlingGlassOnCanvas(canvas, seekbar, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
+        drawSeedlingGlassOnCanvas(canvas, seekbar, id, w, h, viewRegion, offsetX = 0f, offsetY = 0f)
         // 顺带失效 ···按钮：玻璃/填充开关切换后按钮视图随音量条每帧重绘即时生效
         try {
             volumeMoreBtnHost?.get()?.takeIf { it.isAttachedToWindow }?.invalidate()

@@ -1,6 +1,7 @@
 package com.coloros16.liquidglass.config
 
 import com.coloros16.liquidglass.hook.spec.ChannelSpec
+import com.coloros16.liquidglass.hook.spec.CornerSpec
 import com.coloros16.liquidglass.hook.spec.EffectSpec
 import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.hook.spec.FieldSpec
@@ -108,6 +109,21 @@ object ConfigStore {
             fallback = FallbackSpec(),
             log = LogSpec(),
             guard = GuardSpec(),
+            corner = parseCorner(o.optJSONObject("corner")),
+        )
+    }
+
+    /** 解析 corner 节（缺省/空对象 → 全默认 CornerSpec，与出厂常量表同构）。 */
+    fun parseCorner(o: org.json.JSONObject?): CornerSpec {
+        if (o == null) return CornerSpec()
+        return CornerSpec(
+            mode = o.optString("mode", "write-through"),
+            adaptiveClamp = o.optBoolean("adaptiveClamp", true),
+            externalSync = o.optBoolean("externalSync", true),
+            valueDp = o.optDouble("valueDp", 0.0).toFloat(),
+            shapeClamp = o.optString("shapeClamp", "auto"),
+            channels = o.optJSONArray("channels").toStringList(),
+            logKey = o.optString("logKey", "corner"),
         )
     }
 

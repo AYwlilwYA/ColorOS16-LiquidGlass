@@ -36,6 +36,7 @@ object GlassElementRegistry {
         throatClass: String? = null,
         throatMethod: String? = null,
         throatSignature: String? = null,
+        overrides: Map<String, Float> = emptyMap(),
         enabled: Boolean = true,
     ) = GlassElementEntry(
         label = label,
@@ -53,7 +54,7 @@ object GlassElementRegistry {
         throatMethod = throatMethod,
         throatSignature = throatSignature,
         presetKey = "default",
-        overrides = emptyMap(),
+        overrides = overrides,
         enabled = enabled,
     )
 
@@ -69,19 +70,20 @@ object GlassElementRegistry {
             cls = "com.coloros.common.widget.HighlightShadowConstraintLayout",
             viewId = "shortcut_card",
             idPkg = "com.coloros.assistantscreen",
-            minW = 200, maxW = 3000, minH = 80, maxH = 2000,
+            minW = 0, maxW = 4000, minH = 0, maxH = 3000,
             mountType = GlassElementEntry.MOUNT_DRAW_HOOK,
             suppressMode = GlassElementEntry.SUPPRESS_THROAT,
             throatClass = "tc.u",
             throatMethod = "c",
             throatSignature = THROAT_SIG_CL,
+            overrides = mapOf("cornerRadiusDp" to 28f),
         ),
         entry(
             label = "负一屏搜索条与圆钮底板",
             cls = "com.coloros.common.widget.HighlightShadowImageView",
             viewId = null,
             idPkg = null,
-            minW = 20, maxW = 800, minH = 20, maxH = 800,
+            minW = 0, maxW = 2000, minH = 0, maxH = 2000,
             mountType = GlassElementEntry.MOUNT_DRAW_HOOK,
             suppressMode = GlassElementEntry.SUPPRESS_THROAT,
             throatClass = "tc.u",
@@ -95,6 +97,7 @@ object GlassElementRegistry {
             idPkg = null,
             minW = 200, maxW = 4000, minH = 100, maxH = 3000,
             mountType = GlassElementEntry.MOUNT_BACKGROUND,
+            overrides = mapOf("cornerRadiusDp" to 28f),
         ),
         entry(
             label = "搜索页应用建议卡",
@@ -103,6 +106,7 @@ object GlassElementRegistry {
             idPkg = null,
             minW = 200, maxW = 3000, minH = 100, maxH = 3000,
             mountType = GlassElementEntry.MOUNT_BACKGROUND,
+            overrides = mapOf("cornerRadiusDp" to 28f),
         ),
         entry(
             label = "内存优化卡",
@@ -111,6 +115,7 @@ object GlassElementRegistry {
             idPkg = null,
             minW = 200, maxW = 2000, minH = 100, maxH = 1500,
             mountType = GlassElementEntry.MOUNT_BACKGROUND,
+            overrides = mapOf("cornerRadiusDp" to 28f),
         ),
         entry(
             label = "相册按钮背板",

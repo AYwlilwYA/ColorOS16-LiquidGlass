@@ -2,7 +2,10 @@ package com.coloros16.liquidglass.glass
 
 import android.content.SharedPreferences
 import android.os.SystemClock
+import com.coloros16.liquidglass.config.ConfigStore
+import com.coloros16.liquidglass.config.DefaultHooksJson
 import com.coloros16.liquidglass.config.Prefs
+import com.coloros16.liquidglass.hook.spec.CornerSpec
 import com.coloros16.liquidglass.log.Lg
 import org.json.JSONArray
 import org.json.JSONObject
@@ -598,13 +601,26 @@ object GlassRegistry {
         return cornerCache
     }
 
-    // ------------------------------------------------------------ 圆角两开关（渲染热路径） ------------------------------------------------------------
+    // ------------------------------------------------------------ 圆角策略（spec 驱动 + 旧键折算，渲染热路径） ------------------------------------------------------------
+
+    /** 运行期圆角策略：spec corner 节与旧开关名单折算后的有效值。 */
+    data class CornerPolicy(
+        val adaptiveOn: Boolean,
+        val syncOn: Boolean,
+        val mode: String,
+        val shapeClamp: String,
+        val valueDp: Float,
+        val logKey: String,
+    )
 
     @Volatile
     private var cornerAdaptiveOff: Set<String> = emptySet()
 
     @Volatile
     private var cornerSyncOff: Set<String> = emptySet()
+
+    @Volatile
+    private var cornerUserSpecs: Map<String, CornerSpec> = emptyMap()
 
     @Volatile
     private var cornerSwitchCacheAtMs = 0L
@@ -620,38 +636,74 @@ object GlassRegistry {
         } catch (t: Throwable) {
             Lg.w(TAG, "read corner switches failed", t)
         }
+        try {
+            cornerUserSpecs = parseUserCornerSpecs(prefs.getString(Prefs.KEY_USER_HOOK_SPECS, null))
+        } catch (t: Throwable) {
+            Lg.w(TAG, "read user corner specs failed", t)
+        }
     }
 
-    /** 「圆角自适应」：开（默认）= 覆盖值超短边一半钳回一半；关 = 原样。 */
-    fun cornerAdaptiveFor(cls: String): Boolean {
-        snapshotCornerSwitches()
-        return cls !in cornerAdaptiveOff
+    /** 轻量提取 user JSON 各条目的 corner 节（spec id → CornerSpec；无 corner 节的条目跳过）。 */
+    private fun parseUserCornerSpecs(json: String?): Map<String, CornerSpec> {
+        if (json.isNullOrBlank()) return emptyMap()
+        val arr = JSONArray(json)
+        val out = HashMap<String, CornerSpec>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val cornerO = o.optJSONObject("corner") ?: continue
+            val id = o.optString("id", "")
+            if (id.isNotEmpty()) out[id] = ConfigStore.parseCorner(cornerO)
+        }
+        return out
     }
 
-    /** 「玻璃圆角跟随外部形状」：开（默认）= 玻璃 SDF 圆角跟外部实测；关 = 可独立自定义。 */
-    fun cornerSyncExternalFor(cls: String): Boolean {
+    /** 按类取圆角策略：user 覆盖（按 id 整条替换）→ 出厂 spec（index 映射）→ 全局默认；旧关闭名单 AND 折算。 */
+    fun cornerPolicyForCls(cls: String): CornerPolicy {
         snapshotCornerSwitches()
-        return cls !in cornerSyncOff
+        val specId = DefaultHooksJson.DEFAULT_CORNER_CLASS_INDEX[cls]
+        val base = cornerUserSpecs[specId]
+            ?: DefaultHooksJson.DEFAULT_HOOK_SPECS.firstOrNull { it.id == specId }?.corner
+            ?: CornerSpec()
+        return CornerPolicy(
+            adaptiveOn = base.adaptiveClamp && cls !in cornerAdaptiveOff,
+            syncOn = base.externalSync && cls !in cornerSyncOff,
+            mode = base.mode,
+            shapeClamp = base.shapeClamp,
+            valueDp = base.valueDp,
+            logKey = base.logKey,
+        )
     }
 
-    /** 元素 id 版：命中顺序与 [cornerOverrideFor] 一致（卡片类优先，回落绘制对象类）。 */
-    fun cornerAdaptiveFor(elementId: Int): Boolean {
-        if (elementId == 0) return true
-        val b = bound[elementId] ?: return true
+    /** 元素 id 版：命中顺序与 [cornerOverrideFor] 一致（卡片类优先，回落绘制对象类）；bound miss → 全局默认。 */
+    fun cornerPolicyFor(elementId: Int): CornerPolicy {
+        val b = if (elementId != 0) bound[elementId] else null
         snapshotCornerSwitches()
-        val off = cornerAdaptiveOff
+        if (b == null) {
+            return CornerPolicy(true, true, "write-through", "auto", 0f, "corner")
+        }
         val primary = b.cardClass ?: b.name
-        return if (primary in off) false else b.name !in off
+        val specId = DefaultHooksJson.DEFAULT_CORNER_CLASS_INDEX[primary]
+            ?: DefaultHooksJson.DEFAULT_CORNER_CLASS_INDEX[b.name]
+        val base = cornerUserSpecs[specId]
+            ?: DefaultHooksJson.DEFAULT_HOOK_SPECS.firstOrNull { it.id == specId }?.corner
+            ?: CornerSpec()
+        return CornerPolicy(
+            adaptiveOn = base.adaptiveClamp && primary !in cornerAdaptiveOff && b.name !in cornerAdaptiveOff,
+            syncOn = base.externalSync && primary !in cornerSyncOff && b.name !in cornerSyncOff,
+            mode = base.mode,
+            shapeClamp = base.shapeClamp,
+            valueDp = base.valueDp,
+            logKey = base.logKey,
+        )
     }
 
-    /** 元素 id 版：命中顺序与 [cornerOverrideFor] 一致（卡片类优先，回落绘制对象类）。 */
-    fun cornerSyncExternalFor(elementId: Int): Boolean {
-        if (elementId == 0) return true
-        val b = bound[elementId] ?: return true
-        snapshotCornerSwitches()
-        val off = cornerSyncOff
-        val primary = b.cardClass ?: b.name
-        return if (primary in off) false else b.name !in off
+    /** 圆角钳制唯一入口：按形状档分派公式——矩形/胶囊钳短边一半；异形（free）/未知（unknown）原样。 */
+    fun clampCornerByShape(base: Float, w: Float, h: Float, shape: String, adaptiveOn: Boolean): Float {
+        if (!adaptiveOn || w <= 0f || h <= 0f) return base
+        return when (shape) {
+            "rect", "capsule" -> minOf(base, minOf(w, h) / 2f)
+            else -> base
+        }
     }
 
     /**
@@ -659,7 +711,6 @@ object GlassRegistry {
      * - 无按类覆盖 → null（调用方回落实测圆角）；
      * - 有覆盖且「外部同步」开 → null（玻璃内部跟外部实测，覆盖值只经写穿轨改外部形状）；
      * - 有覆盖且「外部同步」关 → 「自适应」开时钳短边一半，关时原样（玻璃独立自定义）。
-     * 写穿轨请用 [writeCornerBaseFor]（写侧只看自适应钳，与外部同步开关无关）。
      */
     fun glassCornerBaseFor(elementId: Int, w: Float, h: Float): Float? {
         if (elementId == 0) return null
@@ -668,23 +719,9 @@ object GlassRegistry {
         if (map.isEmpty()) return null
         val primary = b.cardClass ?: b.name
         val ov = map[primary] ?: map[b.name] ?: return null
-        if (cornerSyncExternalFor(elementId)) return null
-        return if (cornerAdaptiveFor(elementId)) ov.coerceAtMost(minOf(w, h) / 2f) else ov
-    }
-
-    /**
-     * 写穿轨：按类圆角覆盖写入外部形状时的基准（「圆角自适应」钳制，与「玻璃圆角跟随外部形状」
-     * 开关无关——写穿改的就是外部形状本身）：
-     * - 无按类覆盖 → null（调用方回落实测圆角）；
-     * - 有覆盖 → 「自适应」开则钳短边一半，关则原样（恢复用户所设值直写）。
-     */
-    fun writeCornerBaseFor(elementId: Int, w: Float, h: Float): Float? {
-        if (elementId == 0) return null
-        val b = bound[elementId] ?: return null
-        val map = snapshotCornerOverrides()
-        if (map.isEmpty()) return null
-        val primary = b.cardClass ?: b.name
-        val ov = map[primary] ?: map[b.name] ?: return null
-        return if (cornerAdaptiveFor(elementId)) ov.coerceAtMost(minOf(w, h) / 2f) else ov
+        val policy = cornerPolicyFor(elementId)
+        if (policy.mode == "none") return null
+        if (policy.syncOn) return null
+        return clampCornerByShape(ov, w, h, "rect", policy.adaptiveOn)
     }
 }

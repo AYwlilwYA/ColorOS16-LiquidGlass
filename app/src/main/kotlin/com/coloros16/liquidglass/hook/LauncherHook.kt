@@ -2455,8 +2455,8 @@ object LauncherHook {
 
     /** [doc/spec/143 §5.3] 桌面 Layer A 覆盖写穿：ov 非空且总开关开 → desired 写进
      *  LayerBlurDrawable.setCornerRadius（内部写 mBlurDrawable path 圆角）；ov 空 / 总开关关
-     *  且此前写过 → 影子回写系统原值。desired 对齐 SystemUI 写穿轨（[GlassRegistry.writeCornerBaseFor]：
-     *  「圆角自适应」开钳短边一半 / 关原样）。
+     *  且此前写过 → 影子回写系统原值。desired 与 SystemUI 写穿轨同走 [GlassRegistry.clampCornerByShape]
+     *  唯一钳制入口（矩形档钳短边一半 / spec 关自适应原样 / mode=none 不参与）。
      *  任何解析/调用失败只禁写口，不崩不劣化（玻璃角照变、容器不跟 = 现状）。 */
     private fun applyLauncherCornerWrite(
         layer: Any?,
@@ -2468,7 +2468,8 @@ object LauncherHook {
     ) {
         val ov = GlassRegistry.cornerOverrideFor(id)
         val existing = launcherCornerShadow[id]
-        if (ov == null || !Prefs.glassEnabled(api)) {
+        val policy = GlassRegistry.cornerPolicyFor(id)
+        if (ov == null || !Prefs.glassEnabled(api) || policy.mode == "none") {
             if (existing != null) restoreLauncherCornerShadow(id, existing, hostTag)
             return
         }
@@ -2479,7 +2480,7 @@ object LauncherHook {
             Lg.w(TAG, "launcher corner-write: setCornerRadius unresolved, write-through disabled")
             return
         }
-        val desired = GlassRegistry.writeCornerBaseFor(id, w, h) ?: ov
+        val desired = GlassRegistry.clampCornerByShape(ov, w, h, "rect", policy.adaptiveOn)
         if (existing != null && existing.lastWritten == desired) return
         try {
             // 对齐系统 tag 路径形态（CardBackgroundBlurManager mask=8：isFolder=false、itemInfo=null、isHotseat=false）
