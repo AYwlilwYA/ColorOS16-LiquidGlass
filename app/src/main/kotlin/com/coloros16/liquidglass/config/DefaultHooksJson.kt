@@ -13,6 +13,7 @@ object DefaultHooksJson {
     private const val CANVAS = "android.graphics.Canvas"
     private const val DRAWABLE = "android.graphics.drawable.Drawable"
     private const val VIEW = "android.view.View"
+    private const val CONTEXT = "android.content.Context"
     private const val INT = "int"
 
     val DEFAULT_HOOK_SPECS: List<HookSpec> = listOf(
@@ -145,6 +146,52 @@ object DefaultHooksJson {
             channel = ChannelSpec(type = "probe", hookPoint = "isHeadsUpView"),
             effect = EffectSpec(type = "bypassPredicate"),
             probe = ProbeSpec(group = BlurDrawHook.HEADSUP_PROBE_GROUP, role = "consume"),
+        ),
+        HookSpec(
+            id = "text.qsColorNeedLight",
+            group = SpecGroups.TEXT,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_QS_COLOR_UTIL,
+                methodName = "isTextNeedUseLightColorWhenLight",
+                params = listOf(CONTEXT, INT),
+            ),
+            channel = ChannelSpec(type = "text", hookPoint = "isTextNeedUseLightColorWhenLight"),
+            effect = EffectSpec(type = "textQsNeedLight"),
+        ),
+        HookSpec(
+            id = "text.qsColorStatePublish",
+            group = SpecGroups.TEXT,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_QS_COLOR_UTIL,
+                methodName = "setQsColorState",
+                params = listOf(INT),
+            ),
+            channel = ChannelSpec(type = "text", hookPoint = "setQsColorState"),
+            effect = EffectSpec(type = "textQsStatePublish"),
+        ),
+        HookSpec(
+            id = "text.setTextColorContrast",
+            group = SpecGroups.TEXT,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_TEXT_VIEW,
+                methodName = "setTextColor",
+                params = listOf(INT),
+            ),
+            channel = ChannelSpec(type = "text", hookPoint = "setTextColor"),
+            effect = EffectSpec(type = "textSetTextColorContrast"),
+        ),
+        HookSpec(
+            id = "text.onDrawResample",
+            group = SpecGroups.TEXT,
+            match = MatchSpec(
+                className = BlurDrawHook.CLASS_TEXT_VIEW,
+                methodName = "onDraw",
+                params = listOf(CANVAS),
+                declared = true,
+                accessible = true,
+            ),
+            channel = ChannelSpec(type = "text", hookPoint = "onDraw"),
+            effect = EffectSpec(type = "textOnDrawResample"),
         ),
     )
 }

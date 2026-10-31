@@ -452,7 +452,7 @@ object LauncherHook {
     // [doc/spec/78] 卡片借壳：圆角 tag id 解析缓存（0 = 尚未解析）
     private var mCardBlurRadiusTagId = 0
     /** [doc/spec/78] 卡片映射诊断日志计数（原因 → 已打条数，每原因最多 3 条） */
-    private val cardDiagCount = ConcurrentHashMap<String, Int>()
+    private val cardDiagAtMs = ConcurrentHashMap<String, Long>()
     /** page-ind 诊断时间窗节流表（key → 上次打印时刻）。 */
     private val pageIndDiagAtMs = ConcurrentHashMap<String, Long>()
     /** 工作区页码胶囊资源 id（惰性解析缓存；0=解析失败）。 */
@@ -1957,11 +1957,12 @@ object LauncherHook {
         })
     }
 
-    /** [doc/spec/78] 卡片映射诊断日志：每种原因最多打 3 条；正文以 [reason] 起头（grep 可达）。 */
-    private fun logCardDiag(reason: String, msg: String) {
-        val n = cardDiagCount[reason] ?: 0
-        if (n >= 3) return
-        cardDiagCount[reason] = n + 1
+    /** [doc/spec/78] 卡片映射诊断日志：每 reason 每时间窗最多一条（正文以 [reason] 起头，grep 可达）。 */
+    private fun logCardDiag(reason: String, msg: String, windowMs: Long = 60_000L) {
+        val now = SystemClock.uptimeMillis()
+        val prev = cardDiagAtMs[reason] ?: 0L
+        if (now - prev < windowMs) return
+        cardDiagAtMs[reason] = now
         Lg.i(TAG, "[$reason] $msg")
     }
 

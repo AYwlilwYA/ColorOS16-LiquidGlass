@@ -154,6 +154,8 @@
     <!-- 日志与诊断 -->
     <string name="settings_enable_logs">运行日志</string>
     <string name="settings_enable_logs_desc">关闭后 logcat 只保留错误日志。修改后需重启系统界面。</string>
+    <string name="settings_engine_full_log">引擎全量日志</string>
+    <string name="settings_engine_full_log_desc">排查引擎行为时打开，全量流水进 logcat，平时关闭省电防刷屏。</string>
     <string name="settings_debug_draw">开启调试绘制</string>
     <string name="settings_debug_draw_desc">开启后屏幕上出现悬浮球调试工具，可以抓取任意控件的信息、查看当前页面的玻璃绘制清单和界面结构。</string>
     <string name="settings_share_log">分享日志</string>

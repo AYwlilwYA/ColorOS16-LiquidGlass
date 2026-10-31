@@ -31,10 +31,16 @@ import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.debug.DebugElement
 import com.coloros16.liquidglass.debug.DebugOverlay
 import com.coloros16.liquidglass.glass.GlassRegistry
+import com.coloros16.liquidglass.hook.capture.CaptureEngine
+import com.coloros16.liquidglass.hook.capture.CapturePolicy
+import com.coloros16.liquidglass.hook.capture.ExcludeSpec
+import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.hook.spec.HookSpec
 import com.coloros16.liquidglass.hook.spec.ProbeRegistry
 import com.coloros16.liquidglass.hook.spec.RestoreEngine
 import com.coloros16.liquidglass.hook.spec.SuppressPolicy
+import com.coloros16.liquidglass.hook.text.TextColorPolicy
+import com.coloros16.liquidglass.hook.text.TextScopeMatcher
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
@@ -538,6 +544,10 @@ object BlurDrawHook {
      *  本 hook 对"正在玻璃化的 heads-up bgView"单独放行（返回 false），仅持续到 drawable 创建确认。 */
     internal const val CLASS_HEADS_UP_CONTAINER_WINDOW = "com.oplus.systemui.notification.headsup.windowframe.HeadsUpContainerWindow"
     internal const val METHOD_IS_HEADS_UP_VIEW = "isHeadsUpView"
+    /** 系统黑白通道发布/查询类（文字反色复用系统判定）。 */
+    internal const val CLASS_QS_COLOR_UTIL = "com.oplus.systemui.qs.base.util.QsColorUtil"
+    /** 文字链 hook 目标类。 */
+    internal const val CLASS_TEXT_VIEW = "android.widget.TextView"
     /** [spec/19] heads-up 窗口类型 = TYPE_STATUS_BAR_SUB_PANEL（HeadsUpContainerWindow lp type，反编译实证） */
     private const val WINDOW_TYPE_HEADS_UP = 2017
     // ---- [2026-08-15 轻打扰折叠横幅玻璃化] Simple Banner 管线（独立于普通 heads-up）----
@@ -692,9 +702,8 @@ object BlurDrawHook {
     /** [spec/21 修复 2026-08-13] onDraw 重采样节流间隔：仅快照换帧 / 位置变化才重采样（非每帧），
      *  150ms 内同 TextView 最多重采样一次，避免 getLocationOnScreen 每帧开销 */
     private const val TEXT_CONTRAST_RESAMPLE_INTERVAL_MS = 150L
-    /** [2026-08-15 折叠组头误伤修复] 展开按钮数字 TextView 资源名（com.android.systemui:id/oplus_expand_button_number，
-     *  折叠组头内 text="2"，原色灰中性色）。识别用资源名匹配（不依赖模块引用 SystemUI R.id）。 */
-    private const val EXPAND_BUTTON_NUMBER_RES_NAME = "oplus_expand_button_number"
+    /** 展开按钮数字 TextView 资源名（折叠组头内，原色灰中性色）。识别用资源名匹配（不依赖模块引用 SystemUI R.id）。 */
+    internal const val EXPAND_BUTTON_NUMBER_RES_NAME = "oplus_expand_button_number"
 
     // ------------------------------------------------------------ 坐标映射数据结构（R3） ------------------------------------------------------------
 
@@ -709,7 +718,7 @@ object BlurDrawHook {
      *                      false=RBox 圆弧；spec/18 圆角过渡区深挖修正）
      * @param cornerWeight CONIC 本体角权重（系统 CornerParamsKt fMax=(8·w)/(3·w+3) 变换后值；CONIC 时用）
      */
-    private data class RegionEntry(
+    internal data class RegionEntry(
         val region: RectF,
         val autoBounds: Rect,
         val hostViewName: String,
@@ -1102,14 +1111,13 @@ object BlurDrawHook {
     private var mBaseDrawableUpdatePath: Method? = null
     /** BlurConfig.getEnableStaticBlurCorner()（lg-143-branch 诊断分类用；null=反射失败打 ?） */
     private var mBlurConfigGetEnableStaticBlurCorner: Method? = null
-    // ---- [spec/39 文字反色复用系统黑白通道] QsColorUtil.getQsColorState() 反射（public static final int；
-    // applyLocalTextContrast 遮罩关闭分支采样来源，替代逐文字整屏快照 sampleInjectedColor；mountQsColorUtil 解析）----
-    private var mQsColorUtilGetState: Method? = null
-    // [spec/47 诊断] 上次记录的 getQsColorState() 值（值跳变才打一次日志，验证 heads-up 场景系统通道是否 0/1）。
-    private var lastLoggedQsColorState = Int.MIN_VALUE
+    // ---- [spec/39 文字反色复用系统黑白通道] getQsColorState() 反射已随文字链迁 TextColorPolicy ----
     // [spec/52 文字强制刷新] 上次 setQsColorState(int) 发布值（系统黑白通道状态跳变才 post 全局文字刷新，
-    // 同值重复发布不重复触发；见 mountQsColorUtil 发布方 hook）。
+    // 同值重复发布不重复触发；见 text.qsColorStatePublish 发布方 hook）。
     private var lastPublishedQsColorState = Int.MIN_VALUE
+    /** QsColorUtil 类与 isTextNeed 可解析（resolveQsColorUtilGetState 置位；setQsColorState precondition 用）。 */
+    @Volatile
+    private var qsColorUtilBaseResolved = false
     // [spec/52] forceRefreshAllTextColors 全局刷新节流：触发点（收起/系统状态跳变）可能短时间多次回调，
     // 全树遍历 TextView 有成本，节流窗口内只 post 一次。
     private const val FORCE_REFRESH_TEXT_COLOR_MIN_INTERVAL_MS = 250L
@@ -1180,10 +1188,7 @@ object BlurDrawHook {
             textForceRefreshScheduled = false
         }
     }
-    // [spec/53 状态栏文字变黑 2026-08-13] 状态栏区域底边（物理 px，framework status_bar_height dimen，
-    // 首次调用缓存）。isOverGlassRegion 对 y < 该值的坐标恒判"非玻璃"——状态栏文字（时钟/图标 label 等）
-    // 绝不被文字变色逻辑干预（状态栏文字颜色由系统 DarkIconDispatcher 等管理）。-1 = 解析失败（不启用排除）。
-    private var statusBarBottomPx = -1
+    // [spec/53] 状态栏底边缓存已随文字链范围判定迁 TextScopeMatcher。
 
     // ---- [2026-08-13 反射结果缓存] registerScreenRegionCore 的 blurDrawable/target 解析结果缓存 ----
     // 同一 drawable 实例每次 draw 的 proxy 相同，getBlurDrawable + platformGetBlurDrawable 解析稳定，
@@ -1604,6 +1609,27 @@ object BlurDrawHook {
      * 清表 → [postInvalidateHosts] 重录宿主 → [triggerBackgroundCapture] 重抓（省电开启时会被
      * 抓屏门控挡住，省电关闭时立即重抓到新帧）。
      */
+    /** 四个还原本体纳入 RestoreEngine 编排（实例级懒还原路径保留不动；此处为各时机的全局兜底，逐条幂等）。 */
+    private fun registerEngineRestores() {
+        val overrideAll = {
+            val vbps = ArrayList<Any>()
+            for (sh in unifiedCornerShadow.values) {
+                if (!sh.fromOverride) continue
+                sh.vbpRef.get()?.let { vbps.add(it) }
+            }
+            for (vbp in vbps) restoreCornerOverrideShadow(vbp)
+        }
+        val nbvAll = {
+            val views = synchronized(nbvRadiusLock) { nbvOverrideDesired.keys.toList() }
+            for (v in views) restoreNbvRadiusForView(v)
+        }
+        for (timing in RestoreEngine.Timing.values()) {
+            RestoreEngine.register(timing) { overrideAll() }
+            RestoreEngine.register(timing) { nbvAll() }
+            RestoreEngine.register(timing) { restoreUnifiedCornerIfApplied("engine-${timing.name.lowercase()}") }
+        }
+    }
+
     private fun invalidateGlassState(reason: String) {
         try {
             containerTransforms.clear()
@@ -1617,7 +1643,8 @@ object BlurDrawHook {
             screenSnapshot = null
             lastSnapshotFingerprint = 0
             postInvalidateHosts()
-            triggerBackgroundCapture()
+            CaptureEngine.triggerBackgroundCapture()
+            RestoreEngine.fire(RestoreEngine.Timing.GLASS_OFF)
             Lg.i(TAG, "state: glass caches invalidated ($reason)")
         } catch (t: Throwable) {
             Lg.e(TAG, "state: glass caches invalidate failed ($reason)", t)
@@ -1646,6 +1673,7 @@ object BlurDrawHook {
                         powerSaveMeasuredAt = 0L
                         val on = isPowerSaveGlassOff()
                         invalidateGlassState("power-save-changed on=$on")
+                        RestoreEngine.fire(RestoreEngine.Timing.POWER_SAVE)
                     } catch (t: Throwable) {
                         Lg.e(TAG, "power-save: broadcast onReceive error", t)
                     }
@@ -1662,33 +1690,9 @@ object BlurDrawHook {
         }
     }
 
-    // ---- [2026-08-13 captureDisplay 开始延迟优化] 抓屏热路径远程 Prefs 时间节流缓存 ----
-    // bgCaptureScale()/bgCaptureMinIntervalMs() 原每次调用经 api.getRemotePreferences（LibXposed 框架侧
-    // 存储，**跨进程 IPC**）读——每次抓屏/入队一次 IPC（1-10ms），是「触发 → captureDisplay 开始」路径上
-    // 的非必要延迟。缓存 ≥CAPTURE_PREFS_CACHE_MS 才重读一次（同 readMaterialParams 思路），热路径零 IPC。
-    @Volatile
-    private var cachedBgCaptureScale = Prefs.DEFAULT_BG_CAPTURE_SCALE
-    @Volatile
-    private var cachedBgCaptureScaleTimeMs = 0L
-    /** [2026-08-15 主动式持续抓屏] 持续抓屏速率 Hz 缓存（[panelCaptureHz]；热路径 IPC 节流缓存同上） */
-    @Volatile
-    private var cachedPanelCaptureHz = Prefs.DEFAULT_PANEL_CAPTURE_HZ
-    @Volatile
-    private var cachedPanelCaptureHzTimeMs = 0L
-    @Volatile
-    private var cachedBgCaptureMinIntervalMs = Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-    @Volatile
-    private var cachedBgCaptureMinIntervalMsTimeMs = 0L
-    @Volatile
-    private var cachedLegacyPeriodicEnabled = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-    @Volatile
-    private var cachedLegacyPeriodicEnabledTimeMs = 0L
+    // ---- 抓屏热路径远程 Prefs 时间节流缓存已随抓屏参数读取迁 CapturePolicy ----
     @Volatile
     private var lastCaptureTime = 0L
-    @Volatile
-    private var cachedPeriodicCaptureIntervalMs = Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
-    @Volatile
-    private var cachedPeriodicCaptureIntervalTimeMs = 0L
 
     // ---- [2026-08-13 captureDisplay 开始延迟优化] sfc 反射方法/字段缓存 ----
     /** ViewRootImpl.getSurfaceControl（@SystemApi）缓存：所有 View 共享 View.getViewRootImpl 基类方法，
@@ -1726,7 +1730,7 @@ object BlurDrawHook {
     /** 文字反转取色开关（install 时读 Prefs 缓存；false 不挂 QsColorUtil/TextView hook，走系统原逻辑）。
      *  @Volatile：install 线程写，hook 回调（主线程）读。 */
     @Volatile
-    private var textContrastEnabled = true
+    internal var textContrastEnabled = true
     /** QS 面板区域平均亮度（-1=无快照；快照更新时 worker 线程计算；方案 B hook 读，判定 O(1)） */
     @Volatile
     private var qsPanelBrightness = -1
@@ -1743,7 +1747,7 @@ object BlurDrawHook {
     // ---- [spec/35 黑遮罩 + 白字方案 / spec/41 作用范围修正] 状态（install 时读 Prefs 缓存；改动需重启 SystemUI 生效） ----
     /** 黑遮罩总开关（KEY_MASK_ENABLE；true → SystemUI 下拉面板所有玻璃元素统一压暗背景采样 + 文字统一白/灰）。 */
     @Volatile
-    private var maskEnabled = Prefs.DEFAULT_MASK_ENABLE
+    internal var maskEnabled = Prefs.DEFAULT_MASK_ENABLE
     /** 黑遮罩不透明度（KEY_MASK_ALPHA，0~1）。仅面板 scrim 黑 tint 用（scrimMaskPaintFor）。 */
     @Volatile
     private var maskAlpha = Prefs.DEFAULT_MASK_ALPHA
@@ -1756,11 +1760,11 @@ object BlurDrawHook {
     private var maskGlassDimAtMs = 0L
     /** 遮罩下文字统一颜色 ARGB（KEY_MASK_TEXT_COLOR，默认纯白）。 */
     @Volatile
-    private var maskTextColor = Prefs.DEFAULT_MASK_TEXT_COLOR
+    internal var maskTextColor = Prefs.DEFAULT_MASK_TEXT_COLOR
     /** 文字强制白独立开关（KEY_TEXT_FORCE_WHITE_ENABLE，默认 true；spec/63 统一注入通道解耦
      *  KEY_MASK_ENABLE——遮罩只管背景压暗，强制白独立可配：可「只要白字不要遮罩」或「强制白单独可关」）。 */
     @Volatile
-    private var textForceWhiteEnabled = Prefs.DEFAULT_TEXT_FORCE_WHITE_ENABLE
+    internal var textForceWhiteEnabled = Prefs.DEFAULT_TEXT_FORCE_WHITE_ENABLE
     // ---- [spec/48 遮罩走系统自带机制] 背景 scrim 纯黑 tint 相关 ----
     /** ScrimView.mScrimName（public String，16.1 反编译实证）——判定 behind_scrim（shade 面板背景）画黑 tint；
      *  notifications_scrim/front_scrim 保持透明（现状）。反射失败（null）→ 保守按 behind_scrim 处理（宁画不丢）。 */
@@ -1791,7 +1795,7 @@ object BlurDrawHook {
     // ---- [spec/47 弹出通知文字跟随整体颜色] 状态（install 时读 Prefs 缓存；改动需重启 SystemUI 生效） ----
     /** heads-up 文字跟随整体颜色独立开关（KEY_HEADS_UP_TEXT_FOLLOW；**与遮罩开关无关**）。 */
     @Volatile
-    private var headsUpTextFollowEnabled = Prefs.DEFAULT_HEADS_UP_TEXT_FOLLOW
+    internal var headsUpTextFollowEnabled = Prefs.DEFAULT_HEADS_UP_TEXT_FOLLOW
 
     /**
      * 玻璃内压暗值（[Prefs.KEY_MASK_GLASS_DIM]，0~1，默认 0=不压暗）：喂 shader uMaskAlpha
@@ -1895,7 +1899,7 @@ object BlurDrawHook {
     }
 
     /** drawable(identityHashCode) → 屏幕区域 + 局部 bounds（AutoBlurDrawable.draw hook 建立，bounds 供兜底匹配） */
-    private val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
+    internal val screenRegionMap = ConcurrentHashMap<Int, RegionEntry>()
 
     /**
      * 黏连桥 debug 只读快照对（spec/144 §六：applyProximityBridge/applyMenuBridge 桥对与参数
@@ -2607,6 +2611,21 @@ object BlurDrawHook {
     fun install(api: XposedInterface, classLoader: ClassLoader) {
         this.api = api
         hostClassLoader = classLoader
+        // 引擎全量日志门控读取器（500ms TTL 热切换）
+        EngineLog.attach { Prefs.read(api) }
+        // 抓屏参数策略与七触发入口收口接线
+        CapturePolicy.attach(api) { isMotionActive }
+        CaptureEngine.attach(
+            background = { triggerBackgroundCapture(it) },
+            mainThread = { triggerBackgroundCaptureOnMainThread() },
+            firstFrame = { burstStop, logTag, pauseDuringPanelExpansion, mainThreadSyncFirstFrame, bypassMainSyncDedup ->
+                triggerFirstFrameCaptureWithBurst(burstStop, logTag, pauseDuringPanelExpansion, mainThreadSyncFirstFrame, bypassMainSyncDedup)
+            },
+            headsUpContinuous = { startHeadsUpContinuousCapture() },
+            panelContinuous = { startPanelContinuousCapture() },
+            cardContinuous = { startCardBackgroundContinuousCapture() },
+            bannerContinuous = { startSimpleBannerContinuousCapture(it) },
+        )
         GlassRegistry.attach { this.api?.let { a -> Prefs.read(a) } }
         // [2026-08-13 用户要求·关闭日志选项] install 时读取并缓存（热路径不每帧读 Prefs 防 binder 开销）
         moduleLogEnabled = try {
@@ -2684,8 +2703,9 @@ object BlurDrawHook {
         }
         resolveMethods(classLoader)
         // 引擎挂载：映射/scrim/通知卡材质抑制/主渲染/兜底 + tile/header/metaColor/headsup 探针（迁为 HookSpec）
-        HookEngine.mountAll(api, classLoader, buildEngineRequests())
+        HookEngine.mountAll(api, classLoader, buildEngineRequests(classLoader))
         RestoreEngine.start(ConfigStore.loadDefault())
+        registerEngineRestores()
         // [spec/48 过渡修复 2026-08-13] hook ScrimView.setViewAlpha 捕获 behind_scrim 真实动画 alpha
         //（AutoBlurDrawable.setAlpha 空实现恒 255 → 原黑 tint 读 drawable.alpha 永远=1 无过渡）。
         mountScrimViewAlpha(api, classLoader)
@@ -2762,21 +2782,16 @@ object BlurDrawHook {
         mountNotificationPopupDismiss(api, classLoader)
         // [doc/spec/78 补齐] 设备中心卡片组件登记（卡片语义类进组件清单，供预设按组件命中）
         mountDeviceCardLabel(api, classLoader)
-        // [spec/21 文字反转取色 + spec/35 黑遮罩白字 + spec/63 统一通道] hook 挂载条件：
+        // [spec/21 文字反转取色 + spec/35 黑遮罩白字 + spec/63 统一通道] hook 挂载条件（挂载经引擎
+        // buildEngineRequests 的 precondition；此处只打编排诊断日志）：
         // - textContrastEnabled：挂 QsColorUtil（亮度判定）+ TextView#setTextColor（反转取色）+ onDraw 节流重采样。
         // - 仅 maskEnabled / 仅 textForceWhiteEnabled（spec/63 强制白独立开关）：仍须挂 TextView#setTextColor
         //   （统一通道 resolveReadableTextColor 强制白/灰）。
         // - 三开关全关：不挂任何文字 hook。
         if (textContrastEnabled || maskEnabled || textForceWhiteEnabled) {
-            if (textContrastEnabled) {
-                mountQsColorUtil(api, classLoader)
-                // [spec/21 修复 2026-08-13] onDraw 节流重采样：快照就绪/位置变化/attach 后重新注入（修复
-                // "setTextColor 时刻快照缺失 → 永不反色"）。仅检查已登记 TextView（O(1) 快速跳过），非每帧采样。
-                mountTextViewOnDraw(api, classLoader)
-            } else {
+            if (!textContrastEnabled) {
                 Lg.i(TAG, "text-contrast disabled but mask/force-white enabled: only TextView#setTextColor mounted (force white/gray text)")
             }
-            mountTextViewSetTextColor(api, classLoader)
         } else {
             Lg.i(TAG, "text-contrast/mask/force-white disabled by prefs, QsColorUtil/TextView hooks skipped")
         }
@@ -2808,7 +2823,7 @@ object BlurDrawHook {
     // ------------------------------------------------------------ 引擎装配：5 mount → HookSpec
 
     /** 引擎挂载请求表：spec（DefaultHooksJson 出厂表）+ effect（本对象内实现，可访问私有 helper）。 */
-    private fun buildEngineRequests(): List<HookEngine.MountRequest> {
+    private fun buildEngineRequests(classLoader: ClassLoader): List<HookEngine.MountRequest> {
         val specs = ConfigStore.loadDefault().associateBy { it.id }
         fun spec(id: String): HookSpec = specs.getValue(id)
         return listOf(
@@ -2905,7 +2920,103 @@ object BlurDrawHook {
                 mountedLog = "Hook B mounted: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW(View) (heads-up glass exclude bypass)",
                 failedLog = "Hook B mount FAILED: $CLASS_HEADS_UP_CONTAINER_WINDOW#$METHOD_IS_HEADS_UP_VIEW",
             ),
+            HookEngine.MountRequest(
+                spec = spec("text.qsColorNeedLight"),
+                effect = EffectQsNeedLight,
+                resolveHook = { cl -> resolveQsColorUtilGetState(cl) },
+                precondition = { textContrastEnabled },
+                mountedLog = "text-contrast B mounted: QsColorUtil#isTextNeedUseLightColorWhenLight(Context, int)",
+                failedLog = "text-contrast B mount FAILED: QsColorUtil#isTextNeedUseLightColorWhenLight",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("text.qsColorStatePublish"),
+                effect = EffectQsStatePublish,
+                precondition = { textContrastEnabled && qsColorUtilBaseResolved },
+                mountedLog = "text-contrast B mounted: QsColorUtil#setQsColorState(int) (state jump -> force refresh all text colors)",
+                failedLog = "text-contrast B mount FAILED: QsColorUtil#setQsColorState(int)",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("text.setTextColorContrast"),
+                effect = EffectTextSetTextColor,
+                precondition = { textContrastEnabled || maskEnabled || textForceWhiteEnabled },
+                mountedLog = "text-contrast A mounted: TextView#setTextColor(int)",
+                failedLog = "text-contrast A mount FAILED: TextView#setTextColor(int)",
+            ),
+            HookEngine.MountRequest(
+                spec = spec("text.onDrawResample"),
+                effect = EffectTextOnDrawResample,
+                precondition = { textContrastEnabled },
+                mountedLog = "text-contrast A mounted: TextView#onDraw(Canvas) (throttled re-sample)",
+                failedLog = "text-contrast A mount FAILED: TextView#onDraw(Canvas)",
+            ),
         )
+    }
+
+    /** 解析 `QsColorUtil` 类与 `getQsColorState()` 反射（挂载期一次；isTextNeed 可解析才置位
+     *  [qsColorUtilBaseResolved]，setQsColorState 的 precondition 依此复刻「外层 try 成功才挂」语义）。 */
+    private fun resolveQsColorUtilGetState(classLoader: ClassLoader) {
+        val clazz = Class.forName(CLASS_QS_COLOR_UTIL, false, classLoader)
+        clazz.getMethod("isTextNeedUseLightColorWhenLight", android.content.Context::class.java, Int::class.javaPrimitiveType)
+        TextColorPolicy.mQsColorUtilGetState = try {
+            clazz.getMethod("getQsColorState")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "text-contrast B getQsColorState resolve FAILED (mask-off text uses original color)", t)
+            null
+        }
+        qsColorUtilBaseResolved = true
+    }
+
+    // ------------------------------------------------------------ 文字链 effect（拦截体自 mount 迁入）
+
+    private object EffectQsNeedLight : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            if (textForceWhiteEnabled) return true
+            val brightness = qsPanelBrightness
+            return if (brightness < 0) {
+                chain.proceed()
+            } else {
+                brightness <= TEXT_CONTRAST_BRIGHTNESS_THRESHOLD
+            }
+        }
+    }
+
+    private object EffectQsStatePublish : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                val v = (chain.getArg(0) as? Int) ?: Int.MIN_VALUE
+                if (v != lastPublishedQsColorState) {
+                    lastPublishedQsColorState = v
+                    requestForceRefreshTextColors()
+                }
+            } catch (t: Throwable) {
+                Lg.e(TAG, "text-contrast forceRefresh on setQsColorState error", t)
+            }
+            chain.proceed()
+            return null
+        }
+    }
+
+    private object EffectTextSetTextColor : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            return try {
+                applyLocalTextContrast(chain)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "text-contrast A intercept error", t)
+                chain.proceed()
+            }
+        }
+    }
+
+    private object EffectTextOnDrawResample : HookEngine.HookEffect {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            try {
+                val tv = chain.getThisObject() as? TextView
+                if (tv != null) maybeResampleTextContrast(tv)
+            } catch (t: Throwable) {
+                Lg.e(TAG, "text-contrast A onDraw error", t)
+            }
+            return chain.proceed()
+        }
     }
 
     // ------------------------------------------------------------ 反射解析
@@ -5088,7 +5199,7 @@ object BlurDrawHook {
             )
             if (screenRegionMap.size > 1024) screenRegionMap.clear()
             // [doc/spec/07 + 2026-08-13] 新映射建立 = 内容变化信号 → 触发整屏快照重抓
-            triggerBackgroundCapture()
+            CaptureEngine.triggerBackgroundCapture()
         } else if (previous.region != region || previous.autoBounds != bounds) {
             screenRegionMap[key] = entry
             logThrottled("$logTag-region-updated", Log.DEBUG) { "$logTag: updated screen region id=$key region=$region bounds=$bounds" }
@@ -5580,7 +5691,7 @@ object BlurDrawHook {
             if (screenRegionMap.size > 1024) screenRegionMap.clear()
             // [doc/spec/07 + 2026-08-13] 新映射建立 = 内容变化信号 → 触发整屏快照重抓
             //（registerHostView 时映射尚未写入，抓屏触发只能在此处；立即重抓见 triggerBackgroundCapture）
-            triggerBackgroundCapture()
+            CaptureEngine.triggerBackgroundCapture()
         } else if (previous.region != region || previous.autoBounds != bounds) {
             screenRegionMap[key] = entry
             logThrottled("$logTag-region-updated", Log.DEBUG) { "$logTag: updated screen region id=$key region=$region bounds=$bounds" }
@@ -6312,10 +6423,10 @@ object BlurDrawHook {
             // [doc/spec/07 + 2026-08-13] 新卡片映射建立 = 内容变化信号 → 触发整屏快照重抓（无节流立即）
             // [doc/spec/51 2026-08-13] heads-up 新卡 = 通知出现：主线程立即抓首帧 + 连抓 5~6 帧 +
             // 持续期间兜底抓屏（覆盖入场动画背景实时跟上）；shade 普通新卡仍走 worker 异步。
-            if (isHeadsUpBgView(bgView)) {
+            if (TextScopeMatcher.isHeadsUpBgView(bgView)) {
                 triggerHeadsUpAppearanceCapture(bgView)
             } else {
-                triggerBackgroundCapture()
+                CaptureEngine.triggerBackgroundCapture()
             }
         } else if (previous.region != region || previous.autoBounds != bounds) {
             screenRegionMap[key] = entry
@@ -6328,11 +6439,11 @@ object BlurDrawHook {
             // [doc/spec/51 2026-08-13] 若该卡刚转入 heads-up（映射已存在但尚未进入出现抓屏，如 shade →
             // heads-up 场景）→ 按「通知出现」触发首帧连抓；已活跃的同一 heads-up 卡 → 仅内容变化抓屏
             //（连抓已由出现时启动覆盖入场动画，此处不重复触发避免双路首帧主线程抓屏）。
-            if (isHeadsUpBgView(bgView)) {
+            if (TextScopeMatcher.isHeadsUpBgView(bgView)) {
                 if (headsUpActiveHost?.get() !== bgView) {
                     triggerHeadsUpAppearanceCapture(bgView)
                 } else {
-                    triggerBackgroundCapture()
+                    CaptureEngine.triggerBackgroundCapture()
                 }
             }
         }
@@ -6529,12 +6640,12 @@ object BlurDrawHook {
                             // （防持续主线程阻塞 = ANR 冻结根因）。
                             if (panelWasCollapsed) {
                                 panelWasCollapsed = false
-                                triggerBackgroundCaptureOnMainThread()
+                                CaptureEngine.triggerBackgroundCaptureOnMainThread()
                             } else {
                                 // [doc/spec/07 + 2026-08-13] 面板展开（expansion>0）= 内容变化信号 → 触发整屏
                                 // 快照重抓（[2026-08-13 回退 spec/49 固定 200ms] 默认无节流立即抓，worker 异步）。
                                 // 收起（<=0）不触发：面板收起 = 无玻璃可见，保持旧帧零抓屏。
-                                triggerBackgroundCapture()
+                                CaptureEngine.triggerBackgroundCapture()
                             }
                             kickPeriodicCapture()
                         } else {
@@ -6588,7 +6699,7 @@ object BlurDrawHook {
                             // 首帧由 triggerBackgroundCaptureOnMainThread（主线程同步）立即抓。
                             if (panelWasCollapsed) {
                                 panelWasCollapsed = false
-                                triggerBackgroundCaptureOnMainThread()
+                                CaptureEngine.triggerBackgroundCaptureOnMainThread()
                             }
                         } catch (t: Throwable) {
                             Lg.e(TAG, "taskG: onExpansionStarted first-frame error", t)
@@ -7933,7 +8044,7 @@ object BlurDrawHook {
         if (previous == null) {
             screenRegionMap[id] = entry
             if (screenRegionMap.size > 1024) screenRegionMap.clear()
-            triggerBackgroundCapture()
+            CaptureEngine.triggerBackgroundCapture()
             Lg.i(TAG, "seedling-card: region registered id=$id view=$hostName region=$screenRegion corner=$cornerRadius")
         } else if (previous.region != screenRegion || previous.autoBounds != bounds) {
             screenRegionMap[id] = entry
@@ -8035,7 +8146,7 @@ object BlurDrawHook {
                     }
                     // 展开后面板背景刚被系统重置 → 同步补抓一帧，防玻璃采到展开前的旧快照
                     try {
-                        triggerFirstFrameCaptureWithBurst(
+                        CaptureEngine.triggerFirstFrameCaptureWithBurst(
                             burstStop = { false },
                             logTag = "volume-expand",
                             pauseDuringPanelExpansion = false,
@@ -8340,7 +8451,7 @@ object BlurDrawHook {
                     Lg.w(TAG, "volume-panel-backdrop: appearance apply error", t)
                 }
             }
-            triggerFirstFrameCaptureWithBurst(
+            CaptureEngine.triggerFirstFrameCaptureWithBurst(
                 burstStop = { false },
                 logTag = "volume-appear",
                 pauseDuringPanelExpansion = false,
@@ -9103,7 +9214,7 @@ object BlurDrawHook {
         }
         try {
             // CardBackgroundView 不 override onDraw → hook 基类 View.onDraw(Canvas)（protected →
-            // getDeclaredMethod + setAccessible，同 mountTextViewOnDraw 风格），拦截体快速判定 this。
+            // getDeclaredMethod + setAccessible，同 text.onDrawResample 风格），拦截体快速判定 this。
             val method = View::class.java.getDeclaredMethod(METHOD_ON_DRAW, Canvas::class.java).apply { isAccessible = true }
             api.hook(method)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
@@ -9143,7 +9254,7 @@ object BlurDrawHook {
                                     }
                                 }
                                 if (!cardBackgroundContinuousRunning) {
-                                    startCardBackgroundContinuousCapture()
+                                    CaptureEngine.startCardBackgroundContinuousCapture()
                                 }
                                 val canvas = try {
                                     chain.getArg(0) as? Canvas
@@ -9238,14 +9349,14 @@ object BlurDrawHook {
      * → 退出（零后台耗电）；锁屏期间不启动/退出。与 heads-up / simple-banner 持续源独立。
      */
     private fun startCardBackgroundContinuousCapture() {
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (cardBackgroundContinuousRunning) return
         if (cardBackgroundActiveHost?.get() == null) return
         if (!isCardBackgroundHostActive()) return
         if (isKeyguardLockedNow()) return
         cardBackgroundContinuousRunning = true
         if (moduleLogEnabled) {
-            Lg.i(TAG, "seedling-cardview: continuous capture worker start (rate ${panelCaptureHz()}Hz)")
+            Lg.i(TAG, "seedling-cardview: continuous capture worker start (rate ${CapturePolicy.panelCaptureHz()}Hz)")
         }
         try {
             Thread {
@@ -9268,7 +9379,7 @@ object BlurDrawHook {
                             "seedling-cardview: continuous tick queued (single-channel)"
                         }
                         try {
-                            Thread.sleep(continuousCaptureIntervalMs())
+                            Thread.sleep(CapturePolicy.continuousCaptureIntervalMs())
                         } catch (ignored: InterruptedException) {
                         }
                     }
@@ -9368,7 +9479,7 @@ object BlurDrawHook {
                                 if (moduleLogEnabled) {
                                     Lg.i(TAG, "simple-banner: dispatch trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
                                 }
-                                startSimpleBannerContinuousCapture(force = true)
+                                CaptureEngine.startSimpleBannerContinuousCapture(force = true)
                                 if (moduleLogEnabled) {
                                     Lg.i(TAG, "simple-banner: dispatch start returned, running now=$simpleBannerContinuousRunning")
                                 }
@@ -9445,7 +9556,7 @@ object BlurDrawHook {
                                 if (moduleLogEnabled) {
                                     Lg.i(TAG, "simple-banner: attach trigger start, running=$simpleBannerContinuousRunning host=${simpleBannerActiveHost?.get() != null}")
                                 }
-                                startSimpleBannerContinuousCapture(force = true)
+                                CaptureEngine.startSimpleBannerContinuousCapture(force = true)
                                 if (moduleLogEnabled) {
                                     Lg.i(TAG, "simple-banner: attach start returned, running now=$simpleBannerContinuousRunning")
                                 }
@@ -9504,7 +9615,7 @@ object BlurDrawHook {
                                 }
                             }
                             if (!cardBackgroundContinuousRunning) {
-                                startCardBackgroundContinuousCapture()
+                                CaptureEngine.startCardBackgroundContinuousCapture()
                             }
                         }
                     } catch (t: Throwable) {
@@ -9911,7 +10022,7 @@ object BlurDrawHook {
         registerSeedlingCardRegion(id, screenRegion, Rect(0, 0, w, h), banner, "simple-banner")
         if (firstAppearance) {
             try {
-                triggerBackgroundCaptureOnMainThread()
+                CaptureEngine.triggerBackgroundCaptureOnMainThread()
             } catch (t: Throwable) {
                 Lg.e(TAG, "simple-banner: first sync capture failed", t)
             }
@@ -9957,7 +10068,7 @@ object BlurDrawHook {
      *  锁屏期间不启动/退出（被动事件触发不受影响）。与 heads-up 持续源独立。
      */
     private fun startSimpleBannerContinuousCapture(force: Boolean = false) {
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (simpleBannerContinuousRunning) {
             Lg.i(TAG, "simple-banner: start return, already running")
             return
@@ -9983,7 +10094,7 @@ object BlurDrawHook {
         simpleBannerContinuousRunning = true
         // [2026-08-15 诊断] panelCaptureHz 单独求值（避免 Log 参数求值异常吞掉 start 日志）；含 IPC 读 Prefs
         val hz = try {
-            panelCaptureHz()
+            CapturePolicy.panelCaptureHz()
         } catch (t: Throwable) {
             Lg.w(TAG, "simple-banner: panelCaptureHz failed, default 120", t)
             Prefs.DEFAULT_PANEL_CAPTURE_HZ
@@ -10033,7 +10144,7 @@ object BlurDrawHook {
                                 "simple-banner: continuous tick queued (single-channel)"
                             }
                             try {
-                                Thread.sleep(continuousCaptureIntervalMs())
+                                Thread.sleep(CapturePolicy.continuousCaptureIntervalMs())
                             } catch (ignored: InterruptedException) {
                             }
                         } catch (t: Throwable) {
@@ -10206,7 +10317,7 @@ object BlurDrawHook {
                         if (row != null) {
                             applyOplusCustomRowTransparentBg(row)
                             row.invalidate()
-                            triggerBackgroundCapture()
+                            CaptureEngine.triggerBackgroundCapture()
                             if (moduleLogEnabled) {
                                 Lg.i(TAG, "seedling-row: setNewSeedlingView -> invalidate + triggerBackgroundCapture (row w=${row.width} h=${row.height})")
                             }
@@ -10302,102 +10413,6 @@ object BlurDrawHook {
      *
      * 开关：install 时 [textContrastEnabled] 缓存；false 不挂本 hook（走系统原逻辑）。
      */
-    private fun mountQsColorUtil(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("com.oplus.systemui.qs.base.util.QsColorUtil", false, classLoader)
-            val method = clazz.getMethod(
-                "isTextNeedUseLightColorWhenLight",
-                android.content.Context::class.java, Int::class.javaPrimitiveType,
-            )
-            // [spec/39 文字反色复用系统黑白通道] 缓存 `getQsColorState()` 反射（public static final int 无参，
-            // 反编译实证 QsColorUtil.java:92-94）：applyLocalTextContrast 遮罩关闭分支的采样来源。
-            // 独立 try-catch：失败 → 采样来源回退原色（不注入），不影响 isTextNeedUseLightColorWhenLight hook。
-            mQsColorUtilGetState = try {
-                clazz.getMethod("getQsColorState")
-            } catch (t: Throwable) {
-                Lg.e(TAG, "text-contrast B getQsColorState resolve FAILED (mask-off text uses original color)", t)
-                null
-            }
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    // [spec/35 黑遮罩 + 白字方案 / spec/63 独立开关 2026-08-26] 文字强制白开启 → 恒白字
-                    // （系统侧明暗文字决策也统一由 textForceWhiteEnabled 决定，不再绑 maskEnabled——
-                    // spec/63 遮罩只管背景压暗，强制白单独可关；亮度采样正是 spec/21 间歇性失效根因之一）
-                    if (textForceWhiteEnabled) return@intercept true
-                    val brightness = qsPanelBrightness
-                    if (brightness < 0) {
-                        // 快照未就绪 → 系统原逻辑（不干预）
-                        chain.proceed()
-                    } else {
-                        // >196 背景亮 → 黑字（false）；≤196 背景暗 → 白字（true）
-                        brightness <= TEXT_CONTRAST_BRIGHTNESS_THRESHOLD
-                    }
-                }
-            Lg.i(TAG, "text-contrast B mounted: QsColorUtil#isTextNeedUseLightColorWhenLight(Context, int)")
-            // [spec/52 文字强制刷新] hook **发布方** `QsColorUtil.setQsColorState(int)`（public static final
-            // void，反编译实证 QsColorUtil.java:145-147；OplusQsColorManager 按模糊位图亮度算出后静态发布：
-            // 亮度>196→0 / ≤196→1 / null→2 不发布，OplusQsColorManager.java:107-131）。系统黑白通道状态跳变
-            // = 全局刷新信号（补「折叠变回/状态跳变文字不跟随」缺口：折叠时 getQsColorState()==2 守卫失败
-            // 放行原色 + 折叠不触发重采样是根因，见 spec/52）→ post 主线程 [forceRefreshAllTextColors]。
-            // 值未变（同值重复发布）不重复触发；发布方可能不在主线程 → 必须 post 到主线程。
-            try {
-                val setStateMethod = clazz.getMethod("setQsColorState", Int::class.javaPrimitiveType)
-                api.hook(setStateMethod)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .intercept { chain ->
-                        try {
-                            val v = (chain.getArg(0) as? Int) ?: Int.MIN_VALUE
-                            if (v != lastPublishedQsColorState) {
-                                lastPublishedQsColorState = v
-                                requestForceRefreshTextColors()
-                            }
-                        } catch (t: Throwable) {
-                            Lg.e(TAG, "text-contrast forceRefresh on setQsColorState error", t)
-                        }
-                        chain.proceed()
-                    }
-                Lg.i(TAG, "text-contrast B mounted: QsColorUtil#setQsColorState(int) (state jump -> force refresh all text colors)")
-            } catch (t: Throwable) {
-                Lg.e(TAG, "text-contrast B mount FAILED: QsColorUtil#setQsColorState(int)", t)
-            }
-        } catch (t: Throwable) {
-            Lg.e(TAG, "text-contrast B mount FAILED: QsColorUtil#isTextNeedUseLightColorWhenLight", t)
-        }
-    }
-
-    /**
-     * [spec/21 方案 A·精修] hook `TextView.setTextColor(int)` 局部反转。
-     * [2026-08-13 变更·spec/39 文字反色复用系统黑白通道] 采样来源从逐文字整屏快照采样（getLocationOnScreen
-     * → 折算 [screenSnapshot] bitmap → getPixel → >196 黑 / ≤196 白）改为读系统
-     * `QsColorUtil.getQsColorState()`（[systemQsColorInjected]）：0→深色字 / 1→白色字 / 2→保持原样。
-     * 玻璃区域内判定（[isOverGlassRegion]）仍保留为"是否参与文字变色"的守卫。
-     *
-     * 节流：per-TextView 缓存（[textContrastCache]），快照换帧 / 位置变化 / 原色 / 系统状态变化才重采样（非每帧）。
-     * 防自循环：拦截体内改 args[0] 后 proceed 原方法（无递归）；重采样注入走 [textContrastResampling] 标志。
-     * colorized/app 自定义色（非近中性）不覆盖（[isNeutralTextColor]），尊重 app。
-     * [2026-08-13 修复] 快照缺失 / 未 attach 时**不再跳过**，改为登记待重采样；[mountTextViewOnDraw]
-     * （onDraw 节流）与快照更新 post（[resampleAllTextContrast]）在快照就绪/位置变化/attach 后重新注入。
-     */
-    private fun mountTextViewSetTextColor(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("android.widget.TextView", false, classLoader)
-            val method = clazz.getMethod("setTextColor", Int::class.javaPrimitiveType)
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        applyLocalTextContrast(chain)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "text-contrast A intercept error", t)
-                        chain.proceed()
-                    }
-                }
-            Lg.i(TAG, "text-contrast A mounted: TextView#setTextColor(int)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "text-contrast A mount FAILED: TextView#setTextColor(int)", t)
-        }
-    }
 
     /** [spec/63 文字可读性统一注入通道 2026-08-26] hook `TextView.setTextColor(int)`：系统每次设置文字颜色
      *  时统一走 [resolveReadableTextColor] 计算可读性注入色（文字强制白 / heads-up 跟随 / 文字反转取色
@@ -10418,17 +10433,17 @@ object BlurDrawHook {
         } ?: return chain.proceed()
         // [2026-08-13 状态栏排除] 状态栏文字（PhoneStatusBarView / StatusBarWindowView / KeyguardStatusBarView
         // 等祖先容器内，含时钟/日期/图标等）**绝不参与文字变色**（保持系统原样）。
-        if (isInStatusBarArea(textView)) {
+        if (TextScopeMatcher.isInStatusBarArea(textView)) {
             textContrastCache.remove(textView)
             return chain.proceed()
         }
         // [2026-08-15 折叠组头误伤] 展开按钮数字（oplus_expand_button_number）原色灰色中性色，保持系统原色。
-        if (isExpandButtonNumber(textView)) {
+        if (TextScopeMatcher.isExpandButtonNumber(textView)) {
             textContrastCache.remove(textView)
             return chain.proceed()
         }
         // colorized / app 自定义色（非近中性灰度）不覆盖；移除缓存（onDraw 不再重注入），尊重 app
-        if (!isNeutralTextColor(color)) {
+        if (!TextScopeMatcher.isNeutralTextColor(color)) {
             textContrastCache.remove(textView)
             return chain.proceed()
         }
@@ -10440,7 +10455,7 @@ object BlurDrawHook {
             } catch (t: Throwable) {
                 return chain.proceed()
             }
-            val injected = resolveReadableTextColor(
+            val injected = TextColorPolicy.resolveReadableTextColor(
                 textView, color,
                 loc[0] + textView.width / 2, loc[1] + textView.height / 2
             ) ?: run {
@@ -10468,36 +10483,6 @@ object BlurDrawHook {
     }
 
 
-    /**
-     * [spec/21 修复 2026-08-13] hook `TextView.onDraw(Canvas)`：对已登记（[textContrastCache]）的 TextView
-     * 节流重采样（O(1) 快速跳过未登记），快照换帧 / 位置变化 / 刚 attach（x/y 未知）时重新采样注入。
-     *
-     * 节流：per-TextView 150ms（[TEXT_CONTRAST_RESAMPLE_INTERVAL_MS]），非每帧采样；仅检查不采样时无重活。
-     * 防自循环：[textContrastResampling] 标志 + 直接调 setTextColor（不递归）。
-     * 作用域：仅玻璃区域内文字才反转（[isOverGlassRegion]）。
-     */
-    private fun mountTextViewOnDraw(api: XposedInterface, classLoader: ClassLoader) {
-        try {
-            val clazz = Class.forName("android.widget.TextView", false, classLoader)
-            // onDraw 是 protected → 必须 getDeclaredMethod + setAccessible（getMethod 只返回 public）
-            val method = clazz.getDeclaredMethod("onDraw", android.graphics.Canvas::class.java).apply { isAccessible = true }
-            api.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .intercept { chain ->
-                    try {
-                        val tv = chain.getThisObject() as? TextView
-                        if (tv != null) maybeResampleTextContrast(tv)
-                    } catch (t: Throwable) {
-                        Lg.e(TAG, "text-contrast A onDraw error", t)
-                    }
-                    chain.proceed()
-                }
-            Lg.i(TAG, "text-contrast A mounted: TextView#onDraw(Canvas) (throttled re-sample)")
-        } catch (t: Throwable) {
-            Lg.e(TAG, "text-contrast A mount FAILED: TextView#onDraw(Canvas)", t)
-        }
-    }
-
     /** [spec/21 修复 2026-08-13] 单个 TextView 节流重采样（onDraw 兜底，150ms 节流）：已登记 TextView
      *  统一走 [resolveReadableTextColor]（spec/63）计算可读性注入色，颜色变化才 setTextColor（幂等不闪）。
      *  防自循环：[textContrastResampling] 标志 + 直接调 setTextColor（不递归）。 */
@@ -10505,12 +10490,12 @@ object BlurDrawHook {
         if (textContrastResampling) return
         val entry = textContrastCache[textView] ?: return  // 未登记 → O(1) 快速跳过
         // [2026-08-13 状态栏排除] 状态栏文字绝不参与文字变色（保持系统原样）
-        if (isInStatusBarArea(textView)) {
+        if (TextScopeMatcher.isInStatusBarArea(textView)) {
             textContrastCache.remove(textView)
             return
         }
         // [2026-08-15 折叠组头误伤] 展开按钮数字保持系统原色（同 applyLocalTextContrast / forceRefreshTextColor）
-        if (isExpandButtonNumber(textView)) {
+        if (TextScopeMatcher.isExpandButtonNumber(textView)) {
             textContrastCache.remove(textView)
             return
         }
@@ -10526,7 +10511,7 @@ object BlurDrawHook {
         }
         val original = entry.originalColor
         // [spec/63 统一注入通道] 统一计算注入色（文字强制白 / heads-up 跟随 / 文字反转取色单一入口）
-        val injected = resolveReadableTextColor(
+        val injected = TextColorPolicy.resolveReadableTextColor(
             textView, original,
             loc[0] + textView.width / 2, loc[1] + textView.height / 2
         )
@@ -10574,7 +10559,7 @@ object BlurDrawHook {
     /**
      * [spec/52] 请求一次「页面上所有文字颜色强制刷新」（post 主线程，[FORCE_REFRESH_TEXT_COLOR_MIN_INTERVAL_MS]
      * 节流）。触发点：①面板收起（mountPanelExpansion setExpansionHeight<=0）②系统黑白通道状态跳变
-     * （mountQsColorUtil hook QsColorUtil.setQsColorState(int) 发布方）。快照就绪路径（resampleAllTextContrast）
+     * （text.qsColorStatePublish hook QsColorUtil.setQsColorState(int) 发布方）。快照就绪路径（resampleAllTextContrast）
      * 保留不变——本函数是「折叠变回」缺口兜底：折叠时系统重调 setTextColor(原色)，守卫失败放行原色 +
      * 折叠不触发重采样，导致文字变回原色；此处遍历 View 树直接重注入。
      * 注意：全树遍历有成本，仅触发点调用（不每帧）；发布方可能不在主线程 → 统一 post 到主线程。
@@ -10667,31 +10652,6 @@ object BlurDrawHook {
         }
     }
 
-    /** [spec/63 文字可读性统一注入通道 2026-08-26] 统一文字可读性颜色注入：所有可读性场景（文字强制白 /
-     *  heads-up 跟随系统取色 / 文字反转取色）单一入口，杜绝各路径独立判定造成「一个白一个黑」。
-     *  给定 TextView + 原色 + 屏幕坐标，按优先级返回注入色；返回 null = 不注入（保持系统色）。
-     *  优先级：**文字强制白（[textForceWhiteEnabled] 独立开关，spec/63 解耦 KEY_MASK_ENABLE）>
-     *  heads-up 跟随（[isHeadsUpTextFollowArea]）> 文字反转取色（[textContrastEnabled]）**。
-     *  强制白开启时玻璃区域内 / heads-up 窗口内中性色文字恒白/灰（spec/60 语义保留），后两者不生效。
-     *  调用方负责前置排除（状态栏 / 展开按钮 / app 彩色 / 未 attach）与缓存 / 防自循环注入尾。 */
-    private fun resolveReadableTextColor(textView: TextView, originalColor: Int, screenX: Int, screenY: Int): Int? {
-        // 1. 文字强制白（独立开关，spec/63 解耦 KEY_MASK_ENABLE）：玻璃区域内 / heads-up 窗口内中性色文字恒白/灰
-        if (textForceWhiteEnabled) {
-            if (isOverGlassRegion(screenX, screenY) || isInHeadsUpWindow(textView)) {
-                val a = (originalColor ushr 24) and 0xFF
-                return (a shl 24) or (maskTextColor and 0x00FFFFFF)
-            }
-        }
-        // 2. heads-up 跟随系统取色（spec/47）：heads-up 窗口内中性色文字按系统黑白通道（深底白字 / 浅底黑字）
-        if (isHeadsUpTextFollowArea(textView)) {
-            return systemQsColorInjected(originalColor)
-        }
-        // 3. 文字反转取色（spec/21/39 系统黑白通道）：玻璃区域内中性色文字按系统黑白通道
-        if (textContrastEnabled && isOverGlassRegion(screenX, screenY)) {
-            return systemQsColorInjected(originalColor)
-        }
-        return null
-    }
     /** [spec/52 强制刷新] 单个 TextView 周期全量重注入：统一走 [resolveReadableTextColor]（spec/63）计算
      *  注入色。原色取缓存 originalColor（折叠变回场景：系统重调 setTextColor(原色) 后缓存可能已覆盖），
      *  缓存缺失回退 currentTextColor。注入前更新 [textContrastCache]（onDraw 节流以此为准，幂等）。
@@ -10700,15 +10660,15 @@ object BlurDrawHook {
         if (textContrastResampling) return
         // [2026-08-13 状态栏排除] 状态栏文字绝不参与文字变色（保持系统原样）：forceRefresh 遍历 shade 根
         // 全树会命中状态栏文字（其 rootView 即 shade 根 / 独立 StatusBarWindowView）→ 按祖先容器直接排除。
-        if (isInStatusBarArea(textView)) return
+        if (TextScopeMatcher.isInStatusBarArea(textView)) return
         // [2026-08-15 折叠组头误伤] 展开按钮数字保持系统原色
-        if (isExpandButtonNumber(textView)) {
+        if (TextScopeMatcher.isExpandButtonNumber(textView)) {
             textContrastCache.remove(textView)
             return
         }
         val entry = textContrastCache[textView]
         val original = entry?.originalColor ?: textView.currentTextColor
-        if (!isNeutralTextColor(original)) return
+        if (!TextScopeMatcher.isNeutralTextColor(original)) return
         if (!textView.isAttachedToWindow || textView.width <= 0 || textView.height <= 0) return
         val loc = IntArray(2)
         try {
@@ -10717,7 +10677,7 @@ object BlurDrawHook {
             return
         }
         // [spec/63 统一注入通道] 统一计算注入色（文字强制白 / heads-up 跟随 / 文字反转取色单一入口）
-        val injected = resolveReadableTextColor(
+        val injected = TextColorPolicy.resolveReadableTextColor(
             textView, original,
             loc[0] + textView.width / 2, loc[1] + textView.height / 2
         ) ?: return
@@ -10740,176 +10700,6 @@ object BlurDrawHook {
     }
 
 
-    /** 判定屏幕坐标是否落在任一已登记玻璃区域（screenRegionMap，主线程读写）。用于限定局部反转作用域。
-     *  [spec/53 状态栏文字变黑 2026-08-13] 状态栏区域（y < [statusBarBottom]）恒判"非玻璃"：
-     *  screenRegionMap 中控件（真机 coord 日志实证 ImageView/ImageButton 128x128 等，y=126-254 覆盖
-     *  状态栏条带；控制中心快捷开关/胶囊等）的 region 可能覆盖状态栏区域 → 状态栏文字（时钟/图标 label）
-     *  被误判"玻璃区域内" → 文字变色逻辑（mask 开强制白 / mask 关 systemQsColorInjected 注入黑）误伤。
-     *  scoped：仅顶部状态栏条带；通知卡/媒体卡/QS tile 等玻璃文字（y ≥ statusBarBottom）不受影响，
-     *  spec/38（ScrimView 不写 map）与 spec/47（heads-up 跟随）语义均保留。 */
-    private fun isOverGlassRegion(screenX: Int, screenY: Int): Boolean {
-        val sb = statusBarBottom()
-        if (sb > 0 && screenY < sb) return false
-        for (entry in screenRegionMap.values) {
-            val r = entry.region
-            if (screenX >= r.left && screenX <= r.right && screenY >= r.top && screenY <= r.bottom) return true
-        }
-        return false
-    }
-
-    /** [spec/53] 状态栏区域底边（物理 px）：framework `status_bar_height` dimen（Resources.getSystem()
-     *  同文件 captureScreenSnapshot/captureElementBackground 同款，设备密度生效）。首次调用缓存到
-     *  [statusBarBottomPx]；解析失败返回 -1（isOverGlassRegion 不启用排除，回退现状）。 */
-    private fun statusBarBottom(): Int {
-        var v = statusBarBottomPx
-        if (v >= 0) return v
-        v = try {
-            val res = android.content.res.Resources.getSystem()
-            val id = res.getIdentifier("status_bar_height", "dimen", "android")
-            if (id <= 0) -1 else res.getDimensionPixelSize(id)
-        } catch (t: Throwable) {
-            Lg.e(TAG, "text-contrast: resolve status_bar_height failed, status-bar strip exclusion disabled", t)
-            -1
-        }
-        statusBarBottomPx = v
-        if (v > 0) {
-            Lg.i(TAG, "text-contrast: status_bar_height=$v px, status-bar strip excluded from glass-region (text never recolored)")
-        }
-        return v
-    }
-
-    /**
-     * [2026-08-13 状态栏排除] 状态栏文字判定：沿祖先链向上（含自身），任一类名命中状态栏容器即返回 true。
-     * 反编译实证（c16.1_PJZ110）：
-     * - shade 内状态栏：`PhoneStatusBarView`（status_bar.xml 根类，CollapsedStatusBarFragment mStatusBar，
-     *   含 status_bar_contents → clock / system_icons），其 rootView=NotificationShadeWindowView
-     *   （**非独立窗口**，spec/47 实证）→ 仅靠 rootView 类名无法识别，必须沿祖先链匹配。
-     * - 独立状态栏窗口：`StatusBarWindowView`（com.android.systemui.statusbar.window，折叠态常驻）。
-     * - 锁屏状态栏：`KeyguardStatusBarView`（keyguard_status_bar.xml 根类）。
-     * - 状态图标区：`StatusIconContainer`（system_icons 内 StatusBarIconView 父容器）。
-     * 作用域安全：这些类名均为状态栏专属（不匹配 QS 容器 QuickStatusBarHeader / 通知卡 / 时钟在别的布局
-     * 的误判），不会误伤通知/QS 玻璃区域内文字；与 spec/38（ScrimView 不写 map）互补，双保险。
-     * 调用方：applyLocalTextContrast / maybeResampleTextContrast / forceRefreshTextColor（文字变色全路径）。
-     */
-    /** [2026-09-17 性能] 类名 → 「是否状态栏区域宿主」判定缓存。
-     *
-     *  **为什么必须缓存**（simpleperf 火焰图实证）：`isInStatusBarArea` 对**每个 TextView 沿父链逐层**
-     *  做最多 5 次 `contains`，而它被两条高频全屏路径调用（`resampleAllTextContrast` 与
-     *  `forceRefreshAllTextColors`）→ 屏幕上百个 TextView × 父链十几层 × 5 次 = **上万次字符串搜索**，
-     *  **且类名判定结果恒定、每次重算**。火焰图显示 `String.indexOf` 占主线程采样 **13.31%**，
-     *  其中 78.81%(某路径) / 52.65%(另一路径) 经由本函数。
-     *
-     *  类名数量有限（几十个），缓存不膨胀；ConcurrentHashMap 兜住 worker 线程（文字扫描在后台单飞）并发。 */
-    private val statusBarHostClassCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
-    private fun isInStatusBarArea(textView: View): Boolean {
-        var v: View? = textView
-        while (v != null) {
-            val name = v.javaClass.name
-            val isHost = statusBarHostClassCache.getOrPut(name) {
-                name.contains("PhoneStatusBarView") ||
-                    name.contains("KeyguardStatusBarView") ||
-                    name.contains("StatusBarWindowView") ||
-                    name.contains("StatusBarContainer") ||
-                    name.contains("StatusIconContainer")
-            }
-            if (isHost) return true
-            val parent = v.parent
-            v = if (parent is View) parent else null
-        }
-        return false
-    }
-
-    /** [2026-08-15 折叠组头误伤修复] 判定 TextView 是否是折叠组头展开按钮数字
-     *  （resource-id com.android.systemui:id/oplus_expand_button_number，text="2"，位于折叠组头内）。
-     *  该数字原色是灰色（中性色），文字变色/强制刷新把它当中性色强白 → 灰字变白看不清（用户确认根因）——
-     *  **保持系统原色，不参与文字变色**。识别用资源名匹配（不依赖模块引用 SystemUI R.id；
-     *  getResourceEntryName 对无 id/非资源 id 可能抛异常 → 捕获返回 false）。 */
-    private fun isExpandButtonNumber(tv: View): Boolean {
-        if (tv.id <= 0) return false
-        return try {
-            tv.resources.getResourceEntryName(tv.id) == EXPAND_BUTTON_NUMBER_RES_NAME
-        } catch (t: Throwable) {
-            false
-        }
-    }
-
-    /**
-     * [spec/47] heads-up 窗口内文字判定：rootView=HeadsUpLayout/HeadsUpContainerWindow（type 2017，
-     * 反编译实证 com.oplus.systemui.notification.headsup.windowframe）。heads-up 卡片背景即玻璃
-     * （spec/19 强制 PlatformStatic 走我们管线），窗口内文字**恒视为玻璃区域文字**——不受
-     * `screenRegionMap` 登记时序/坐标/快照刷新影响（否则 heads-up 文字可能被 [isOverGlassRegion]
-     * 误判为非玻璃，遮罩关闭时不跟随整体颜色 / 遮罩开启时不统一白字）。
-     *
-     * 作用域安全：仅命中 rootView=heads-up 窗口的文字；状态栏时钟 rootView=shade 根
-     * （NotificationShadeWindowView）→ 不命中 → spec/38 修复（ScrimView 不写 map）不受影响。
-     */
-    private fun isInHeadsUpWindow(textView: View): Boolean {
-        return try {
-            val root = textView.rootView
-            root != null && isHeadsUpRootView(root)
-        } catch (t: Throwable) {
-            false
-        }
-    }
-
-    /** [doc/spec/49 2026-08-13] bgView（NotificationBackgroundView）是否属于 heads-up 窗口（type 2017）：
-     *  rootView=HeadsUpLayout/HeadsUpContainerWindow（判定同 [isInHeadsUpWindow]）。heads-up 卡同卡内容
-     *  更新（bounds/region 变化）需触发整屏快照重抓；shade 内普通通知卡不命中（srcRect 折算已跟手）。 */
-    private fun isHeadsUpBgView(view: View): Boolean = isInHeadsUpWindow(view)
-
-    /** [spec/47] heads-up 文字跟随整体颜色作用域：独立开关 [headsUpTextFollowEnabled] 开启 && 在 heads-up
-     *  窗口内（rootView=HeadsUpLayout/HeadsUpContainerWindow）。开关关 → 恒 false → 守卫回退现状
-     *  （mask 开统一白 / mask 关原样），保证与遮罩无关、可独立关闭。 */
-    private fun isHeadsUpTextFollowArea(textView: View): Boolean =
-        headsUpTextFollowEnabled && isInHeadsUpWindow(textView)
-
-    /** 近中性文字色判定：alpha ≥ 0x80 且 RGB 通道差 ≤24（系统 neutral #E6 90% 黑/白、QS tile label 等灰度）；
-     *  饱和 app 自定义色（如绿色"已连接"）不匹配 → 不覆盖，尊重 app。 */
-    private fun isNeutralTextColor(color: Int): Boolean {
-        val a = (color ushr 24) and 0xFF
-        if (a < 0x80) return false
-        val r = (color ushr 16) and 0xFF
-        val g = (color ushr 8) and 0xFF
-        val b = color and 0xFF
-        return abs(r - g) <= 24 && abs(g - b) <= 24 && abs(r - b) <= 24
-    }
-
-    /**
-     * [spec/39 文字反色复用系统黑白通道] 读取 `QsColorUtil.getQsColorState()` 决定注入色（替代 spec/21
-     * 逐文字整屏快照采样 `sampleInjectedColor`）。系统 `OplusQsColorManager`（SystemUI 进程内）监听通知/QS
-     * 模糊管线完成 → `getBitmapBrightness`（native）→ `setQsColorState`：亮度 >196 → 0（亮背景/需深色字）；
-     * ≤196 → 1（暗背景/需白色字）；null → 2。它采样的正是模块 hook 的同一模糊管线背景（语义=系统自己的明暗判定）。
-     *   - 0 → 深色字（黑，保留原 alpha）
-     *   - 1 → 白色字（保留原 alpha）
-     *   - 2（null/无数据）/ 反射失败 → 返回 [original]（保持原样，不注入）
-     */
-    private fun systemQsColorInjected(original: Int): Int {
-        val a = (original ushr 24) and 0xFF
-        val aPrefix = a shl 24
-        return when (readQsColorState()) {
-            0 -> aPrefix or 0x000000   // 亮背景 → 深色字
-            1 -> aPrefix or 0xFFFFFF   // 暗背景 → 白色字
-            else -> original           // 2（null/无数据）或反射失败 → 保持原样
-        }
-    }
-
-    /** [spec/39] 反射读取 `QsColorUtil.getQsColorState()`（public static final int，无参，反编译实证
-     *  QsColorUtil.java:92-94；`mQsColorUtilGetState` 在 mountQsColorUtil 解析）。失败/未解析返回 -1。 */
-    private fun readQsColorState(): Int {
-        val m = mQsColorUtilGetState ?: return -1
-        val v = try {
-            (m.invoke(null) as? Number)?.toInt() ?: -1
-        } catch (t: Throwable) {
-            -1
-        }
-        // [spec/47 诊断] 系统黑白通道值跳变才打一次（0 亮背景→深色字 / 1 暗背景→白字 / 2 null→原样 / -1 反射失败）。
-        if (v != lastLoggedQsColorState) {
-            lastLoggedQsColorState = v
-            Lg.i(TAG, "text-contrast: QsColorUtil.getQsColorState()=$v (0 light→dark text / 1 dark→white text / 2 null / -1 reflect fail)")
-        }
-        return v
-    }
 
     /** 像素亮度（0-255，Rec.601 加权）。 */
     private fun luminance(color: Int): Int {
@@ -11267,7 +11057,7 @@ object BlurDrawHook {
         periodicCapturePosted = false
         var forceCaptureScene = false
         try {
-            if (isPeriodicCaptureEnabled()) {
+            if (CapturePolicy.isPeriodicCaptureEnabled()) {
                 // 锁屏跳过：锁屏且无 heads-up 通知、面板未展开 → 无玻璃元素需要刷新，整屏抓屏无意义。
                 // 锁屏 heads-up 通知横幅仍放行（通知玻璃需要背景源）。
                 if (isKeyguardLockedNow() && !isHeadsUpHostActive() && !panelExpansionActive) {
@@ -11285,18 +11075,18 @@ object BlurDrawHook {
                         // 面板自身在渲染时让路（面板有它自己的抓屏通道覆盖），其余一律强制抓；
                         // 区域级抓屏开关开 → 只抓瞬态元素并集 bbox（存独立缓冲），否则整屏
                         if (!isShadeRenderingNow()) {
-                            if (regionCaptureExperimentalEnabled()) {
+                            if (CapturePolicy.regionCaptureExperimentalEnabled()) {
                                 triggerRegionCapture()
                                 // 区域抓屏不接管整屏缓冲：整屏仍按模式节奏刷新（即时=每 tick，变化=兜底间隔）
                                 val nowMs = SystemClock.uptimeMillis()
-                                val fullDue = captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE ||
-                                    nowMs - lastRegionFullCaptureAtMs >= periodicCaptureIntervalMs()
+                                val fullDue = CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE ||
+                                    nowMs - lastRegionFullCaptureAtMs >= CapturePolicy.periodicCaptureIntervalMs()
                                 if (fullDue) {
                                     lastRegionFullCaptureAtMs = nowMs
-                                    triggerBackgroundCapture(contentChange = false)
+                                    CaptureEngine.triggerBackgroundCapture(contentChange = false)
                                 }
                             } else {
-                                triggerBackgroundCapture(contentChange = false)
+                                CaptureEngine.triggerBackgroundCapture(contentChange = false)
                             }
                         }
                     } else {
@@ -11306,7 +11096,7 @@ object BlurDrawHook {
                         // 变化/即时模式统一兜底：到点恒抓一次（静止也抓，指纹同帧跳过挡无效帧）。
                         // 面板展开时让路（面板抓屏通道已实时覆盖）。
                         if (!isShadeRenderingNow()) {
-                            triggerBackgroundCapture(contentChange = false)
+                            CaptureEngine.triggerBackgroundCapture(contentChange = false)
                         }
                     }
                 }
@@ -11322,7 +11112,7 @@ object BlurDrawHook {
     private fun kickPeriodicCapture(highRate: Boolean = false) {
         // 省电开启 → 不启动周期抓屏（省电下玻璃已关，抓屏纯耗电）
         if (isPowerSaveGlassOff()) return
-        if (!isPeriodicCaptureEnabled()) return
+        if (!CapturePolicy.isPeriodicCaptureEnabled()) return
         if (periodicCapturePosted) return
         var hasLive = false
         synchronized(this) {
@@ -11335,12 +11125,12 @@ object BlurDrawHook {
         // 即时模式 → 固定 1000/panel_capture_hz（取消 idle-skip，静止也按速抓）；
         // 变化模式 → 兜底间隔（bg_periodic_capture_interval_ms，默认 500ms）。
         val interval = when {
-            highRate -> continuousCaptureIntervalMs()
-            captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE -> {
-                val hz = panelCaptureHz().coerceAtLeast(1)
+            highRate -> CapturePolicy.continuousCaptureIntervalMs()
+            CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE -> {
+                val hz = CapturePolicy.panelCaptureHz().coerceAtLeast(1)
                 (1000.0 / hz).toLong().coerceIn(4L, 1000L)
             }
-            else -> periodicCaptureIntervalMs().toLong()
+            else -> CapturePolicy.periodicCaptureIntervalMs().toLong()
         }
         if (interval <= 0L) return
         periodicCapturePosted = true
@@ -11353,154 +11143,6 @@ object BlurDrawHook {
     }
 
     // [2026-09-17] 追踪器开关读取（isTrackHostMotionEnabled）随追踪器一并删除。
-
-    // ---- [spec/17 配置接线] 抓屏参数读取（api 在 install 时缓存） ----
-
-    /** 抓屏模式：0=即时 / 1=变化 / 2=静态。≤1s TTL 缓存，读失败/越界回默认 1（变化）。 */
-    private fun captureMode(): Int = Prefs.captureMode(api)
-
-    /** 即时抓屏速率 Hz（KEY_PANEL_CAPTURE_HZ，默认 60，clamp 30~120）。
-     *  远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，配置改动 ≤1s 生效；
-     *  持续 worker 每 tick 调用，热路径零 IPC）。存量越界值读取时夹到 30~120。 */
-    private fun panelCaptureHz(): Int {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedPanelCaptureHzTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedPanelCaptureHz
-        val a = api ?: return Prefs.DEFAULT_PANEL_CAPTURE_HZ
-        val v = try {
-            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_PANEL_CAPTURE_HZ, Prefs.DEFAULT_PANEL_CAPTURE_HZ)
-                .coerceIn(Prefs.PANEL_CAPTURE_HZ_MIN, Prefs.PANEL_CAPTURE_HZ_MAX)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read panel_capture_hz failed, default ${Prefs.DEFAULT_PANEL_CAPTURE_HZ}", t)
-            Prefs.DEFAULT_PANEL_CAPTURE_HZ
-        }
-        cachedPanelCaptureHz = v
-        cachedPanelCaptureHzTimeMs = now
-        return v
-    }
-
-    /** 持续抓屏 tick 间隔毫秒：运动时满速 [panelCaptureHz]（默认 60Hz）、静止时减半（30Hz）
-     *  ——用 [isMotionActive] 运动标志判定（[markMotion] 由面板动画 / 内容变化 / 元素移动（QS 翻页 /
-     *  setExpansionHeight / 通知卡滑动）置位，复位延迟 300ms）。
-     *  间隔 = 1000/有效Hz ms，clamp 4~1000ms（防过快打爆 SF / 过慢背景滞后）。下拉面板与通知横幅共用
-     *  同一套速率（[startPanelContinuousCapture] / [startHeadsUpContinuousCapture]）。 */
-    private fun continuousCaptureIntervalMs(): Long {
-        val hz = panelCaptureHz()
-        // 运动时满速（panelCaptureHz 默认 60Hz）、静止时减半 30Hz——isMotionActive 为 @Volatile 运动标志
-        val effectiveHz = if (isMotionActive) hz else hz / 2
-        val clamped = effectiveHz.coerceIn(1, Prefs.PANEL_CAPTURE_HZ_MAX)
-        return (1000.0 / clamped).toLong().coerceIn(4L, 1000L)
-    }
-
-    /** 抓屏降采样比例（KEY_BG_CAPTURE_SCALE，clamp 0.25~1.0，默认 0.5f）
-     *  [2026-08-13 captureDisplay 开始延迟优化] 远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，
-     *  配置改动 ≤1s 生效；captureElementBackground 每次抓屏原读一次 IPC = captureDisplay 开始前一次非必要延迟） */
-    private fun bgCaptureScale(): Float {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedBgCaptureScaleTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedBgCaptureScale
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_SCALE
-        val v = try {
-            Prefs.read(a).getFloat(Prefs.KEY_BG_CAPTURE_SCALE, Prefs.DEFAULT_BG_CAPTURE_SCALE)
-                .coerceIn(0.25f, 1.0f)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_capture_scale failed, default 0.5", t)
-            Prefs.DEFAULT_BG_CAPTURE_SCALE
-        }
-        cachedBgCaptureScale = v
-        cachedBgCaptureScaleTimeMs = now
-        return v
-    }
-
-    /** 周期抓屏是否启用：静态模式恒关；变化模式兼容存量「持续抓屏」开关（false=无周期兜底，
-     *  内容变化与各独立持续 worker 照常）；即时模式恒开。 */
-    private fun isPeriodicCaptureEnabled(): Boolean {
-        val mode = captureMode()
-        if (mode == Prefs.BG_CAPTURE_MODE_STATIC) return false
-        if (mode == Prefs.BG_CAPTURE_MODE_ON_CHANGE && !legacyPeriodicCaptureEnabled()) return false
-        return true
-    }
-
-    /** 存量「持续抓屏」开关（KEY_BG_PERIODIC_CAPTURE_ENABLE，默认 true）。 */
-    private fun legacyPeriodicCaptureEnabled(): Boolean {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedLegacyPeriodicEnabledTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedLegacyPeriodicEnabled
-        val a = api ?: return Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-        val v = try {
-            Prefs.read(a).getBoolean(Prefs.KEY_BG_PERIODIC_CAPTURE_ENABLE, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_periodic_capture_enable failed, default true", t)
-            Prefs.DEFAULT_BG_PERIODIC_CAPTURE_ENABLE
-        }
-        cachedLegacyPeriodicEnabled = v
-        cachedLegacyPeriodicEnabledTimeMs = now
-        return v
-    }
-
-    /** 存量变化节流间隔 ms（KEY_BG_CAPTURE_MIN_INTERVAL_MS，默认 0=不节流）。 */
-    private fun bgCaptureMinIntervalMs(): Int {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedBgCaptureMinIntervalMsTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedBgCaptureMinIntervalMs
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-        val v = try {
-            Prefs.readIntCompat(
-                Prefs.read(a), Prefs.KEY_BG_CAPTURE_MIN_INTERVAL_MS, Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-            ).coerceAtLeast(0)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_capture_min_interval_ms failed, default 0", t)
-            Prefs.DEFAULT_BG_CAPTURE_MIN_INTERVAL_MS
-        }
-        cachedBgCaptureMinIntervalMs = v
-        cachedBgCaptureMinIntervalMsTimeMs = now
-        return v
-    }
-
-    /** [doc/spec/33 + 2026-08-14 只用于收起] 周期兜底抓屏间隔（KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS，
-     *  clamp 100~5000，默认 500）。仅收起时（shade 不在渲染）生效——展开由面板抓屏 120Hz 覆盖。
-     *  [2026-08-14 用户要求·专用于收起] 不再做收起放大：收起兜底直接按用户配置间隔。
-     *  [spec/90 #1] 同 [isPeriodicCaptureEnabled] 加 1s TTL 缓存。 */
-    private fun periodicCaptureIntervalMs(): Int {
-        val now = SystemClock.uptimeMillis()
-        if (now - cachedPeriodicCaptureIntervalTimeMs < CAPTURE_PREFS_CACHE_MS) return cachedPeriodicCaptureIntervalMs
-        val a = api ?: return Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
-        val v = try {
-            Prefs.readIntCompat(
-                Prefs.read(a), Prefs.KEY_BG_PERIODIC_CAPTURE_INTERVAL_MS, Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
-            ).coerceIn(Prefs.BG_PERIODIC_CAPTURE_INTERVAL_MIN_MS, Prefs.BG_PERIODIC_CAPTURE_INTERVAL_MAX_MS)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read bg_periodic_capture_interval_ms failed, default 500", t)
-            Prefs.DEFAULT_BG_PERIODIC_CAPTURE_INTERVAL_MS
-        }
-        cachedPeriodicCaptureIntervalMs = v
-        cachedPeriodicCaptureIntervalTimeMs = now
-        return v
-    }
-
-    /** 抓屏失败重试开关（KEY_BG_CAPTURE_RETRY_ENABLED，默认 false=失败等下次事件）。 */
-    private fun bgCaptureRetryEnabled(): Boolean = Prefs.captureRetryEnabled(api)
-
-    /** 区域级抓屏实验开关（KEY_BG_REGION_CAPTURE_EXPERIMENTAL，默认 false）。 */
-    private fun regionCaptureExperimentalEnabled(): Boolean = Prefs.regionCaptureExperimental(api)
-
-    /** 存量重试间隔 ms（KEY_BG_CAPTURE_RETRY_MS，默认 320，clamp 100~1000）。 */
-    private fun bgCaptureRetryMs(): Int {
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
-        return try {
-            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_RETRY_MS, Prefs.DEFAULT_BG_CAPTURE_RETRY_MS)
-                .coerceIn(100, 1000)
-        } catch (t: Throwable) {
-            Prefs.DEFAULT_BG_CAPTURE_RETRY_MS
-        }
-    }
-
-    /** 存量重试次数（KEY_BG_CAPTURE_RETRY_LIMIT，默认 3，clamp 1~5）。 */
-    private fun bgCaptureRetryLimit(): Int {
-        val a = api ?: return Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
-        return try {
-            Prefs.readIntCompat(Prefs.read(a), Prefs.KEY_BG_CAPTURE_RETRY_LIMIT, Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT)
-                .coerceIn(1, 5)
-        } catch (t: Throwable) {
-            Prefs.DEFAULT_BG_CAPTURE_RETRY_LIMIT
-        }
-    }
 
     /** 收集活跃瞬态元素（heads-up / 流体云卡 / simple-banner）region 的并集 bbox（clamp 屏幕内）。
      *  没有任何活跃瞬态元素 → null（调用方退回全屏抓屏路径）。 */
@@ -11540,9 +11182,9 @@ object BlurDrawHook {
     /** 区域级抓屏入队（瞬态强制抓路径专用）：拿不到活跃瞬态 region → 退回全屏抓屏路径。 */
     private fun triggerRegionCapture() {
         if (isPowerSaveGlassOff()) return
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (transientRegionBBox() == null) {
-            triggerBackgroundCapture(contentChange = false)
+            CaptureEngine.triggerBackgroundCapture(contentChange = false)
             return
         }
         enqueueElementCapture(REGION_SNAPSHOT_ID)
@@ -11552,7 +11194,7 @@ object BlurDrawHook {
     /** 渲染选源：区域快照可用于本元素（瞬态标签命中 + 与区域 bbox 相交 + shade 未展开）时返回它，
      *  否则 null（调用方改走整屏快照）。 */
     private fun regionRenderSourceSnapshot(id: Int, screenRegion: RectF): ElementBackground? {
-        if (!regionCaptureExperimentalEnabled()) return null
+        if (!CapturePolicy.regionCaptureExperimentalEnabled()) return null
         if (isShadeRenderingNow()) return null
         val rs = regionSnapshot ?: return null
         if (rs.bitmap.width <= 0 || rs.bitmap.height <= 0 || rs.region.width() <= 0f) return null
@@ -12102,7 +11744,7 @@ object BlurDrawHook {
         // [2026-08-14 用户方案·onBlurReady 驱动抓屏] 系统重模糊 = 底层内容变化（视频播放/动态壁纸
         // 每帧重模糊）→ 每次 onBlurReady 都触发抓屏（用户确认无需节流，onBlurReady 频率本身可控）。
         // 静态底层（系统不重模糊）→ onBlurReady 停 → 零抓屏。替代移除的主动持续抓屏 120Hz tick。
-        triggerBackgroundCapture()
+        CaptureEngine.triggerBackgroundCapture()
     }
 
     // ------------------------------------------------------------ [M1] 统一注册入口：addBlurDrawable
@@ -12762,6 +12404,11 @@ object BlurDrawHook {
         }
         try {
             DebugOverlay.detach()
+        } catch (t: Throwable) {
+            // ignore
+        }
+        try {
+            RestoreEngine.fire(RestoreEngine.Timing.HOT_RELOAD)
         } catch (t: Throwable) {
             // ignore
         }
@@ -13629,7 +13276,7 @@ object BlurDrawHook {
         val valid = snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0
         if (valid) return snap
         // 静态模式 → 不入队（零抓屏）：返回最近快照（可为 null → 回退系统模糊）
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return snap
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return snap
         // 快照缺失 → 直接入队 worker 异步抓屏（不阻塞渲染线程）；失败冷却期内不重抓
         val now = SystemClock.uptimeMillis()
         // [2026-08-14 用户要求·去冷却] 移除失败冷却检查（不再设置冷却）
@@ -14287,13 +13934,13 @@ object BlurDrawHook {
         // 省电开启 → 不入队抓屏（玻璃已关，快照无消费者）
         if (isPowerSaveGlassOff()) return
         // 静态模式 → 零抓屏（快照冻结为现有值）
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [spec/55 诊断日志] 触发时间戳（t2）——「hook 触发 → 抓屏请求」延迟（hook 可靠否）；contentChange 附带调用来源
         diagCapLog("enqueue", if (contentChange) " contentChange=true" else " contentChange=false")
         if (contentChange) markContentChanged()
         // 存量变化节流（KEY_BG_CAPTURE_MIN_INTERVAL_MS，0=不节流）：仅内容变化路径生效，周期/强制路径不过此门
         if (contentChange) {
-            val minInterval = bgCaptureMinIntervalMs()
+            val minInterval = CapturePolicy.bgCaptureMinIntervalMs()
             if (minInterval > 0) {
                 val now = SystemClock.uptimeMillis()
                 if (now - lastCaptureTime < minInterval) return
@@ -14324,14 +13971,14 @@ object BlurDrawHook {
         // 省电开启 → 首帧也不抓（玻璃已关）
         if (isPowerSaveGlassOff()) return
         // 静态模式 → 首帧同步也不抓（零抓屏）
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [doc/spec/50 + spec/51 用户补充 + 2026-08-15 用户要求「下拉展开瞬间主线程立即截屏，什么都不等」]
         // 下拉首帧：**主线程同步**执行 [captureSnapshotImmediate]（同步 captureDisplay 20-50ms，首帧一次
         // 可接受，立即写 screenSnapshot + push shader 替换渲染缓冲区，不等后台 worker）+ 连抓 5~6 帧
         // 覆盖入场动画。停止条件恒 false（连抓跑完即止，短时有限突发）；pauseDuringPanelExpansion=false
         // （下拉自身连抓不暂停，覆盖入场动画）。后续主动持续抓屏 worker（[startPanelContinuousCapture]，
         // onExpansionStarted / setExpansionHeight>0 分支已启动）照常维持背景最新。
-        triggerFirstFrameCaptureWithBurst(
+        CaptureEngine.triggerFirstFrameCaptureWithBurst(
             burstStop = { false },
             logTag = "panel-first",
             pauseDuringPanelExpansion = false,
@@ -14382,7 +14029,7 @@ object BlurDrawHook {
         bypassMainSyncDedup: Boolean = false,
     ) {
         // 静态模式 → 首帧同步与连抓都不执行（零抓屏，快照冻结为现有值）
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         markContentChanged()
         if (mainThreadSyncFirstFrame) {
             // [doc/spec/105 P1-4] 主线程同步首帧限频：**窗口内只同步抓一次**，其余触发点降级入队
@@ -14399,7 +14046,7 @@ object BlurDrawHook {
                     "lg-first: sync first frame deduped in ${MAIN_SYNC_FIRST_FRAME_WINDOW_MS}ms window, " +
                         "enqueue worker instead (logTag=$logTag, spec/105)"
                 }
-                triggerBackgroundCapture()
+                CaptureEngine.triggerBackgroundCapture()
             } else {
                 lastMainSyncFirstFrameAt = now
                 // [spec/58 追加 2026-08-15 诊断日志] 主线程同步首帧链路起点（lg-first）：进入本分支即主线程
@@ -14421,7 +14068,7 @@ object BlurDrawHook {
         } else {
             // [2026-08-15 恢复 worker 默认路径] 触发 = 入队 worker 立即抓（异步，主线程零阻塞；
             // captureDisplay 由 worker 线程同步执行 [captureSnapshotImmediate]）。
-            triggerBackgroundCapture()
+            CaptureEngine.triggerBackgroundCapture()
         }
         // 连抓 5~6 帧（用户要求保留）：专用连抓 worker 后台快速补帧（首帧已由主线程同步抓取 / 或触发路径
         // 入队，连抓全部帧覆盖后续入场/展开动画窗口），主线程零阻塞。
@@ -14469,7 +14116,7 @@ object BlurDrawHook {
         // 20-50ms，立即替换缓冲区）+ 连抓 5~6 帧覆盖入场动画。停止条件：通知消失
         // （isHeadsUpHostActive false）提前停；pauseDuringPanelExpansion=true（下拉展开期间
         // 暂停通知连抓，避免与下拉抓屏竞争 captureDisplay）。
-        triggerFirstFrameCaptureWithBurst(
+        CaptureEngine.triggerFirstFrameCaptureWithBurst(
             burstStop = { !isHeadsUpHostActive() },
             logTag = "heads-up",
             pauseDuringPanelExpansion = true,
@@ -14480,7 +14127,7 @@ object BlurDrawHook {
         // 静止期零抓屏 → 背景冻结。恢复 [startHeadsUpContinuousCapture] 主动持续抓屏（captureDisplay +
         // 运动节流：运动 120Hz / 静止 60Hz，可配 panel_capture_hz）——**仅横幅场景用主动源**；
         // 下拉面板展开仍走 onBlurReady 系统驱动（不恢复 startPanelContinuousCapture）。通知消失自动停止。
-        startHeadsUpContinuousCapture()
+        CaptureEngine.startHeadsUpContinuousCapture()
         // [spec/60 周期强制刷新] heads-up 活跃（新通知出现）→ 确保文字周期强制刷新循环在跑
         ensureTextForceRefreshLoop()
     }
@@ -14580,7 +14227,7 @@ object BlurDrawHook {
      *  （防 spin；冷却已缩短至 300ms，不冻结旧帧）。
      *  通知消失（[isHeadsUpHostActive] false）→ 退出循环并清除活跃宿主（零后台耗电）。 */
     private fun startHeadsUpContinuousCapture() {
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // [2026-08-14 横幅主动源排障] 诊断：isHeadsUpHostActive 拆分量化（host/attach/rootView），
         // 定位主动源启动失败或中途停止根因（日志过滤 heads-up-capture）
         val host = headsUpActiveHost?.get()
@@ -14646,7 +14293,7 @@ object BlurDrawHook {
                             "bg-element: heads-up continuous tick queued to worker (single-channel)"
                         }
                         try {
-                            Thread.sleep(continuousCaptureIntervalMs())
+                            Thread.sleep(CapturePolicy.continuousCaptureIntervalMs())
                         } catch (ignored: InterruptedException) {
                         }
                     }
@@ -14673,7 +14320,7 @@ object BlurDrawHook {
      *  与首帧连抓（[scheduleHeadsUpBurstWorker]）/内容变化触发共存：pending 去重 + 单 worker 串行 = 同刻
      *  至多一路 captureDisplay。 */
     private fun startPanelContinuousCapture() {
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         if (panelContinuousRunning) return
         if (!panelExpansionActive) return  // 面板未展开不启动
         // [2026-08-14 锁屏被动] 锁屏期间不启动主动持续抓屏——锁屏与解锁桌面一样只走被动事件触发
@@ -14713,7 +14360,7 @@ object BlurDrawHook {
                             "bg-element: panel continuous tick queued to worker (single-channel)"
                         }
                         try {
-                            Thread.sleep(continuousCaptureIntervalMs())
+                            Thread.sleep(CapturePolicy.continuousCaptureIntervalMs())
                         } catch (ignored: InterruptedException) {
                         }
                     }
@@ -14740,7 +14387,7 @@ object BlurDrawHook {
      *  变化抓屏不再节流（旧键 KEY_BG_CAPTURE_MIN_INTERVAL_MS 停用，内容变化一律立即入队）。
      *  静态模式不入队（零抓屏，快照冻结为现有值）。 */
     private fun scheduleElementCaptures() {
-        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        if (CapturePolicy.captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
         // 入队 → kick 起 worker 消费（异步，主线程零阻塞）。无论 enqueue 是否实际
         // 入队都 kick（pending 去重命中 = 队列已有任务待消费或 worker 正在抓，kick 内部 running>0 / 队列空
         // 早退无副作用；孤儿残留场景也能经 kick 的「队列非空 + running=0 → 重新起 worker」恢复）。
@@ -14912,7 +14559,7 @@ object BlurDrawHook {
             }
             if (regionBBox != null) {
                 logThrottled("region-capture-fail", Log.DEBUG) { "bg-element: region capture failed, keep previous region snapshot" }
-            } else if (bgCaptureRetryEnabled()) {
+            } else if (CapturePolicy.bgCaptureRetryEnabled()) {
                 handleElementCaptureFailure(SNAPSHOT_ID, "capture")
             } else {
                 logThrottled("capture-fail-skip", Log.DEBUG) { "bg-element: capture failed, skip (retry disabled, wait event)" }
@@ -15085,12 +14732,12 @@ object BlurDrawHook {
      *  [scheduleElementCaptures] 重新入队 worker（[2026-08-15 恢复 worker]）。 */
     private fun handleElementCaptureFailure(id: Int, reason: String) {
         // 失败重试总开关关 → 静默放弃（不重试、不冷却，等下次事件）
-        if (!bgCaptureRetryEnabled()) {
+        if (!CapturePolicy.bgCaptureRetryEnabled()) {
             Lg.w(TAG, "bg-element: snapshot $reason, retry disabled")
             return
         }
-        val retryLimit = bgCaptureRetryLimit()
-        val retryMs = bgCaptureRetryMs()
+        val retryLimit = CapturePolicy.bgCaptureRetryLimit()
+        val retryMs = CapturePolicy.bgCaptureRetryMs()
         val n = (elementCaptureRetries[id] ?: 0) + 1
         elementCaptureRetries[id] = n
         if (n < retryLimit) {
@@ -15589,7 +15236,7 @@ object BlurDrawHook {
      *  WeakHashMap 防泄漏（rootView 销毁即自动移除）。 */
     private val headsUpWindowTypeCache = java.util.WeakHashMap<View, Boolean>()
 
-    private fun isHeadsUpRootView(rootView: View): Boolean {
+    internal fun isHeadsUpRootView(rootView: View): Boolean {
         val name = rootView.javaClass.name
         if (name.contains("HeadsUpLayout") || name.contains("HeadsUpContainerWindow")) return true
         synchronized(headsUpWindowTypeCache) {
@@ -15817,56 +15464,87 @@ object BlurDrawHook {
      */
     private fun collectExcludes(shade: SurfaceControl?): ArrayList<SurfaceControl> {
         val excludes = ArrayList<SurfaceControl>(2)
-        val hu = try {
-            resolveHeadsUpSfc()
-        } catch (t: Throwable) {
-            Lg.e(TAG, "bg-element: resolve heads-up sfc failed", t)
-            null
-        }
-        val banner = try {
-            resolveSimpleBannerSfc()
-        } catch (t: Throwable) {
-            Lg.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
-            null
-        }
-        val card = try {
-            resolveCardBackgroundSfc()
-        } catch (t: Throwable) {
-            Lg.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
-            null
-        }
-        val vol = try {
-            resolveVolumeWindowSfc()
-        } catch (t: Throwable) {
-            logThrottled("volume-sfc-fail", Log.WARN) {
-                "bg-element: resolve volume-window sfc failed ${t.javaClass.simpleName}"
+        val specs = listOf(
+            ExcludeSpec(id = "shade", resolve = { shade }),
+            ExcludeSpec(id = "hu", resolve = {
+                try {
+                    resolveHeadsUpSfc()
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "bg-element: resolve heads-up sfc failed", t)
+                    null
+                }
+            }),
+            ExcludeSpec(id = "banner", resolve = {
+                try {
+                    resolveSimpleBannerSfc()
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "bg-element: resolve simple-banner sfc failed", t)
+                    null
+                }
+            }),
+            ExcludeSpec(id = "card", resolve = {
+                try {
+                    resolveCardBackgroundSfc()
+                } catch (t: Throwable) {
+                    Lg.e(TAG, "bg-element: resolve seedling-cardview sfc failed", t)
+                    null
+                }
+            }),
+            ExcludeSpec(id = "vol", dedupe = true, resolve = {
+                try {
+                    resolveVolumeWindowSfc()
+                } catch (t: Throwable) {
+                    logThrottled("volume-sfc-fail", Log.WARN) {
+                        "bg-element: resolve volume-window sfc failed ${t.javaClass.simpleName}"
+                    }
+                    null
+                }
+            }),
+            ExcludeSpec(id = "menu", dedupe = true, resolve = {
+                try {
+                    resolveMenuPanelSfc()
+                } catch (t: Throwable) {
+                    logThrottled("menu-panel-sfc-fail", Log.WARN) {
+                        "bg-element: resolve menu-panel sfc failed ${t.javaClass.simpleName}"
+                    }
+                    null
+                }
+            }),
+            ExcludeSpec(id = "menuPopup", dedupe = true, resolve = {
+                try {
+                    resolveMenuPopupSfc()
+                } catch (t: Throwable) {
+                    logThrottled("menu-popup-sfc-fail", Log.WARN) {
+                        "bg-element: resolve menu-popup sfc failed ${t.javaClass.simpleName}"
+                    }
+                    null
+                }
+            }),
+        )
+        val resolved = HashMap<String, SurfaceControl?>(specs.size)
+        for (spec in specs) resolved[spec.id] = spec.resolve()
+        for (spec in specs) {
+            val sfc = resolved[spec.id] ?: continue
+            if (!sfc.isValid) {
+                EngineLog.log("Excludes", "skip-invalid ${spec.id}")
+                continue
             }
-            null
-        }
-        val menu = try {
-            resolveMenuPanelSfc()
-        } catch (t: Throwable) {
-            logThrottled("menu-panel-sfc-fail", Log.WARN) {
-                "bg-element: resolve menu-panel sfc failed ${t.javaClass.simpleName}"
+            if (spec.dedupe && excludes.any { e -> e == sfc }) {
+                EngineLog.log("Excludes", "dedupe-drop ${spec.id}")
+                continue
             }
-            null
+            excludes.add(sfc)
         }
-        val menuPopup = try {
-            resolveMenuPopupSfc()
-        } catch (t: Throwable) {
-            logThrottled("menu-popup-sfc-fail", Log.WARN) {
-                "bg-element: resolve menu-popup sfc failed ${t.javaClass.simpleName}"
-            }
-            null
+        val hu = resolved["hu"]
+        val banner = resolved["banner"]
+        val card = resolved["card"]
+        val vol = resolved["vol"]
+        val menu = resolved["menu"]
+        val menuPopup = resolved["menuPopup"]
+        if (EngineLog.fullLogEnabled()) {
+            EngineLog.log("Excludes", "resolve shade=${exclName(shade)} hu=${exclName(hu, headsUpActiveHost?.get())} banner=${exclName(banner, simpleBannerActiveHost?.get())} card=${exclName(card, cardBackgroundActiveHost?.get())} vol=${exclName(vol, volumeGlassHost?.get())} menu=${exclName(menu)} menuPopup=${exclName(menuPopup, menuBridgeHost?.get())} n=${excludes.size}")
         }
-        if (shade != null && shade.isValid) excludes.add(shade)
-        hu?.let { if (it.isValid) excludes.add(it) }
-        banner?.let { if (it.isValid) excludes.add(it) }
-        card?.let { if (it.isValid) excludes.add(it) }
-        if (vol != null && vol.isValid && excludes.none { e -> e == vol }) excludes.add(vol)
-        if (menu != null && menu.isValid && excludes.none { e -> e == menu }) excludes.add(menu)
-        if (menuPopup != null && menuPopup.isValid && excludes.none { e -> e == menuPopup }) excludes.add(menuPopup)
-        // [doc/spec/92 §5.5 · 2026-10-10] 诊断日志（模块日志开关 + 节流）：一眼分辨两类根因——
+        // 诊断日志（模块日志开关 + 节流）：一眼分辨两类根因——
         // 「解析不到」（banner=null / n 偏小）vs 「解析到了但 SF 不认 setExcludeLayers」（n≥1 仍叠加）。
         logThrottled("excludes", Log.DEBUG) {
             "bg-element: excludes n=${excludes.size} " +
@@ -15932,7 +15610,7 @@ object BlurDrawHook {
             // 新路径零 WMS Binder、零记账日志；**不注入任何进程**（第一版注入 system_server
             // 导致显示管线卡死，教训见 DisplayRootChannel 头部）。
             // 任何失败返回 null → 自动落到下面的旧路径（兜底铁律）。
-            val newScale = bgCaptureScale()
+            val newScale = CapturePolicy.bgCaptureScale()
             val newExcludes = collectExcludes(shade)
             val viaToken = DisplayRootChannel.captureViaDisplayToken(
                 systemUiContext(), crop, newScale, newExcludes.toTypedArray()
@@ -15964,7 +15642,7 @@ object BlurDrawHook {
                     // [doc/spec/49 回退 2026-08-13] 拖动期不再强制 0.25 降采样：运动时保持配置清晰度
                     // （快照分辨率减半=运动变糊根因）。拖动期降载只保留跳过 QS 亮度全图扫描 + 文字重采样
                     // （见 runElementCaptureWorker / motionResetRunnable），不再降低抓屏分辨率。
-                    val scale = bgCaptureScale()
+                    val scale = CapturePolicy.bgCaptureScale()
                     builderCls.getMethod("setSourceCrop", Rect::class.java).invoke(builder, crop)
                     // 排除数组（防玻璃自采样）。抽成函数：新路径（spec/82 display 根层抓屏）共用同一份。
                     val excludes = collectExcludes(shade)

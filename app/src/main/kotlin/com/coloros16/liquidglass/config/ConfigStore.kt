@@ -2,6 +2,7 @@ package com.coloros16.liquidglass.config
 
 import com.coloros16.liquidglass.hook.spec.ChannelSpec
 import com.coloros16.liquidglass.hook.spec.EffectSpec
+import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.hook.spec.FieldSpec
 import com.coloros16.liquidglass.hook.spec.FallbackSpec
 import com.coloros16.liquidglass.hook.spec.GuardSpec
@@ -20,7 +21,10 @@ object ConfigStore {
     /** 按 group 过滤出厂表；null = 全量。 */
     fun load(group: String? = null): List<HookSpec> {
         val all = DefaultHooksJson.DEFAULT_HOOK_SPECS
-        return if (group == null) all else all.filter { it.group == group }
+        val out = if (group == null) all else all.filter { it.group == group }
+        EngineLog.log("ConfigStore", "load group=${group ?: "all"} total=${all.size} matched=${out.size}")
+        for (s in out) EngineLog.log("ConfigStore", "spec id=${s.id} group=${s.group ?: "-"}")
+        return out
     }
 
     /** 解析 JSON 规格数组（"[{...},{...}]"），字段名与 HookSpec 数据类属性同名。 */
@@ -31,6 +35,7 @@ object ConfigStore {
             val o = arr.optJSONObject(i) ?: continue
             out.add(parseSpec(o))
         }
+        EngineLog.log("ConfigStore", "parseSpecs user-json count=${out.size}")
         return out
     }
 

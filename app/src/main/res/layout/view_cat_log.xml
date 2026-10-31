@@ -26,6 +26,21 @@
             android:textColor="?android:attr/textColorSecondary" />
 
         <Switch
+            android:id="@+id/switchEngineFullLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_engine_full_log" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_engine_full_log_desc"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <Switch
             android:id="@+id/switchDebugDraw"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

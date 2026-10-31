@@ -22,6 +22,7 @@ object ProbeRegistry {
 
     fun arm(group: String, target: Any, ttlMs: Long) {
         tokens[group] = Token(WeakReference(target), SystemClock.uptimeMillis(), ttlMs)
+        EngineLog.log("Probe", "arm group=$group ttl=$ttlMs target=${target.javaClass.name.substringAfterLast('.')}")
     }
 
     fun matches(group: String, target: Any?): Boolean {
@@ -29,6 +30,7 @@ object ProbeRegistry {
         val t = tokens[group] ?: return false
         if (t.expired()) {
             tokens.remove(group, t)
+            EngineLog.log("Probe", "expire group=$group")
             return false
         }
         return t.ref.get() === target
@@ -37,10 +39,15 @@ object ProbeRegistry {
     fun clearIfMatch(group: String, target: Any?) {
         if (target == null) return
         val t = tokens[group] ?: return
-        if (t.ref.get() === target) tokens.remove(group, t)
+        if (t.ref.get() === target) {
+            tokens.remove(group, t)
+            EngineLog.log("Probe", "consume group=$group")
+        }
     }
 
     fun clear(group: String) {
-        tokens.remove(group)
+        if (tokens.remove(group) != null) {
+            EngineLog.log("Probe", "clear group=$group")
+        }
     }
 }

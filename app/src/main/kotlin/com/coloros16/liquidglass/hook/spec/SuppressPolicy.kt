@@ -26,6 +26,7 @@ object SuppressPolicy {
      * 返回 proceed 的结果；恢复顺序 = 绑定逆序（独立字段，无行为后果）。
      */
     fun suppressFieldsThenProceed(chain: XposedInterface.Chain, bindings: List<FieldBinding>): Any? {
+        EngineLog.log("SuppressPolicy", "trigger fields=[${bindings.joinToString(",") { it.name }}] this=${chain.thisObject?.javaClass?.name?.substringAfterLast('.') ?: "-"}")
         val saved = ArrayList<Int?>(bindings.size)
         for (b in bindings) {
             val host = try {

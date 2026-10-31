@@ -18,17 +18,23 @@ object RestoreEngine {
 
     fun register(timing: Timing, action: () -> Unit) {
         actions.getOrPut(timing) { CopyOnWriteArrayList() }.add(action)
+        EngineLog.log("RestoreEngine", "register $timing n=${actions[timing]?.size ?: 0}")
     }
 
     fun fire(timing: Timing) {
         val list = actions[timing] ?: return
+        EngineLog.log("RestoreEngine", "fire $timing n=${list.size}")
+        var done = 0
         for (action in list) {
             try {
                 action()
+                done++
             } catch (t: Throwable) {
+                EngineLog.log("RestoreEngine", "action-failed $timing ${t.javaClass.simpleName}")
                 Lg.w(TAG, "RestoreEngine[$timing] action failed", t)
             }
         }
+        EngineLog.log("RestoreEngine", "fire-done $timing ok=$done/${list.size}")
     }
 
     fun start(specs: List<HookSpec>) {

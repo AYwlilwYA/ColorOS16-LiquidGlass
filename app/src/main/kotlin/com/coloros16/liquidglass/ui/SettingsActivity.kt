@@ -1622,6 +1622,13 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchLogs.setOnCheckedChangeListener(logsListener)
         refreshBooleanSwitch(switchLogs, logsListener, Prefs.KEY_ENABLE_LOGS, Prefs.DEFAULT_ENABLE_LOGS)
+        // 引擎全量日志（500ms TTL 热切换；开=引擎每环节全量流水进 logcat）
+        val switchEngineFullLog = view.findViewById<Switch>(R.id.switchEngineFullLog)
+        val engineFullLogListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            writePrefBoolean(Prefs.KEY_ENGINE_FULL_LOG, checked)
+        }
+        switchEngineFullLog.setOnCheckedChangeListener(engineFullLogListener)
+        refreshBooleanSwitch(switchEngineFullLog, engineFullLogListener, Prefs.KEY_ENGINE_FULL_LOG, Prefs.DEFAULT_ENGINE_FULL_LOG)
         // 调试绘制（悬浮球调试工具：抓取控件/输出区/玻璃清单/UI 树）
         val switchDebugDraw = view.findViewById<Switch>(R.id.switchDebugDraw)
         val debugDrawListener = CompoundButton.OnCheckedChangeListener { _, checked ->

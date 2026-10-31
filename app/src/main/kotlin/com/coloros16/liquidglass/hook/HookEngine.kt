@@ -1,6 +1,7 @@
 package com.coloros16.liquidglass.hook
 
 import com.coloros16.liquidglass.glass.GlassRegistry
+import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.hook.spec.HookSpec
 import com.coloros16.liquidglass.hook.spec.Matcher
 import com.coloros16.liquidglass.log.Lg
@@ -48,10 +49,12 @@ object HookEngine {
     fun mount(api: XposedInterface, classLoader: ClassLoader, request: MountRequest) {
         val spec = request.spec
         if (!spec.enabled) {
+            EngineLog.log(spec.id, "skip reason=disabled")
             Lg.i(TAG, "engine: skip disabled spec ${spec.id}")
             return
         }
         if (request.precondition?.invoke() == false) {
+            EngineLog.log(spec.id, "skip reason=precondition")
             request.preconditionWarn?.let { Lg.w(TAG, it) }
             return
         }
@@ -62,15 +65,23 @@ object HookEngine {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     try {
+                        if (EngineLog.fullLogEnabled()) {
+                            val args = chain.args?.joinToString(",") { a ->
+                                a?.javaClass?.name?.substringAfterLast('.') ?: "null"
+                            } ?: ""
+                            EngineLog.log(spec.id, "invoke this=${chain.thisObject?.javaClass?.name?.substringAfterLast('.') ?: "-"} args=[$args]")
+                        }
                         request.effect.intercept(chain)
                     } catch (t: Throwable) {
                         logEffectError(spec, t)
                         throw t
                     }
                 }
+            EngineLog.log(spec.id, "mounted ${method.declaringClass.name.substringAfterLast('.')}#${method.name}")
             Lg.i(TAG, request.mountedLog)
             request.registerClass?.let { GlassRegistry.registerClass(it) }
         } catch (t: Throwable) {
+            EngineLog.log(spec.id, "mount-failed ${t.javaClass.simpleName}: ${t.message}")
             Lg.e(TAG, request.failedLog, t)
         }
     }

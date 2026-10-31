@@ -290,6 +290,13 @@ object Prefs {
     /** 模块日志开关默认值（2026-08-26 用户要求默认关：false = 默认关日志，需要调试时设置里手动开） */
     const val DEFAULT_ENABLE_LOGS = false
 
+    // ---------- 引擎全量日志 ----------
+    /** 引擎全量日志开关：true=引擎每环节全量流水进 logcat（绕过节流）；false=零输出（现状）。
+     *  hook 端 500ms TTL 重读，热切换生效。 */
+    const val KEY_ENGINE_FULL_LOG = "engine_full_log_enable"
+    /** 引擎全量日志开关默认值（默认关，防刷屏省电） */
+    const val DEFAULT_ENGINE_FULL_LOG = false
+
     // ---------- 调试绘制（悬浮球调试工具） ----------
     /** 调试绘制开关：true=显示悬浮球调试工具（抓取控件/输出区/玻璃清单/UI 树）；默认 false。
      *  hook 端 500ms TTL 重读，≤0.5s 生效，无需重启 SystemUI。 */

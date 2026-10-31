@@ -47,6 +47,8 @@ object PageGlassEngine {
 
     private const val MAX_SCAN_NODES = 3000
 
+    private const val GUARD_THROTTLE_MS = 2000L
+
     /** 候选提示最小短边（dp）：挡 divider / 小图标底。 */
     private const val MIN_SHORT_EDGE_DP = 24f
 
@@ -152,8 +154,14 @@ object PageGlassEngine {
 
     /** 抑制桥：条目类 onDraw 前置——FULL 整段跳过 / THROAT 架桥（无命中零干预）。 */
     private fun ensureOnDrawBridge(clsName: String) {
-        if (!onDrawBridged.add(clsName)) return
-        val cl = hostClassLoader ?: return
+        if (!onDrawBridged.add(clsName)) {
+            logGuard("guard:bridge-already:$clsName", "onDraw bridge skipped: already mounted $clsName", fullDetail = true)
+            return
+        }
+        val cl = hostClassLoader ?: run {
+            logGuard("guard:bridge-cl-null", "onDraw bridge skipped: classloader missing $clsName", fullDetail = true)
+            return
+        }
         val clazz = try {
             hostForName(clsName, cl)
         } catch (t: Throwable) {
@@ -206,9 +214,18 @@ object PageGlassEngine {
 
     /** 咽喉抑制：条目提供的方法签名锚全部命中才挂（防混淆错位），锚不过则不挂。 */
     private fun ensureThroatHook(entry: GlassElementEntry) {
-        val clsName = entry.throatClass ?: return
-        if (!throatHooked.add(clsName)) return
-        val cl = hostClassLoader ?: return
+        val clsName = entry.throatClass ?: run {
+            logGuard("guard:throat-null", "fill suppression skipped: throatClass null label=${entry.label}")
+            return
+        }
+        if (!throatHooked.add(clsName)) {
+            logGuard("guard:throat-already:$clsName", "fill suppression skipped: already mounted $clsName", fullDetail = true)
+            return
+        }
+        val cl = hostClassLoader ?: run {
+            logGuard("guard:throat-cl-null", "fill suppression skipped: classloader missing $clsName", fullDetail = true)
+            return
+        }
         val clazz = try {
             hostForName(clsName, cl)
         } catch (t: Throwable) {
@@ -319,7 +336,10 @@ object PageGlassEngine {
 
     /** 背景变更信号（AppGlassHook 的 setBackground 拦截转发）：候选出现即调度扫描。 */
     internal fun onHostBackgroundSet(view: View) {
-        if (api == null) return
+        if (api == null) {
+            logGuard("guard:onbg-api-null", "background signal dropped: engine not installed", fullDetail = true)
+            return
+        }
         scheduleScan(view.rootView)
     }
 
@@ -345,10 +365,16 @@ object PageGlassEngine {
     }
 
     private fun scheduleScan(root: View) {
-        if (!pageGlassEnabled()) return
+        if (!pageGlassEnabled()) {
+            logGuard("guard:scan-schedule-off", "scan skipped: switch off (root=${root.javaClass.simpleName})")
+            return
+        }
         noteRoot(root)
         val now = SystemClock.uptimeMillis()
-        if (now - lastScanAtMs < SCAN_MIN_INTERVAL_MS) return
+        if (now - lastScanAtMs < SCAN_MIN_INTERVAL_MS) {
+            logGuard("guard:scan-throttle", "scan skipped: min-interval throttle", fullDetail = true)
+            return
+        }
         lastScanAtMs = now
         root.post {
             Looper.myQueue().addIdleHandler {
@@ -371,12 +397,18 @@ object PageGlassEngine {
     }
 
     private fun scan(root: View) {
-        if (!pageGlassEnabled()) return
+        if (!pageGlassEnabled()) {
+            logGuard("guard:scan-off", "scan aborted: switch off (root=${root.javaClass.simpleName})")
+            return
+        }
         noteRoot(root)
         ensureRuntimeHooks()
         var hits = 0
         fun walk(view: View, depth: Int) {
-            if (depth > MAX_SCAN_DEPTH || hits > MAX_SCAN_NODES) return
+            if (depth > MAX_SCAN_DEPTH || hits > MAX_SCAN_NODES) {
+                logGuard("guard:scan-cap", "scan truncated depth=$depth hits=$hits", fullDetail = true)
+                return
+            }
             // root 是 decorView：窗口背景不参与匹配，只递归子节点
             if (view !== root) {
                 val entry = GlassElementRegistry.matchAnchor(view)
@@ -464,15 +496,33 @@ object PageGlassEngine {
 
     /** preDraw 同步：开关关 / 条目失配还原；开且尺寸就绪挂载；已挂且 bounds 变重挂。 */
     private fun syncPageGlass(view: View) {
-        val state = states[view] ?: return
-        if (state.compileFailed) return
+        val state = states[view] ?: run {
+            logGuard("guard:state-missing", "preDraw sync skip: state missing view=${view.javaClass.name}", fullDetail = true)
+            return
+        }
+        if (state.compileFailed) {
+            logGuard(
+                "guard:compile-stopped:${view.javaClass.name}",
+                "preDraw skip: compile failed view=${view.javaClass.name}",
+            )
+            return
+        }
         val entry = GlassElementRegistry.matchAnchor(view)
-        if (!pageGlassEnabled() || entry == null) {
+        if (!pageGlassEnabled()) {
             if (state.applied) restorePageGlass(view, state)
+            else logGuard("guard:sync-switch-off:${view.javaClass.name}", "sync idle: switch off view=${view.javaClass.name} (not applied)")
+            return
+        }
+        if (entry == null) {
+            if (state.applied) restorePageGlass(view, state)
+            else logGuard("guard:anchor-lost:${view.javaClass.name}", "sync idle: anchor unmatched view=${view.javaClass.name} (entry removed/disabled/resized)")
             return
         }
         state.entry = entry
-        if (view.width <= 1 || view.height <= 1) return
+        if (view.width <= 1 || view.height <= 1) {
+            logGuard("guard:size-not-ready:${view.javaClass.name}", "sync wait: size not ready view=${view.javaClass.name} ${view.width}x${view.height}")
+            return
+        }
         if (state.applied) {
             if (view.width != state.lastW || view.height != state.lastH) {
                 unapplyPageGlass(view, state)
@@ -484,7 +534,10 @@ object PageGlassEngine {
     }
 
     private fun applyPageGlass(view: View, state: PageGlassState) {
-        if (AppGlassHook.glassSetBgMethod() == null) return
+        if (AppGlassHook.glassSetBgMethod() == null) {
+            logGuard("guard:setbg-null", "apply skipped: A-family mount point unresolved view=${view.javaClass.name}")
+            return
+        }
         val corner = resolveCorner(view, state.entry)
         val effect = AppGlassHook.cachedGlassEffect(view.width, view.height, corner)
         if (effect == null) {
@@ -493,7 +546,10 @@ object PageGlassEngine {
             AppGlassHook.ensureBDecor(view)
             return
         }
-        if (!AppGlassHook.applyGlassEffect(view, effect)) return
+        if (!AppGlassHook.applyGlassEffect(view, effect)) {
+            logGuard("guard:apply-failed:${view.javaClass.name}", "applyGlassEffect failed view=${view.javaClass.name} (detail in AppGlass log)")
+            return
+        }
         state.applied = true
         state.lastW = view.width
         state.lastH = view.height
@@ -516,7 +572,10 @@ object PageGlassEngine {
     }
 
     private fun unapplyPageGlass(view: View, state: PageGlassState) {
-        if (!state.applied) return
+        if (!state.applied) {
+            logGuard("guard:unapply-idle", "unapply no-op: not applied view=${view.javaClass.name}", fullDetail = true)
+            return
+        }
         AppGlassHook.restoreHostEffect(view)
         state.applied = false
         logOnce(
@@ -526,7 +585,10 @@ object PageGlassEngine {
     }
 
     private fun restorePageGlass(view: View, state: PageGlassState) {
-        if (!state.applied) return
+        if (!state.applied) {
+            logGuard("guard:restore-idle", "restore no-op: not applied view=${view.javaClass.name}", fullDetail = true)
+            return
+        }
         AppGlassHook.restoreHostEffect(view)
         state.applied = false
         logOnce(
@@ -540,7 +602,10 @@ object PageGlassEngine {
 
     /** 点选元素玻璃总闸（总键 OR 旧整页键，TTL [SWITCH_TTL_MS] 重读）。 */
     internal fun pageGlassEnabled(): Boolean {
-        if (api == null) return false
+        if (api == null) {
+            logGuard("guard:engine-api-null", "pageGlassEnabled false: engine not installed", fullDetail = true)
+            return false
+        }
         val now = SystemClock.uptimeMillis()
         if (now - cachedSwitchAtMs > SWITCH_TTL_MS) {
             cachedSwitchAtMs = now
@@ -566,6 +631,16 @@ object PageGlassEngine {
         if (!loggedKeys.add(key)) return
         if (loggedKeys.size > 512) loggedKeys.clear()
         Lg.i(TAG, msg)
+    }
+
+    /** 守卫诊断：2s 节流；关键守卫 Lg.i，琐碎匹配/幂等失败 fullDetail=Lg.d。 */
+    private fun logGuard(key: String, msg: String, fullDetail: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        val prev = diagAtMs[key] ?: 0L
+        if (now - prev < GUARD_THROTTLE_MS) return
+        diagAtMs[key] = now
+        if (diagAtMs.size > 256) diagAtMs.clear()
+        if (fullDetail) Lg.d(TAG, "[$key] $msg") else Lg.i(TAG, "[$key] $msg")
     }
 
     /** 时间窗节流诊断（key 回显进正文，按消息文本可 grep）。 */
