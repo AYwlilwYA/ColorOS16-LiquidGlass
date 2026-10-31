@@ -16,16 +16,16 @@ import android.os.Build
 internal object AppGlassProbeShader {
 
     private const val AGSL = """
-        uniform shader input;
+        uniform shader uBackdrop;
         uniform float2 uSize;
         uniform float uRing;
         uniform float uShift;
 
         half4 main(float2 coord) {
             if (uSize.x <= 1.0 || uSize.y <= 1.0) {
-                return input.eval(coord);
+                return uBackdrop.eval(coord);
             }
-            half4 base = input.eval(coord);
+            half4 base = uBackdrop.eval(coord);
             float2 d = min(coord, uSize - coord);
             float edge = min(d.x, d.y);
             if (edge > uRing) {
@@ -35,9 +35,9 @@ internal object AppGlassProbeShader {
                 ? float2(coord.x < uSize.x * 0.5 ? -1.0 : 1.0, 0.0)
                 : float2(0.0, coord.y < uSize.y * 0.5 ? -1.0 : 1.0);
             float2 farCoord = coord + n * uShift;
-            half4 far = input.eval(farCoord);
+            half4 far = uBackdrop.eval(farCoord);
             float2 clamped = clamp(farCoord, float2(0.0), uSize - float2(1.0));
-            half4 edgeSample = input.eval(clamped);
+            half4 edgeSample = uBackdrop.eval(clamped);
             float diff = length(far.rgb - edgeSample.rgb) + abs(far.a - edgeSample.a);
             if (far.a > 0.5 && diff > 0.15) {
                 return half4(1.0, 0.0, 0.0, 1.0);
@@ -64,6 +64,6 @@ internal object AppGlassProbeShader {
         shader.setFloatUniform("uSize", width.toFloat(), height.toFloat())
         shader.setFloatUniform("uRing", RING_PX)
         shader.setFloatUniform("uShift", SHIFT_PX)
-        return RenderEffect.createRuntimeShaderEffect(shader, "input")
+        return RenderEffect.createRuntimeShaderEffect(shader, "uBackdrop")
     }
 }

@@ -16,7 +16,7 @@ import android.os.Build
 internal object AppGlassBackdropShader {
 
     private const val AGSL = """
-        uniform shader input;            // 背板：节点下方已绘内容（每帧 GPU 自动喂入）
+        uniform shader uBackdrop;        // 背板：节点下方已绘内容（每帧 GPU 自动喂入）
         uniform float2 uSize;            // 元素尺寸 px
         uniform float uCornerRadius;     // SDF 圆角半径 px
         uniform float uCornerIsConic;    // 本体角 CONIC 开关（1=贝塞尔 squircle）
@@ -132,7 +132,7 @@ internal object AppGlassBackdropShader {
         // 背板采样：越出节点边界回退贴边钳制（防背板裁在节点边界时环带采到透明露黑）
         half4 sampleBackdrop(float2 c) {
             float2 lim = max(uSize - float2(1.0), float2(0.0));
-            return input.eval(clamp(c, float2(0.0), lim));
+            return uBackdrop.eval(clamp(c, float2(0.0), lim));
         }
 
         half4 main(float2 coord) {
@@ -254,6 +254,6 @@ internal object AppGlassBackdropShader {
         shader.setFloatUniform("uHighlightFloor", HIGHLIGHT_FLOOR)
         shader.setFloatUniform("uVibrancy", VIBRANCY)
         shader.setFloatUniform("uLightAngle", LIGHT_ANGLE_RAD)
-        return RenderEffect.createRuntimeShaderEffect(shader, "input")
+        return RenderEffect.createRuntimeShaderEffect(shader, "uBackdrop")
     }
 }
