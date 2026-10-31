@@ -170,6 +170,30 @@ object GlassRegistry {
         return obj.toString()
     }
 
+    /** 解析关闭名单（类全名 JSON array）；空串 / 格式错误 → 空表（不抛）。 */
+    fun parseClassList(json: String?): Set<String> {
+        if (json.isNullOrEmpty()) return emptySet()
+        return try {
+            val arr = JSONArray(json)
+            val out = HashSet<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val c = arr.optString(i)
+                if (c.isNotEmpty()) out.add(c)
+            }
+            out
+        } catch (t: Throwable) {
+            Lg.w(TAG, "parse class list failed", t)
+            emptySet()
+        }
+    }
+
+    /** 序列化关闭名单（按类名排序，同内容同字节）。 */
+    fun encodeClassList(set: Set<String>): String {
+        val arr = JSONArray()
+        for (c in set.sorted()) arr.put(c)
+        return arr.toString()
+    }
+
     // ------------------------------------------------------------ 探测登记（hook 侧） ------------------------------------------------------------
 
     private class Bound(val clazz: Class<*>, val name: String, val cardClass: String?)
@@ -572,5 +596,95 @@ object GlassRegistry {
             Lg.w(TAG, "read glass_corner_overrides failed", t)
         }
         return cornerCache
+    }
+
+    // ------------------------------------------------------------ 圆角两开关（渲染热路径） ------------------------------------------------------------
+
+    @Volatile
+    private var cornerAdaptiveOff: Set<String> = emptySet()
+
+    @Volatile
+    private var cornerSyncOff: Set<String> = emptySet()
+
+    @Volatile
+    private var cornerSwitchCacheAtMs = 0L
+
+    private fun snapshotCornerSwitches() {
+        val now = SystemClock.uptimeMillis()
+        if (now - cornerSwitchCacheAtMs < PRESET_TTL_MS) return
+        cornerSwitchCacheAtMs = now
+        val prefs = prefsOrNull() ?: return
+        try {
+            cornerAdaptiveOff = parseClassList(prefs.getString(Prefs.KEY_CORNER_ADAPTIVE_OFF, null))
+            cornerSyncOff = parseClassList(prefs.getString(Prefs.KEY_CORNER_SYNC_EXTERNAL_OFF, null))
+        } catch (t: Throwable) {
+            Lg.w(TAG, "read corner switches failed", t)
+        }
+    }
+
+    /** 「圆角自适应」：开（默认）= 覆盖值超短边一半钳回一半；关 = 原样。 */
+    fun cornerAdaptiveFor(cls: String): Boolean {
+        snapshotCornerSwitches()
+        return cls !in cornerAdaptiveOff
+    }
+
+    /** 「玻璃圆角跟随外部形状」：开（默认）= 玻璃 SDF 圆角跟外部实测；关 = 可独立自定义。 */
+    fun cornerSyncExternalFor(cls: String): Boolean {
+        snapshotCornerSwitches()
+        return cls !in cornerSyncOff
+    }
+
+    /** 元素 id 版：命中顺序与 [cornerOverrideFor] 一致（卡片类优先，回落绘制对象类）。 */
+    fun cornerAdaptiveFor(elementId: Int): Boolean {
+        if (elementId == 0) return true
+        val b = bound[elementId] ?: return true
+        snapshotCornerSwitches()
+        val off = cornerAdaptiveOff
+        val primary = b.cardClass ?: b.name
+        return if (primary in off) false else b.name !in off
+    }
+
+    /** 元素 id 版：命中顺序与 [cornerOverrideFor] 一致（卡片类优先，回落绘制对象类）。 */
+    fun cornerSyncExternalFor(elementId: Int): Boolean {
+        if (elementId == 0) return true
+        val b = bound[elementId] ?: return true
+        snapshotCornerSwitches()
+        val off = cornerSyncOff
+        val primary = b.cardClass ?: b.name
+        return if (primary in off) false else b.name !in off
+    }
+
+    /**
+     * 渲染轨：玻璃内部 SDF 圆角基准（外部同步 + 自适应钳制统一分流）：
+     * - 无按类覆盖 → null（调用方回落实测圆角）；
+     * - 有覆盖且「外部同步」开 → null（玻璃内部跟外部实测，覆盖值只经写穿轨改外部形状）；
+     * - 有覆盖且「外部同步」关 → 「自适应」开时钳短边一半，关时原样（玻璃独立自定义）。
+     * 写穿轨请用 [writeCornerBaseFor]（写侧只看自适应钳，与外部同步开关无关）。
+     */
+    fun glassCornerBaseFor(elementId: Int, w: Float, h: Float): Float? {
+        if (elementId == 0) return null
+        val b = bound[elementId] ?: return null
+        val map = snapshotCornerOverrides()
+        if (map.isEmpty()) return null
+        val primary = b.cardClass ?: b.name
+        val ov = map[primary] ?: map[b.name] ?: return null
+        if (cornerSyncExternalFor(elementId)) return null
+        return if (cornerAdaptiveFor(elementId)) ov.coerceAtMost(minOf(w, h) / 2f) else ov
+    }
+
+    /**
+     * 写穿轨：按类圆角覆盖写入外部形状时的基准（「圆角自适应」钳制，与「玻璃圆角跟随外部形状」
+     * 开关无关——写穿改的就是外部形状本身）：
+     * - 无按类覆盖 → null（调用方回落实测圆角）；
+     * - 有覆盖 → 「自适应」开则钳短边一半，关则原样（恢复用户所设值直写）。
+     */
+    fun writeCornerBaseFor(elementId: Int, w: Float, h: Float): Float? {
+        if (elementId == 0) return null
+        val b = bound[elementId] ?: return null
+        val map = snapshotCornerOverrides()
+        if (map.isEmpty()) return null
+        val primary = b.cardClass ?: b.name
+        val ov = map[primary] ?: map[b.name] ?: return null
+        return if (cornerAdaptiveFor(elementId)) ov.coerceAtMost(minOf(w, h) / 2f) else ov
     }
 }

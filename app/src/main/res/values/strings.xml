@@ -67,13 +67,6 @@
     <string name="settings_parallax_y_value">%1$d px</string>
     <string name="settings_parallax_y_desc">背景垂直偏移，0 表示关闭。</string>
 
-    <!-- 统一界面圆角（通知/控制中心） -->
-    <string name="settings_unified_corner">统一界面圆角（通知/控制中心）</string>
-    <string name="settings_unified_corner_desc">通知中心和控制中心使用同一圆角。圆形和药丸形控件保持原样；桌面、锁屏不受影响。</string>
-    <string name="settings_unified_corner_px">统一圆角（px）</string>
-    <string name="settings_unified_corner_px_value">%1$d px</string>
-    <string name="settings_unified_corner_px_desc">统一使用的圆角大小。较小的圆角会放大到该值；圆形和药丸形控件不变。</string>
-
     <!-- 背景与抓屏 -->
     <string name="settings_capture_params_section">背景刷新</string>
     <string name="settings_capture_mode">模式</string>
@@ -391,10 +384,14 @@
     <!-- 圆角独立（按组件类单独设置圆角） -->
     <string name="cat_corner">圆角独立</string>
     <string name="cat_corner_desc">按组件类单独设置圆角</string>
-    <string name="corner_page_hint">为每一类组件单独指定圆角；未指定的沿用系统实测圆角。改动约 1 秒内生效。</string>
+    <string name="corner_page_hint">这里统一管理所有圆角：为每一类组件单独指定圆角值，并控制圆角行为。未指定圆角值的沿用系统实测圆角；调整约 1 秒内生效。</string>
     <string name="corner_follow_measured">跟随实测</string>
     <string name="corner_custom_value">%1$d dp</string>
     <string name="corner_reset">恢复跟随实测</string>
+    <string name="corner_adaptive_switch">圆角自适应</string>
+    <string name="corner_adaptive_desc">开启后，圆角值如果超过组件短边的一半，会自动回到短边一半，避免圆角过大变成圆团。</string>
+    <string name="corner_sync_external_switch">玻璃圆角跟随外部形状</string>
+    <string name="corner_sync_external_desc">开启后，玻璃内部圆角始终等于组件外部实际圆角；调整圆角值只改变外部形状，玻璃自动跟随。关闭后玻璃可以和外部用不同圆角。</string>
 
     <!-- [2026-09-17] 启动时升级提示（查 GitHub Releases 最新版本） -->
     <string name="update_dialog_title">发现新版本</string>

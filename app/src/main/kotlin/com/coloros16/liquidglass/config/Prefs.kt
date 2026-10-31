@@ -47,6 +47,12 @@ object Prefs {
     /** 按类圆角覆盖表（JSON 对象，类全名 → 圆角半径 px；缺失 = 该类跟随实测圆角）。 */
     const val KEY_CORNER_OVERRIDES = "glass_corner_overrides"
 
+    /** per-class「圆角自适应」关闭名单（类全名 JSON array）；不在名单 = 开（默认开）。 */
+    const val KEY_CORNER_ADAPTIVE_OFF = "glass_corner_adaptive_off"
+
+    /** per-class「玻璃圆角跟随外部形状」关闭名单（类全名 JSON array）；不在名单 = 开（默认开）。 */
+    const val KEY_CORNER_SYNC_EXTERNAL_OFF = "glass_corner_sync_external_off"
+
     /** 预设序号：新建预设时自增写回，保证预设 id 不与历史 id 复用。 */
     const val KEY_GLASS_PRESET_SEQ = "glass_preset_seq"
 

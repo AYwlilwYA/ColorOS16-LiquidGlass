@@ -79,57 +79,6 @@
             android:text="@string/settings_section_material"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
-        <!-- [doc/spec/101] 统一界面圆角：开关 + 半径滑杆。开关关时滑杆整组隐藏（不占位、不可调）。 -->
-        <Switch
-            android:id="@+id/switchUnifiedCorner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_unified_corner" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_unified_corner_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
-        <TextView
-            android:id="@+id/unifiedCornerPxLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_unified_corner_px"
-            android:textAppearance="?attr/textAppearanceTitleSmall"
-            android:visibility="gone" />
-
-        <SeekBar
-            android:id="@+id/seekUnifiedCornerPx"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:max="192"
-            android:progress="40"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/unifiedCornerPxValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/unifiedCornerPxDesc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_unified_corner_px_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary"
-            android:visibility="gone" />
-
         <TextView
             android:id="@+id/blurRadiusLabel"
             android:layout_width="wrap_content"

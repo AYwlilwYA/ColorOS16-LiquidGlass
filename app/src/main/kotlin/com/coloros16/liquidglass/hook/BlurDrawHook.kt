@@ -4089,12 +4089,13 @@ object BlurDrawHook {
      * - 药丸滑杆（自身角 = 半高）→ 同理保持药丸；
      * - 小元素（统一半径 > 短边一半）→ 被 min(w,h)/2 封顶，不越几何上限。
      *
-     * **开关关 / 不在作用域 → 原样返回基准圆角**（= 改动前行为，逐像素零变化）。
+     * **开关关 / 不在作用域 → 原样返回基准圆角**。
      * CONIC 标志与权重不在本函数处理：白名单内通知卡是 CONIC，统一只改 r、保留 CONIC 标志
      * （shader 侧仍按 1.5×r + sdBezierDistance 画 CONIC 角）。
      *
-     * 基准圆角先取按类覆盖（[GlassRegistry.cornerOverrideFor]，raw 半径语义与实测值一致，
-     * 不重复乘 CONIC 系数），未覆盖类回落 [ownRadius]；覆盖值按 min(w,h)/2 封顶防越几何上限。
+     * 基准圆角先取按类圆角基准（[GlassRegistry.glassCornerBaseFor]：渲染轨分流——外部同步开 →
+     * 跟外部实测；关 → 覆盖值按「圆角自适应」钳短边一半 / 原样），未命中回落 [ownRadius]。
+     * 写穿轨请用 [resolveWriteThroughCorner]（写侧基准只看自适应钳，与外部同步开关无关）。
      *
      * @param ownRadius 元素自身已解析圆角（RegionEntry.cornerRadius；0 = 反射失败方角）
      * @param elementId 元素 identityHashCode（查按类圆角覆盖表）
@@ -4107,7 +4108,30 @@ object BlurDrawHook {
         w: Float,
         h: Float,
     ): Float {
-        val base = GlassRegistry.cornerOverrideFor(elementId)?.coerceAtMost(minOf(w, h) / 2f) ?: ownRadius
+        val base = GlassRegistry.glassCornerBaseFor(elementId, w, h) ?: ownRadius
+        return applyUnifiedCornerOverlay(entry, base, w, h)
+    }
+
+    /** 写穿轨 desired：基准取按类圆角覆盖写入值（[GlassRegistry.writeCornerBaseFor]，「圆角自适应」
+     *  开钳短边一半 / 关原样，与「玻璃圆角跟随外部形状」开关无关），再叠统一圆角规则（与渲染侧同规则叠加）。 */
+    private fun resolveWriteThroughCorner(
+        entry: RegionEntry,
+        ov: Float,
+        elementId: Int,
+        w: Float,
+        h: Float,
+    ): Float {
+        val base = GlassRegistry.writeCornerBaseFor(elementId, w, h) ?: ov
+        return applyUnifiedCornerOverlay(entry, base, w, h)
+    }
+
+    /** 统一界面圆角叠加：作用域内 + 开关开 + 非锁屏 → min(max(U, base), min(w,h)/2)；否则 base 原样。 */
+    private fun applyUnifiedCornerOverlay(
+        entry: RegionEntry,
+        base: Float,
+        w: Float,
+        h: Float,
+    ): Float {
         if (!entry.unifiedScope) return base
         if (!Prefs.unifiedCornerEnabled(api)) return base
         // [doc/spec/106] 锁屏态不统一，与写侧门控同口径：写侧已停写系统参数，渲染侧若仍统一
@@ -4173,9 +4197,9 @@ object BlurDrawHook {
      */
     private fun applyUnifiedCornerToProxy(vbp: Any): Boolean {
         // [doc/spec/143] 覆盖写穿 Layer B：显式类级圆角覆盖优先，不读统一圆角开关、不设锁屏门。
-        // desired 走 [resolveUnifiedCornerRadius] 同函数（写侧与 shader 永远同值）；覆盖已删 /
-        // 总开关关 → 先单条还原影子再落原逻辑（§六）。ov==null 且无覆盖影子时本段只多一次
-        // target 解析 + 覆盖表查询（applyConfig 期成本，spec/143 §七）。
+        // desired 走 [resolveWriteThroughCorner]（写侧基准=自适应钳后的覆盖值，与玻璃内部基准
+        // 分开）；覆盖已删 / 总开关关 → 先单条还原影子再落原逻辑（§六）。ov==null 且无覆盖影子
+        // 时本段只多一次 target 解析 + 覆盖表查询（applyConfig 期成本，spec/143 §七）。
         val targetB = resolveProxyPostEffectDrawable(vbp)
         if (targetB != null) {
             val ovB = GlassRegistry.cornerOverrideFor(System.identityHashCode(targetB))
@@ -4200,7 +4224,7 @@ object BlurDrawHook {
                                 "override",
                                 unifiedScope = isUnifiedCornerScope(viewB, targetB, "map"),
                             )
-                            val desiredB = resolveUnifiedCornerRadius(entryB, ovB, idB, wB, hB)
+                            val desiredB = resolveWriteThroughCorner(entryB, ovB, idB, wB, hB)
                             if (desiredB > 0f) return applyCornerWriteThrough(vbp, desiredB, "layerB")
                         }
                     }
@@ -4339,7 +4363,7 @@ object BlurDrawHook {
     }
 
     /** [doc/spec/143] 覆盖写穿核心（Layer A/B 共用）：desired 已由调用方按
-     *  [resolveUnifiedCornerRadius] 算好（写侧与 shader 永远同值），本函数只负责
+     *  [resolveWriteThroughCorner] 算好（写侧基准=自适应钳后的覆盖值），本函数只负责
      *  采影子 + 写穿 + 重跑，幂等沿用 shadow.lastWritten。
      *  @return true = 本次改了系统圆角（Layer B 供 mount hook proceed 后 invalidatePath；Layer A 忽略返回值） */
     private fun applyCornerWriteThrough(vbp: Any, desired: Float, pathTag: String): Boolean {
@@ -4542,12 +4566,13 @@ object BlurDrawHook {
         }
     }
 
-    /** [doc/spec/143 §5.3 Layer A] 注册期补写：覆盖值改后 ≤1s 收敛（注册链每次 draw 都跑）。 */
+    /** [doc/spec/143 §5.3 Layer A] 注册期补写：覆盖值改后 ≤1s 收敛（注册链每次 draw 都跑）。
+     *  desired 走 [resolveWriteThroughCorner]（写侧基准=自适应钳后的覆盖值）。 */
     private fun applyCornerOverrideAtRegister(proxy: Any, elementId: Int, entry: RegionEntry, w: Float, h: Float, pathTag: String) {
         val ov = GlassRegistry.cornerOverrideFor(elementId)
         if (ov != null) {
             if (!Prefs.glassEnabled(api)) return
-            val desired = resolveUnifiedCornerRadius(entry, ov, elementId, w, h)
+            val desired = resolveWriteThroughCorner(entry, ov, elementId, w, h)
             if (desired <= 0f) return
             val cached = overrideCornerWritten[elementId]
             if (cached != null && desired == cached) return  // 每帧零反射快判
@@ -9107,7 +9132,7 @@ object BlurDrawHook {
         val srcRect = renderSource.srcRect
         val source = renderSource.source
         val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
-        val cornerRadius = GlassRegistry.cornerOverrideFor(id)?.coerceAtMost(minOf(w, h) / 2f)
+        val cornerRadius = GlassRegistry.glassCornerBaseFor(id, w.toFloat(), h.toFloat())
             ?: entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
         var params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)

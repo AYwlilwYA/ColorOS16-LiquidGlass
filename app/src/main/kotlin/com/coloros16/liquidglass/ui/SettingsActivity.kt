@@ -474,40 +474,6 @@ class SettingsActivity : AppCompatActivity() {
         val presetParams: Map<String, Float>? = glassPresets.find { it.id == presetId }?.params
         bindGlassPresetBar(view, glassPresets, presetId)
 
-        // [doc/spec/101] 统一界面圆角：开关 + 半径滑杆（8~200px，默认 48）。
-        // 开关关时滑杆整组隐藏（label/seek/value/desc 全 GONE）；预览不喂 —— 预览框是单个固定形状，
-        // 统一圆角的语义是「跨元素对齐」，在单元素预览上没有可比对象（同 spec/89 视差不喂预览的理由）。
-        val switchUnifiedCorner = view.findViewById<Switch>(R.id.switchUnifiedCorner)
-        val unifiedPxLabel = view.findViewById<View>(R.id.unifiedCornerPxLabel)
-        val unifiedPxSeek = view.findViewById<SeekBar>(R.id.seekUnifiedCornerPx)
-        val unifiedPxValue = view.findViewById<TextView>(R.id.unifiedCornerPxValue)
-        val unifiedPxDesc = view.findViewById<View>(R.id.unifiedCornerPxDesc)
-        fun applyUnifiedCornerGroup(enabled: Boolean) {
-            val vis = if (enabled) View.VISIBLE else View.GONE
-            unifiedPxLabel.visibility = vis
-            unifiedPxSeek.visibility = vis
-            unifiedPxValue.visibility = vis
-            unifiedPxDesc.visibility = vis
-        }
-        bindFloatSeekBar(
-            seek = unifiedPxSeek, valueText = unifiedPxValue,
-            key = Prefs.KEY_UNIFIED_CORNER_PX, default = Prefs.DEFAULT_UNIFIED_CORNER_PX,
-            fromProgress = { p -> Prefs.UNIFIED_CORNER_PX_MIN + p },
-            toProgress = { v -> (v - Prefs.UNIFIED_CORNER_PX_MIN).roundToInt().coerceIn(0, 192) },
-            format = { v -> getString(R.string.settings_unified_corner_px_value, v.roundToInt()) },
-        )
-        val unifiedCornerListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_UNIFIED_CORNER_ENABLE, checked)
-            applyUnifiedCornerGroup(checked)
-        }
-        switchUnifiedCorner.setOnCheckedChangeListener(unifiedCornerListener)
-        refreshBooleanSwitch(
-            switchUnifiedCorner, unifiedCornerListener,
-            Prefs.KEY_UNIFIED_CORNER_ENABLE, Prefs.DEFAULT_UNIFIED_CORNER_ENABLE,
-        )
-        // 先绑滑杆再刷开关：刷开关不触发监听器 → 这里手动按当前值应用一次显隐
-        applyUnifiedCornerGroup(switchUnifiedCorner.isChecked)
-
         // [2026-09-16 恢复配置化] 模糊半径：0~32 px（默认 8）。原被硬编码 0（清晰透镜），
         // 用户反馈「横幅太透」。>0 时 shader 走 5×5 内部轻模糊（25 次采样，仅作用内部不糊折射环带）。
         bindFloatSeekBar(
@@ -1029,7 +995,24 @@ class SettingsActivity : AppCompatActivity() {
         Lg.i(TAG, "write glass_corner_overrides count=${map.size}")
     }
 
-    /** 圆角独立页：探测到的类逐行展示（标签 + 位置 + 当前值），点行弹滑杆编辑。 */
+    /** 读一个类的圆角开关状态（关闭名单反向：不在名单 = 开，默认开）。 */
+    private fun readCornerSwitchOn(key: String, cls: String): Boolean =
+        cls !in GlassRegistry.parseClassList(frameworkPrefs()?.getString(key, null))
+
+    /** 写一个类的圆角开关（关 = 进关闭名单；开 = 移出）。框架未就绪 → 提示并放弃。 */
+    private fun writeCornerSwitch(key: String, cls: String, enabled: Boolean) {
+        val framework = frameworkPrefs()
+        if (framework == null) {
+            Toast.makeText(this, R.string.config_framework_not_ready, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val off = GlassRegistry.parseClassList(framework.getString(key, null)).toMutableSet()
+        if (enabled) off.remove(cls) else off.add(cls)
+        framework.edit().putString(key, GlassRegistry.encodeClassList(off)).apply()
+        Lg.i(TAG, "write corner switch $key cls=$cls enabled=$enabled off=${off.size}")
+    }
+
+    /** 圆角独立页：探测到的类逐块展示（值行点开滑杆编辑 + 自适应/外部同步两开关）。 */
     private fun bindCornerRadius(view: View) {
         val list = view.findViewById<LinearLayout>(R.id.cornerClassList)
         list.removeAllViews()
@@ -1047,10 +1030,49 @@ class SettingsActivity : AppCompatActivity() {
             } else {
                 getString(R.string.corner_custom_value, (px / density).roundToInt())
             }
-            list.addView(glassPresetRow("${classDisplayText(cls)}\n$valueText") {
+            val block = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            block.addView(glassPresetRow("${classDisplayText(cls)}\n$valueText") {
                 showCornerRadiusDialog(cls) { bindCurrentPage() }
             })
+            block.addView(buildCornerSwitchRow(
+                cls, Prefs.KEY_CORNER_ADAPTIVE_OFF, getString(R.string.corner_adaptive_switch),
+                getString(R.string.corner_adaptive_desc),
+            ))
+            block.addView(buildCornerSwitchRow(
+                cls, Prefs.KEY_CORNER_SYNC_EXTERNAL_OFF, getString(R.string.corner_sync_external_switch),
+                getString(R.string.corner_sync_external_desc),
+            ))
+            list.addView(block)
         }
+    }
+
+    /** 一行圆角开关（Switch + 说明），绑定 [writeCornerSwitch]。 */
+    private fun buildCornerSwitchRow(cls: String, key: String, title: String, desc: String): View {
+        val density = resources.displayMetrics.density
+        val pad = (12 * density).toInt()
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, pad / 2)
+        }
+        val sw = Switch(this).apply {
+            text = title
+            isChecked = readCornerSwitchOn(key, cls)
+            setPadding(pad / 2, 0, pad / 2, 0)
+        }
+        sw.setOnCheckedChangeListener { _, checked -> writeCornerSwitch(key, cls, checked) }
+        column.addView(sw)
+        val descTa = obtainStyledAttributes(intArrayOf(android.R.attr.textColorSecondary))
+        val descColor = descTa.getColor(0, 0xFFFFFFFF.toInt())
+        descTa.recycle()
+        column.addView(TextView(this).apply {
+            text = desc
+            textSize = 12f
+            setTextColor(descColor)
+            setPadding(pad, 0, pad, pad / 2)
+        })
+        return column
     }
 
     /** 单类圆角编辑对话框：滑杆 0（跟随实测）~ 200dp，拖动结束即写；另附「恢复跟随实测」按钮。 */

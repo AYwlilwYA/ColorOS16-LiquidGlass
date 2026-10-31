@@ -2455,7 +2455,8 @@ object LauncherHook {
 
     /** [doc/spec/143 §5.3] 桌面 Layer A 覆盖写穿：ov 非空且总开关开 → desired 写进
      *  LayerBlurDrawable.setCornerRadius（内部写 mBlurDrawable path 圆角）；ov 空 / 总开关关
-     *  且此前写过 → 影子回写系统原值。desired 对齐渲染侧 cap 公式（短边一半封顶）。
+     *  且此前写过 → 影子回写系统原值。desired 对齐 SystemUI 写穿轨（[GlassRegistry.writeCornerBaseFor]：
+     *  「圆角自适应」开钳短边一半 / 关原样）。
      *  任何解析/调用失败只禁写口，不崩不劣化（玻璃角照变、容器不跟 = 现状）。 */
     private fun applyLauncherCornerWrite(
         layer: Any?,
@@ -2478,7 +2479,7 @@ object LauncherHook {
             Lg.w(TAG, "launcher corner-write: setCornerRadius unresolved, write-through disabled")
             return
         }
-        val desired = ov.coerceAtMost(minOf(w, h) / 2f)
+        val desired = GlassRegistry.writeCornerBaseFor(id, w, h) ?: ov
         if (existing != null && existing.lastWritten == desired) return
         try {
             // 对齐系统 tag 路径形态（CardBackgroundBlurManager mask=8：isFolder=false、itemInfo=null、isHotseat=false）
@@ -4007,8 +4008,8 @@ object LauncherHook {
             // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
             val ov = GlassRegistry.overridesFor(elementId)
             fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
-            // 按类圆角覆盖：命中 → 覆盖实测值（短边一半封顶），未命中原样透传
-            val corner = GlassRegistry.cornerOverrideFor(elementId)?.coerceAtMost(minOf(width, height) / 2f)
+            // 按类圆角基准：外部同步/自适应分流命中 → 覆盖实测值，未命中原样透传
+            val corner = GlassRegistry.glassCornerBaseFor(elementId, width, height)
                 ?: cornerRadius
             LiquidGlassShader.Params(
                 viewportWidth = width,
