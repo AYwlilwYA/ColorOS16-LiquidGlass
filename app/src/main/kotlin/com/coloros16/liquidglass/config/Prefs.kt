@@ -776,25 +776,25 @@ object Prefs {
     }
 
     @Volatile
-    private var debugDrawCache: Boolean = DEFAULT_DEBUG_DRAW_ENABLE
+    private var debugDrawCache: Boolean = false
 
     @Volatile
     private var debugDrawCacheAtMs = 0L
 
-    /** 调试绘制开关（500ms TTL 缓存；关 = 无窗口无 tick，仅本 volatile 读）。 */
+    @Volatile
+    private var debugDrawLogAtMs = 0L
+
+    /** 旧进程内调试球开关：恒关（球统一为全局悬浮球，不允许出现第二颗球），5s 节流留一条下架证据日志。 */
     fun debugDrawEnabled(api: XposedInterface?): Boolean {
-        if (api == null) return DEFAULT_DEBUG_DRAW_ENABLE
         val now = SystemClock.uptimeMillis()
         if (now - debugDrawCacheAtMs < 500L) return debugDrawCache
         debugDrawCacheAtMs = now
-        val v = try {
-            read(api).getBoolean(KEY_DEBUG_DRAW_ENABLE, DEFAULT_DEBUG_DRAW_ENABLE)
-        } catch (t: Throwable) {
-            Lg.w(TAG, "prefs read debug_draw_enable failed, default $DEFAULT_DEBUG_DRAW_ENABLE", t)
-            DEFAULT_DEBUG_DRAW_ENABLE
+        if (now - debugDrawLogAtMs >= 5000L) {
+            debugDrawLogAtMs = now
+            Lg.i(TAG, "debug_draw force off (global ball only)")
         }
-        debugDrawCache = v
-        return v
+        debugDrawCache = false
+        return false
     }
 
     // ---------- 折射区域可调（doc/spec/95，2026-10-10） ----------

@@ -156,9 +156,6 @@ class SettingsActivity : AppCompatActivity() {
         xmlPrefs = Prefs.read(this)
         contentFrame = findViewById(R.id.settings_content)
 
-        // 拉起悬浮球服务（无权限时服务自停；球显隐由「点选元素玻璃」开关驱动）
-        GlobalGlassBall.startFrom(this)
-
         // [spec/88] 状态栏/挖孔避让 + 返回热区几何诊断（根因与实测数据见 doc/spec/88）
         setupWindowInsets(toolbar)
 
@@ -1393,7 +1390,19 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
         bindGlassSwitch(view, R.id.switchEditToolBtnGlass, Prefs.KEY_EDIT_TOOLBTN_GLASS, Prefs.DEFAULT_EDIT_TOOLBTN_GLASS)
         bindGlassSwitch(view, R.id.switchPopupMenuGlass, Prefs.KEY_POPUP_MENU_GLASS_ENABLE, Prefs.DEFAULT_POPUP_MENU_GLASS_ENABLE)
+    }
 
+    /** 悬浮球权限行状态刷新（授权返回后 onResume 再刷一次）。 */
+    private fun refreshGlassBallPermissionRow(view: View) {
+        val status = view.findViewById<TextView>(R.id.textGlassBallPermissionStatus) ?: return
+        status.text = if (Settings.canDrawOverlays(this)) {
+            getString(R.string.settings_glass_ball_permission_granted)
+        } else {
+            getString(R.string.settings_glass_ball_permission_missing)
+        }
+    }
+
+    private fun bindGlassBallPermissionRow(view: View) {
         refreshGlassBallPermissionRow(view)
         view.findViewById<View>(R.id.rowGlassBallPermission).setOnClickListener {
             if (!Settings.canDrawOverlays(this)) {
@@ -1408,19 +1417,11 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    /** 悬浮球权限行状态刷新（授权返回后 onResume 再刷一次）。 */
-    private fun refreshGlassBallPermissionRow(view: View) {
-        val status = view.findViewById<TextView>(R.id.textGlassBallPermissionStatus) ?: return
-        status.text = if (Settings.canDrawOverlays(this)) {
-            getString(R.string.settings_glass_ball_permission_granted)
-        } else {
-            getString(R.string.settings_glass_ball_permission_missing)
-        }
-    }
-
     override fun onResume() {
         super.onResume()
-        if (currentCategory == "components") {
+        // 无权限时服务已自停：授权返回 / 页面回前台都要有人重拉，否则球永远起不来
+        GlobalGlassBall.startFrom(this)
+        if (currentCategory == "log") {
             contentFrame.getChildAt(0)?.let { refreshGlassBallPermissionRow(it) }
         }
     }
@@ -1651,13 +1652,8 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchEngineFullLog.setOnCheckedChangeListener(engineFullLogListener)
         refreshBooleanSwitch(switchEngineFullLog, engineFullLogListener, Prefs.KEY_ENGINE_FULL_LOG, Prefs.DEFAULT_ENGINE_FULL_LOG)
-        // 调试绘制（悬浮球调试工具：抓取控件/输出区/玻璃清单/UI 树）
-        val switchDebugDraw = view.findViewById<Switch>(R.id.switchDebugDraw)
-        val debugDrawListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            writePrefBoolean(Prefs.KEY_DEBUG_DRAW_ENABLE, checked)
-        }
-        switchDebugDraw.setOnCheckedChangeListener(debugDrawListener)
-        refreshBooleanSwitch(switchDebugDraw, debugDrawListener, Prefs.KEY_DEBUG_DRAW_ENABLE, Prefs.DEFAULT_DEBUG_DRAW_ENABLE)
+        // 悬浮球小节：权限行 + 显隐说明（授权与总开关都在这一页）
+        bindGlassBallPermissionRow(view)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表
         captureStartRow = view.findViewById(R.id.captureStartRow)
         captureStopRow = view.findViewById(R.id.captureStopRow)

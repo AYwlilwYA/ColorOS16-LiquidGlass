@@ -49,6 +49,24 @@ const val ACTION_FREEZE_REQUEST = "com.coloros16.liquidglass.BALL_FREEZE_REQUEST
 /** 固化结果：目标包 → 模块（extra: ok / label / reason）。 */
 const val ACTION_FREEZE_RESULT = "com.coloros16.liquidglass.BALL_FREEZE_RESULT"
 
+/** 抓取请求：模块 → 目标包（extra: pkg / x / y 屏幕坐标）。 */
+const val ACTION_TOOL_CAPTURE_REQUEST = "com.coloros16.liquidglass.BALL_TOOL_CAPTURE_REQUEST"
+
+/** 抓取结果：目标包 → 模块（extra: ok / text / hasBox / bx / by / bw / bh）。 */
+const val ACTION_TOOL_CAPTURE_RESULT = "com.coloros16.liquidglass.BALL_TOOL_CAPTURE_RESULT"
+
+/** UI 树请求：模块 → 目标包（extra: pkg）。 */
+const val ACTION_TOOL_TREE_REQUEST = "com.coloros16.liquidglass.BALL_TOOL_TREE_REQUEST"
+
+/** UI 树结果：目标包 → 模块（extra: ok / text）。 */
+const val ACTION_TOOL_TREE_RESULT = "com.coloros16.liquidglass.BALL_TOOL_TREE_RESULT"
+
+/** 玻璃清单请求：模块 → 目标包（extra: pkg）。 */
+const val ACTION_TOOL_LIST_REQUEST = "com.coloros16.liquidglass.BALL_TOOL_LIST_REQUEST"
+
+/** 玻璃清单结果：目标包 → 模块（extra: ok / text）。 */
+const val ACTION_TOOL_LIST_RESULT = "com.coloros16.liquidglass.BALL_TOOL_LIST_RESULT"
+
 private const val TAG = "GlobalGlassBall"
 
 /**
@@ -69,6 +87,7 @@ object GlobalGlassBall {
     internal const val COLOR_BOX_FIXED = 0xFF00E676.toInt()
     internal const val COLOR_BOX_GRAY = 0x66FFFFFF
     internal const val COLOR_PANEL_BG = 0xF01A1A1A.toInt()
+    internal const val COLOR_CAPTURE_BOX = 0xFF00E5FF.toInt()
 
     /** 目标应用（AppGlassHook 作用域内、装有代理的 5 个进程）。 */
     internal val TARGETS = listOf(
@@ -96,6 +115,8 @@ object GlobalGlassBall {
 
     /** 从设置页拉起悬浮球服务（需 SAW 权限；无权限时服务自停）。 */
     fun startFrom(context: Context) {
+        val saw = Settings.canDrawOverlays(context)
+        Lg.i(TAG, "start requested saw=$saw")
         try {
             context.startService(Intent(context, GlobalGlassBallService::class.java))
         } catch (t: Throwable) {
@@ -124,6 +145,9 @@ class GlobalGlassBallService : Service() {
 
     private var statusText: TextView? = null
     private var frozenText: TextView? = null
+    private var outputText: TextView? = null
+    private var listText: TextView? = null
+    private var treeText: TextView? = null
 
     private var receiver: BroadcastReceiver? = null
 
@@ -131,6 +155,11 @@ class GlobalGlassBallService : Service() {
     private var pendingPkg = ""
     private var scanAwaiting = false
     private var lastFreezeItem: GlobalGlassBall.ScanItem? = null
+
+    private var pendingTool = ""
+    private var pickLayer: BallPickLayer? = null
+    private var pickParams: WindowManager.LayoutParams? = null
+    private var lastToolSentAtMs = 0L
 
     private var shown = false
     private var switchLogged = false
@@ -143,9 +172,28 @@ class GlobalGlassBallService : Service() {
         }
     }
 
+    private val toolTimeoutRunnable = Runnable {
+        if (pendingTool.isNotEmpty()) {
+            Lg.i(TAG, "tool timeout tool=$pendingTool pkg=$pendingPkg")
+            statusText?.text = "工具无响应（应用未在运行？）"
+            pendingTool = ""
+            removePickWindow()
+        }
+    }
+
+    private var lastTickLogOn: Boolean? = null
+    private var lastAddFailAtMs = 0L
+    private var lastDeferredAtMs = 0L
+
     private val tick = object : Runnable {
         override fun run() {
-            val on = switchOn() && Settings.canDrawOverlays(this@GlobalGlassBallService)
+            val saw = Settings.canDrawOverlays(this@GlobalGlassBallService)
+            val sw = switchOn()
+            val on = sw && saw
+            if (on != shown || lastTickLogOn == null) {
+                Lg.i(TAG, "tick element_glass=$sw saw=$saw ballVisible=$on")
+                lastTickLogOn = on
+            }
             if (on != shown) {
                 if (on) showBall() else hideBall()
             }
@@ -158,10 +206,13 @@ class GlobalGlassBallService : Service() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        Lg.i(TAG, "service onCreate")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!Settings.canDrawOverlays(this)) {
+        val saw = Settings.canDrawOverlays(this)
+        Lg.i(TAG, "onStartCommand saw=$saw")
+        if (!saw) {
             Lg.i(TAG, "no overlay permission, service stop")
             stopSelf()
             return START_NOT_STICKY
@@ -174,8 +225,10 @@ class GlobalGlassBallService : Service() {
     }
 
     override fun onDestroy() {
+        Lg.i(TAG, "service onDestroy shown=$shown")
         mainHandler.removeCallbacksAndMessages(null)
         hideBall()
+        removePickWindow()
         receiver?.let {
             try {
                 unregisterReceiver(it)
@@ -201,9 +254,9 @@ class GlobalGlassBallService : Service() {
         } else {
             null
         }
-        if (!switchLogged || value != null) {
+        if (!switchLogged) {
             switchLogged = true
-            if (value != null) Lg.i(TAG, "switch element_glass_enable=$value")
+            Lg.i(TAG, "switch element_glass_enable=${value ?: "unreadable(framework off, treat false)"}")
         }
         return value == true
     }
@@ -214,8 +267,15 @@ class GlobalGlassBallService : Service() {
 
     private fun showBall() {
         if (shown) return
+        if (!addBallWindow()) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastDeferredAtMs >= 2000L) {
+                lastDeferredAtMs = now
+                Lg.i(TAG, "ball show deferred, add window failed")
+            }
+            return
+        }
         shown = true
-        addBallWindow()
         Lg.i(TAG, "ball shown")
     }
 
@@ -228,8 +288,9 @@ class GlobalGlassBallService : Service() {
         Lg.i(TAG, "ball hidden")
     }
 
-    private fun addBallWindow() {
-        if (ballView != null) return
+    /** 挂球窗；失败不置 shown（下个 tick 重试），失败日志 2s 节流防刷屏。 */
+    private fun addBallWindow(): Boolean {
+        if (ballView != null) return true
         val density = resources.displayMetrics.density
         val ballSize = (GlobalGlassBall.BALL_SIZE_DP * density + 0.5f).toInt()
         val params = WindowManager.LayoutParams(
@@ -253,12 +314,18 @@ class GlobalGlassBallService : Service() {
             }
         }
         attachDrag(ball, params)
-        try {
+        return try {
             wm?.addView(ball, params)
             ballView = ball
             ballParams = params
+            true
         } catch (t: Throwable) {
-            Lg.w(TAG, "add ball window failed", t)
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastAddFailAtMs >= 2000L) {
+                lastAddFailAtMs = now
+                Lg.w(TAG, "add ball window failed", t)
+            }
+            false
         }
     }
 
@@ -357,6 +424,7 @@ class GlobalGlassBallService : Service() {
             wm?.addView(panel, params)
             panelScroll = panel
             panelParams = params
+            Lg.i(TAG, "panel shown")
         } catch (t: Throwable) {
             Lg.w(TAG, "add panel failed", t)
         }
@@ -366,12 +434,16 @@ class GlobalGlassBallService : Service() {
         val v = panelScroll ?: return
         try {
             wm?.removeView(v)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Lg.w(TAG, "remove panel failed", t)
         }
         panelScroll = null
         panelParams = null
         statusText = null
         frozenText = null
+        outputText = null
+        listText = null
+        treeText = null
     }
 
     @SuppressLint("SetTextI18n")
@@ -429,6 +501,67 @@ class GlobalGlassBallService : Service() {
             setOnClickListener { refreshFrozenText() }
         })
         content.addView(opsRow)
+
+        val toolRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        toolRow.addView(Button(this).apply {
+            text = "抓取"
+            setOnClickListener { armPick() }
+        })
+        toolRow.addView(Button(this).apply {
+            text = "UI树"
+            setOnClickListener { sendTool("tree") }
+        })
+        toolRow.addView(Button(this).apply {
+            text = "清单"
+            setOnClickListener { sendTool("list") }
+        })
+        toolRow.addView(Button(this).apply {
+            text = "复制"
+            setOnClickListener { copyOutput() }
+        })
+        content.addView(toolRow)
+
+        content.addView(TextView(this).apply {
+            text = "抓取输出"
+            textSize = 12f
+            setTextColor(0xFF80CBC4.toInt())
+            setPadding(0, dp(8f), 0, dp(2f))
+        })
+        outputText = TextView(this).apply {
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(0xFFCCCCCC.toInt())
+            text = "（点「抓取」后点屏幕控件）"
+        }
+        content.addView(outputText)
+
+        content.addView(TextView(this).apply {
+            text = "玻璃元素清单"
+            textSize = 12f
+            setTextColor(0xFF80CBC4.toInt())
+            setPadding(0, dp(8f), 0, dp(2f))
+        })
+        listText = TextView(this).apply {
+            textSize = 10f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(0xFFCCCCCC.toInt())
+            text = "（点「清单」读取）"
+        }
+        content.addView(listText)
+
+        content.addView(TextView(this).apply {
+            text = "整页界面结构"
+            textSize = 12f
+            setTextColor(0xFF80CBC4.toInt())
+            setPadding(0, dp(8f), 0, dp(2f))
+        })
+        treeText = TextView(this).apply {
+            textSize = 10f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(0xFFCCCCCC.toInt())
+            text = "（点「UI树」读取）"
+        }
+        content.addView(treeText)
 
         statusText = TextView(this).apply {
             textSize = 11f
@@ -499,6 +632,197 @@ class GlobalGlassBallService : Service() {
             "（读取失败: ${t.javaClass.simpleName}）"
         }
         frozenText?.text = text
+    }
+
+    // ---------- 工具（抓取 / UI 树 / 玻璃清单 / 复制） ----------
+
+    /** 进入待点抓取：收面板、清框层、开全屏点选层，点一击发抓取请求。 */
+    private fun armPick() {
+        if (pendingTool.isNotEmpty()) {
+            Lg.i(TAG, "arm pick skipped, busy tool=$pendingTool")
+            statusText?.text = "上一个工具还在跑"
+            return
+        }
+        removePanelWindow()
+        removeBoxWindow()
+        addPickWindow()
+        Lg.i(TAG, "pick armed pkg=$pendingPkg")
+    }
+
+    /** 抓取/UI树/清单 三工具统一派发（3s 超时 + 1s 防抖）。 */
+    private fun sendTool(tool: String) {
+        if (pendingTool.isNotEmpty()) {
+            Lg.i(TAG, "tool skipped, busy tool=$pendingTool want=$tool")
+            statusText?.text = "上一个工具还在跑"
+            return
+        }
+        val pkg = pendingPkg
+        if (pkg.isEmpty()) {
+            Lg.i(TAG, "tool skipped, no target scanned want=$tool")
+            statusText?.text = "请先扫描一次确定目标应用"
+            return
+        }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastToolSentAtMs < 1000L) {
+            Lg.i(TAG, "tool skipped, debounce want=$tool")
+            statusText?.text = "操作太频繁，稍等"
+            return
+        }
+        lastToolSentAtMs = now
+        pendingTool = tool
+        mainHandler.removeCallbacks(toolTimeoutRunnable)
+        mainHandler.postDelayed(toolTimeoutRunnable, GlobalGlassBall.SCAN_REPLY_TIMEOUT_MS)
+        val action = when (tool) {
+            "tree" -> ACTION_TOOL_TREE_REQUEST
+            "list" -> ACTION_TOOL_LIST_REQUEST
+            else -> ACTION_TOOL_CAPTURE_REQUEST
+        }
+        try {
+            val intent = Intent(action).setPackage(pkg).putExtra("pkg", pkg)
+            sendBroadcast(intent)
+            statusText?.text = when (tool) {
+                "tree" -> "读取界面结构…"
+                "list" -> "读取玻璃清单…"
+                else -> "抓取中…"
+            }
+            Lg.i(TAG, "tool request tool=$tool pkg=$pkg")
+        } catch (t: Throwable) {
+            pendingTool = ""
+            mainHandler.removeCallbacks(toolTimeoutRunnable)
+            Lg.w(TAG, "send tool request failed tool=$tool", t)
+            statusText?.text = "发送失败: ${t.javaClass.simpleName}"
+        }
+    }
+
+    /** 抓取点选层点击回调（rawX/rawY 屏幕坐标 → 目标进程抓取）。 */
+    private fun onPickTap(x: Float, y: Float) {
+        removePickWindow()
+        pendingTool = "capture"
+        mainHandler.removeCallbacks(toolTimeoutRunnable)
+        mainHandler.postDelayed(toolTimeoutRunnable, GlobalGlassBall.SCAN_REPLY_TIMEOUT_MS)
+        val pkg = pendingPkg
+        try {
+            sendBroadcast(
+                Intent(ACTION_TOOL_CAPTURE_REQUEST).setPackage(pkg)
+                    .putExtra("pkg", pkg)
+                    .putExtra("x", x.toInt())
+                    .putExtra("y", y.toInt()),
+            )
+            statusText?.text = "抓取中…"
+            Lg.i(TAG, "tool request tool=capture pkg=$pkg x=${x.toInt()} y=${y.toInt()}")
+        } catch (t: Throwable) {
+            pendingTool = ""
+            mainHandler.removeCallbacks(toolTimeoutRunnable)
+            Lg.w(TAG, "send capture failed", t)
+            statusText?.text = "发送失败: ${t.javaClass.simpleName}"
+        }
+    }
+
+    /** 工具结果统一入口（由 onReceive 分发）。 */
+    private fun onToolResult(intent: Intent) {
+        val tool = pendingTool
+        val action = intent.action ?: ""
+        val actionTool = when (action) {
+            ACTION_TOOL_CAPTURE_RESULT -> "capture"
+            ACTION_TOOL_TREE_RESULT -> "tree"
+            ACTION_TOOL_LIST_RESULT -> "list"
+            else -> ""
+        }
+        if (tool.isEmpty() || tool != actionTool) {
+            Lg.i(TAG, "tool result unmatched tool=$tool action=$action")
+            return
+        }
+        // 匹配通过才拆超时：过期结果不得误杀在途工具的 3s 超时
+        mainHandler.removeCallbacks(toolTimeoutRunnable)
+        pendingTool = ""
+        val ok = intent.getBooleanExtra("ok", false)
+        val text = intent.getStringExtra("text") ?: ""
+        if (!ok) {
+            statusText?.text = "工具失败: $text"
+            Lg.i(TAG, "tool failed tool=$tool reason=$text")
+            return
+        }
+        when (tool) {
+            "capture" -> {
+                if (panelScroll == null) addPanelWindow()
+                outputText?.text = text
+                if (intent.getBooleanExtra("hasBox", false)) {
+                    showBoxWindow()
+                    boxLayer?.setOverlayBoxes(
+                        listOf(
+                            BallOverlayBox(
+                                intent.getIntExtra("bx", 0),
+                                intent.getIntExtra("by", 0),
+                                intent.getIntExtra("bw", 0),
+                                intent.getIntExtra("bh", 0),
+                            ),
+                        ),
+                    )
+                }
+                statusText?.text = "抓取完成"
+            }
+            "tree" -> {
+                if (panelScroll == null) addPanelWindow()
+                treeText?.text = text.ifEmpty { "（空）" }
+                statusText?.text = "界面结构已刷新"
+            }
+            "list" -> {
+                if (panelScroll == null) addPanelWindow()
+                listText?.text = text.ifEmpty { "（本进程无玻璃元素）" }
+                statusText?.text = "清单已刷新"
+            }
+        }
+        Lg.i(TAG, "tool result tool=$tool bytes=${text.length}")
+    }
+
+    /** 复制抓取输出到剪贴板（模块进程本地）。 */
+    private fun copyOutput() {
+        val text = outputText?.text?.toString().orEmpty()
+        if (text.isEmpty() || text.startsWith("（")) {
+            statusText?.text = "没有可复制的输出"
+            Lg.i(TAG, "copy skipped, output empty")
+            return
+        }
+        try {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+            cm?.setPrimaryClip(android.content.ClipData.newPlainText("lg-debug-output", text))
+            statusText?.text = "已复制输出"
+            Lg.i(TAG, "output copied bytes=${text.length}")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "copy failed", t)
+            statusText?.text = "复制失败"
+        }
+    }
+
+    private fun addPickWindow() {
+        if (pickLayer != null) return
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT,
+        )
+        val layer = BallPickLayer(this).apply { onTap = { x, y -> onPickTap(x, y) } }
+        try {
+            wm?.addView(layer, params)
+            pickLayer = layer
+            pickParams = params
+            Lg.i(TAG, "pick layer shown")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "add pick window failed", t)
+        }
+    }
+
+    private fun removePickWindow() {
+        val v = pickLayer ?: return
+        try {
+            wm?.removeView(v)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "remove pick failed", t)
+        }
+        pickLayer = null
+        pickParams = null
     }
 
     // ---------- 扫描 ----------
@@ -580,6 +904,7 @@ class GlobalGlassBallService : Service() {
             try {
                 wm?.addView(layer, params)
                 boxLayer = layer
+                Lg.i(TAG, "box layer shown items=${items.size}")
             } catch (t: Throwable) {
                 Lg.w(TAG, "add box window failed", t)
                 return
@@ -593,7 +918,8 @@ class GlobalGlassBallService : Service() {
         val v = boxLayer ?: return
         try {
             wm?.removeView(v)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Lg.w(TAG, "remove box failed", t)
         }
         boxLayer = null
     }
@@ -683,6 +1009,10 @@ class GlobalGlassBallService : Service() {
                     when (intent.action) {
                         ACTION_SCAN_RESULT -> onScanResult(intent)
                         ACTION_FREEZE_RESULT -> onFreezeResult(intent)
+                        ACTION_TOOL_CAPTURE_RESULT,
+                        ACTION_TOOL_TREE_RESULT,
+                        ACTION_TOOL_LIST_RESULT,
+                        -> onToolResult(intent)
                     }
                 } catch (t: Throwable) {
                     Lg.w(TAG, "onReceive error action=${intent.action}", t)
@@ -692,6 +1022,9 @@ class GlobalGlassBallService : Service() {
         val filter = IntentFilter().apply {
             addAction(ACTION_SCAN_RESULT)
             addAction(ACTION_FREEZE_RESULT)
+            addAction(ACTION_TOOL_CAPTURE_RESULT)
+            addAction(ACTION_TOOL_TREE_RESULT)
+            addAction(ACTION_TOOL_LIST_RESULT)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
@@ -707,6 +1040,21 @@ class GlobalGlassBallService : Service() {
     }
 }
 
+/** 抓取高亮框（青色，叠加在框层上；换扫描/新抓取时随 setItems 清空）。 */
+data class BallOverlayBox(val x: Int, val y: Int, val w: Int, val h: Int)
+
+/** 点选层：全屏透明，收一击返回屏幕坐标后由宿主摘除。 */
+private class BallPickLayer(ctx: Context) : View(ctx) {
+
+    var onTap: ((Float, Float) -> Unit)? = null
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked != MotionEvent.ACTION_UP) return true
+        onTap?.invoke(event.rawX, event.rawY)
+        return true
+    }
+}
+
 /** 标框层：画目标进程回传的控件框（绿=已固化 灰=未固化），框可点，点空白收起。 */
 private class BallBoxLayer(ctx: Context) : View(ctx) {
 
@@ -718,9 +1066,16 @@ private class BallBoxLayer(ctx: Context) : View(ctx) {
         strokeWidth = 2f
     }
     private var items: List<GlobalGlassBall.ScanItem> = emptyList()
+    private var overlayBoxes: List<BallOverlayBox> = emptyList()
 
     fun setItems(items: List<GlobalGlassBall.ScanItem>) {
         this.items = items
+        this.overlayBoxes = emptyList()
+        invalidate()
+    }
+
+    fun setOverlayBoxes(boxes: List<BallOverlayBox>) {
+        this.overlayBoxes = boxes
         invalidate()
     }
 
@@ -735,6 +1090,18 @@ private class BallBoxLayer(ctx: Context) : View(ctx) {
                 (item.y + item.h).toFloat(),
                 paint,
             )
+        }
+        if (overlayBoxes.isNotEmpty()) {
+            paint.color = GlobalGlassBall.COLOR_CAPTURE_BOX
+            for (b in overlayBoxes) {
+                canvas.drawRect(
+                    b.x.toFloat(),
+                    b.y.toFloat(),
+                    (b.x + b.w).toFloat(),
+                    (b.y + b.h).toFloat(),
+                    paint,
+                )
+            }
         }
     }
 

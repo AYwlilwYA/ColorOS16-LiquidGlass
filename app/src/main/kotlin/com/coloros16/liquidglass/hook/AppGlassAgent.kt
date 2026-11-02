@@ -19,6 +19,12 @@ import com.coloros16.liquidglass.debug.AppGlassWorkbench
 import com.coloros16.liquidglass.debug.ACTION_FREEZE_RESULT
 import com.coloros16.liquidglass.debug.ACTION_SCAN_REQUEST
 import com.coloros16.liquidglass.debug.ACTION_SCAN_RESULT
+import com.coloros16.liquidglass.debug.ACTION_TOOL_CAPTURE_REQUEST
+import com.coloros16.liquidglass.debug.ACTION_TOOL_CAPTURE_RESULT
+import com.coloros16.liquidglass.debug.ACTION_TOOL_LIST_REQUEST
+import com.coloros16.liquidglass.debug.ACTION_TOOL_LIST_RESULT
+import com.coloros16.liquidglass.debug.ACTION_TOOL_TREE_REQUEST
+import com.coloros16.liquidglass.debug.ACTION_TOOL_TREE_RESULT
 import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
@@ -105,6 +111,9 @@ object AppGlassAgent {
                     when (intent.action) {
                         ACTION_SCAN_REQUEST -> handleScanRequest()
                         ACTION_FREEZE_REQUEST -> handleFreezeRequest(intent)
+                        ACTION_TOOL_CAPTURE_REQUEST -> handleCaptureRequest(intent)
+                        ACTION_TOOL_TREE_REQUEST -> handleTreeRequest()
+                        ACTION_TOOL_LIST_REQUEST -> handleListRequest()
                     }
                 } catch (t: Throwable) {
                     Lg.w(TAG, "onReceive error action=${intent.action}", t)
@@ -114,6 +123,9 @@ object AppGlassAgent {
         val filter = IntentFilter().apply {
             addAction(ACTION_SCAN_REQUEST)
             addAction(ACTION_FREEZE_REQUEST)
+            addAction(ACTION_TOOL_CAPTURE_REQUEST)
+            addAction(ACTION_TOOL_TREE_REQUEST)
+            addAction(ACTION_TOOL_LIST_REQUEST)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
@@ -123,7 +135,7 @@ object AppGlassAgent {
                 ctx.applicationContext.registerReceiver(r, filter)
             }
             receiverRegistered = true
-            Lg.i(TAG, "receiver registered (SCAN/FREEZE)")
+            Lg.i(TAG, "receiver registered (SCAN/FREEZE/TOOL)")
         } catch (t: Throwable) {
             Lg.w(TAG, "register receiver failed, retry later", t)
             mainHandler.postDelayed({ tryRegister() }, 2000L)
@@ -388,6 +400,348 @@ object AppGlassAgent {
             )
         } catch (t: Throwable) {
             Lg.w(TAG, "send freeze result failed", t)
+        }
+    }
+
+    // ---------- 工具（抓取 / UI 树 / 玻璃清单） ----------
+
+    @Volatile
+    private var lastToolAtMs = 0L
+
+    private fun toolThrottled(tool: String): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastToolAtMs < REQUEST_THROTTLE_MS) {
+            Lg.i(TAG, "[tool-throttle] $tool request throttled")
+            EngineLog.log("AppAgent", "$tool-request throttled")
+            return true
+        }
+        lastToolAtMs = now
+        return false
+    }
+
+    private fun handleCaptureRequest(intent: Intent) {
+        val x = intent.getIntExtra("x", Int.MIN_VALUE)
+        val y = intent.getIntExtra("y", Int.MIN_VALUE)
+        EngineLog.log("AppAgent", "capture-request x=$x y=$y")
+        if (x == Int.MIN_VALUE || y == Int.MIN_VALUE) {
+            Lg.i(TAG, "capture rejected, missing coords")
+            sendToolResult(ACTION_TOOL_CAPTURE_RESULT, false, "missing coords")
+            return
+        }
+        if (toolThrottled("capture")) return
+        mainHandler.post {
+            val decor = decorOrNull()
+            if (decor == null) {
+                Lg.i(TAG, "capture no activity window")
+                sendToolResult(ACTION_TOOL_CAPTURE_RESULT, false, "no activity window")
+                return@post
+            }
+            val hit = findDeepestAt(decor, x, y)
+            if (hit == null) {
+                Lg.i(TAG, "capture miss at ($x,$y)")
+                sendToolResult(ACTION_TOOL_CAPTURE_RESULT, false, "未命中任何控件")
+                return@post
+            }
+            val fixed = matchFixed(hit)
+            val text = buildCaptureText(hit, fixed)
+            val loc = IntArray(2)
+            try {
+                hit.getLocationOnScreen(loc)
+            } catch (_: Throwable) {
+            }
+            val box = intArrayOf(loc[0], loc[1], hit.width, hit.height)
+            sendToolResult(ACTION_TOOL_CAPTURE_RESULT, true, text, box)
+        }
+    }
+
+    private fun handleTreeRequest() {
+        EngineLog.log("AppAgent", "tree-request accepted")
+        if (toolThrottled("tree")) return
+        mainHandler.post {
+            val text = try {
+                buildTreeText()
+            } catch (t: Throwable) {
+                Lg.w(TAG, "build tree failed", t)
+                sendToolResult(ACTION_TOOL_TREE_RESULT, false, "UI 树读取失败：${t.javaClass.simpleName}")
+                return@post
+            }
+            sendToolResult(ACTION_TOOL_TREE_RESULT, true, text)
+        }
+    }
+
+    private fun handleListRequest() {
+        EngineLog.log("AppAgent", "list-request accepted")
+        if (toolThrottled("list")) return
+        mainHandler.post {
+            val entries = try {
+                GlassElementRegistry.load()
+            } catch (t: Throwable) {
+                Lg.w(TAG, "load entries failed", t)
+                sendToolResult(ACTION_TOOL_LIST_RESULT, false, "读取失败：${t.javaClass.simpleName}")
+                return@post
+            }
+            val active = HashSet<String>()
+            decorOrNull()?.let { decor ->
+                fun walk(v: View, depth: Int) {
+                    if (depth > MAX_SCAN_DEPTH) return
+                    if (v.isShown && v.width > 0 && v.height > 0) {
+                        GlassElementRegistry.matchAnchor(v)?.let { e -> active.add(e.anchorKey) }
+                    }
+                    if (v is ViewGroup) {
+                        for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
+                    }
+                }
+                for (i in 0 until decor.childCount) walk(decor.getChildAt(i), 1)
+            }
+            val sb = StringBuilder()
+            if (entries.isEmpty()) {
+                sb.append("（本进程无固化条目）")
+            } else {
+                for (e in entries) {
+                    sb.append(e.label).append(' ')
+                        .append(e.anchorClassName.substringAfterLast('.')).append(' ')
+                        .append(e.mountType)
+                        .append(
+                            when {
+                                !e.enabled -> " 停用"
+                                e.anchorKey in active -> " 活跃"
+                                else -> " 待机"
+                            },
+                        )
+                        .append('\n')
+                }
+            }
+            sendToolResult(ACTION_TOOL_LIST_RESULT, true, sb.toString())
+        }
+    }
+
+    private fun sendToolResult(action: String, ok: Boolean, text: String, box: IntArray? = null) {
+        val ctx = appContext ?: run {
+            Lg.w(TAG, "send tool result skipped, no context action=$action")
+            return
+        }
+        EngineLog.log("AppAgent", "tool-result action=$action ok=$ok bytes=${text.length}")
+        try {
+            val i = Intent(action).setPackage(MODULE_PKG)
+                .putExtra("pkg", ctx.packageName)
+                .putExtra("ok", ok)
+                .putExtra("text", text)
+            if (box != null) {
+                i.putExtra("hasBox", true)
+                    .putExtra("bx", box[0])
+                    .putExtra("by", box[1])
+                    .putExtra("bw", box[2])
+                    .putExtra("bh", box[3])
+            }
+            ctx.sendBroadcast(i)
+        } catch (t: Throwable) {
+            Lg.w(TAG, "send tool result failed action=$action", t)
+        }
+    }
+
+    /** 抓取输出文本（命中详情：类名/id/bounds/窗口/父链/背景/固化态）。 */
+    private fun buildCaptureText(v: View, fixed: Boolean): String {
+        val loc = IntArray(2)
+        try {
+            v.getLocationOnScreen(loc)
+        } catch (_: Throwable) {
+        }
+        val sb = StringBuilder()
+        sb.append("[进程] ").append(appContext?.packageName ?: "?").append('\n')
+        sb.append("[命中] ").append(v.javaClass.name)
+            .append("  id=").append(idNameOf(v))
+            .append("  bounds=").append(loc[0]).append(',').append(loc[1])
+            .append(' ').append(v.width).append('×').append(v.height)
+            .append("  attach=").append(v.isAttachedToWindow)
+            .append("  via=").append(if (fixed) "registry" else "viewtree").append('\n')
+        val root = v.rootView
+        if (root != null) {
+            sb.append("[窗口] root=").append(root.javaClass.name)
+                .append(" type=").append(reflectWindowType(root))
+                .append(" title=").append(reflectWindowTitle(root)?.toString() ?: "—")
+                .append('\n')
+        }
+        sb.append("[父链] ").append(viewChain(v)).append('\n')
+        sb.append("[背景] ").append(try {
+            v.background?.javaClass?.name
+        } catch (_: Throwable) {
+            null
+        } ?: "null").append('\n')
+        sb.append("[固化] ").append(if (fixed) "已固化" else "未固化").append('\n')
+        return sb.toString()
+    }
+
+    private fun viewChain(v: View): String {
+        val parts = ArrayList<String>(8)
+        var cur: View? = v
+        var depth = 0
+        while (cur != null && depth < 12) {
+            parts.add(cur.javaClass.name.substringAfterLast('.'))
+            cur = cur.parent as? View
+            depth++
+        }
+        return parts.joinToString(" → ")
+    }
+
+    private fun idNameOf(v: View): String {
+        if (v.id == View.NO_ID) return "#-"
+        return try {
+            "#" + v.resources.getResourceEntryName(v.id)
+        } catch (_: Throwable) {
+            "#" + Integer.toHexString(v.id)
+        }
+    }
+
+    // ---------- UI 树 ----------
+
+    private fun buildTreeText(): String {
+        val entries = enumerateWindows()
+        if (entries.isEmpty()) return "（未枚举到窗口）"
+        val sb = StringBuilder()
+        val counter = IntArray(1)
+        for ((i, entry) in entries.withIndex()) {
+            sb.append("[窗口").append(i + 1).append("] type=").append(entry.type)
+                .append(" title=").append(truncate(entry.title ?: "—", 40))
+                .append(" root=").append(entry.decor.javaClass.name.substringAfterLast('.'))
+                .append('\n')
+            if (counter[0] >= 800) {
+                sb.append("…(truncated)\n")
+                break
+            }
+            if (entry.decor is ViewGroup) {
+                val decor = entry.decor as ViewGroup
+                for (ci in 0 until decor.childCount) {
+                    if (counter[0] >= 800) {
+                        sb.append("…(truncated)\n")
+                        break
+                    }
+                    appendTreeNode(sb, decor.getChildAt(ci), 1, counter)
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun appendTreeNode(sb: StringBuilder, v: View, depth: Int, counter: IntArray) {
+        if (counter[0] >= 800 || depth > 8) return
+        counter[0]++
+        val indent = "  ".repeat(depth)
+        sb.append(indent).append(shortName(v)).append(' ').append(treeIdLabel(v)).append(' ')
+        val loc = IntArray(2)
+        try {
+            v.getLocationOnScreen(loc)
+        } catch (_: Throwable) {
+        }
+        sb.append(loc[0]).append(',').append(loc[1]).append(' ')
+            .append(v.width).append('×').append(v.height)
+        if (v.visibility != View.VISIBLE) sb.append(" [不可见]")
+        sb.append('\n')
+        if (v is ViewGroup && v.childCount > 0 && v.visibility != View.GONE) {
+            for (i in 0 until v.childCount) {
+                if (counter[0] >= 800 || depth + 1 > 8) {
+                    sb.append(indent).append("  …(truncated)\n")
+                    return
+                }
+                appendTreeNode(sb, v.getChildAt(i), depth + 1, counter)
+            }
+        }
+    }
+
+    private fun shortName(v: View): String {
+        val simple = v.javaClass.simpleName
+        return if (simple.isEmpty()) v.javaClass.name.substringAfterLast('.') else simple
+    }
+
+    private fun treeIdLabel(v: View): String {
+        val id = if (v.id == View.NO_ID) {
+            "-"
+        } else {
+            try {
+                v.resources.getResourceEntryName(v.id)
+            } catch (_: Throwable) {
+                Integer.toHexString(v.id)
+            }
+        }
+        return "#$id@${Integer.toHexString(System.identityHashCode(v))}"
+    }
+
+    private fun truncate(s: String, cap: Int): String =
+        if (s.length <= cap) s else s.substring(0, cap) + "…"
+
+    // ---------- 窗口枚举 / 窗口反射 ----------
+
+    private class WindowEntry(val decor: View, val type: Int, val title: String?)
+
+    @Suppress("UNCHECKED_CAST")
+    private fun enumerateWindows(): List<WindowEntry> {
+        val cls = Class.forName("android.view.WindowManagerGlobal")
+        val inst = cls.getMethod("getInstance").invoke(null)
+        val views = cls.getDeclaredField("mViews").apply { isAccessible = true }
+            .get(inst) as? ArrayList<View>
+        if (views == null) {
+            logOnce("agent:enum-views", "enumerate windows: mViews unreadable, empty result")
+            return emptyList()
+        }
+        val params = try {
+            cls.getDeclaredField("mParams").apply { isAccessible = true }
+                .get(inst) as? ArrayList<android.view.WindowManager.LayoutParams>
+        } catch (_: Throwable) {
+            null
+        }
+        if (params == null) {
+            logOnce("agent:enum-params", "enumerate windows: mParams unreadable, fallback per-window reflect")
+        }
+        val snapshot = ArrayList(views)
+        val out = ArrayList<WindowEntry>(snapshot.size)
+        for (i in snapshot.indices) {
+            val decor = snapshot[i] ?: continue
+            val lp = params?.getOrNull(i)
+            val type = lp?.type ?: reflectWindowType(decor)
+            out.add(WindowEntry(decor, type, lp?.title?.toString()))
+        }
+        return out
+    }
+
+    private fun reflectWindowType(rootView: View): Int {
+        return try {
+            val vri = View::class.java.getMethod("getViewRootImpl").invoke(rootView)
+            if (vri == null) {
+                logOnce("agent:reflect-type-null", "reflect window type: view root missing")
+                return -1
+            }
+            val lp = vri.javaClass.getMethod("getWindowAttributes").invoke(vri)
+            if (lp == null) {
+                logOnce("agent:reflect-type-null", "reflect window type: window attrs missing")
+                return -1
+            }
+            val type = lp.javaClass.getField("type").get(lp) as? Int
+            if (type == null) {
+                logOnce("agent:reflect-type-err", "reflect window type: type field unreadable")
+                return -1
+            }
+            type
+        } catch (t: Throwable) {
+            logOnce("agent:reflect-type-err", "reflect window type failed: ${t.javaClass.simpleName}")
+            -1
+        }
+    }
+
+    private fun reflectWindowTitle(rootView: View): CharSequence? {
+        return try {
+            val vri = View::class.java.getMethod("getViewRootImpl").invoke(rootView)
+            if (vri == null) {
+                logOnce("agent:reflect-title-null", "reflect window title: view root missing")
+                return null
+            }
+            val lp = vri.javaClass.getMethod("getWindowAttributes").invoke(vri)
+            if (lp == null) {
+                logOnce("agent:reflect-title-null", "reflect window title: window attrs missing")
+                return null
+            }
+            lp.javaClass.getMethod("getTitle").invoke(lp) as? CharSequence
+        } catch (t: Throwable) {
+            logOnce("agent:reflect-title-err", "reflect window title failed: ${t.javaClass.simpleName}")
+            null
         }
     }
 
