@@ -815,7 +815,10 @@ object LiquidGlassShader {
             //    [2026-08-23 修复] 原实现带中心在边界（abs(sdRaw)），而 shapeAlpha 在边界（sdRaw=0）=0，
             //    圆角边缘高光被裁掉（外半全裁 + 内半 0~-2 羽化削弱）。偏移内侧后高光带中心落在 alpha=1
             //    区域，完整可见、不超圆角；直边元素同样内侧亮边（不跨边界）。
-            float band = 1.0 - smoothstep(0.0, hw, abs(dIn - bandCenter));
+            // band 按可见边界（本体与掩码取更紧者）定位：掩码角部比本体紧时带仍贴可见边缘，不被掩码外裁；
+            // 两形一致处 max 恒等取本体，直边与同形元素零变化。
+            float dInVis = -max(sdRaw, sdMask);
+            float band = 1.0 - smoothstep(0.0, hw, abs(dInVis - bandCenter));
             // [2026-09-16 圆角弧线高光修复·方案 C] `sdfGrad` 是**边缘法线**：直边法线固定（与光源夹角恒定
             // → 高光恒定），而圆角弧线法线要**旋转 90°**，其中**必然经过与光源垂直的位置** → 原
             // `pow(abs(dot),fo)` 在该处精确归零，弧线约 60% 跨度高光消失（真机实证：192×192 圆磁贴整圈
