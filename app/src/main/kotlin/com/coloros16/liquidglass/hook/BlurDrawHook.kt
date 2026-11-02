@@ -12879,13 +12879,10 @@ object BlurDrawHook {
             // 基准 = 按类圆角覆盖命中值，未命中回落实测值；开关关 / 不在作用域 → 基准值原样透传。
             // 只改 r：CONIC 标志与权重原样透传（白名单内通知卡是 CONIC，shader 仍按 1.5×r 画 CONIC 角）。
             val cornerRadius = resolveUnifiedCornerRadius(entry, ownCornerRadius, id, viewport.width(), viewport.height())
-            // [任务 A] 真实大小掩码圆角：仅当检测到扩张（geo.offset>0）时，掩码才需要圆角匹配 body 几何
-            //（swipe 用 entry.maskCornerRadius raw；通知卡等扩张元素用 cornerRadius，与本体 CONIC
-            //  同值 → 掩码与 body 几何一致，不切边）。无扩张 → entry.maskCornerRadius。
-            // [doc/spec/101] 回退值改用**统一后**的 cornerRadius：否则作用域内元素若带扩张，掩码仍按
-            // 旧半径裁、会啃掉被抬大的圆角。关/不在作用域时 resolveUnifiedCornerRadius 恒等 → 零变化。
+            // 掩码圆角与本体同源：off>0 恒取渲染 resolve 输出（与 uCornerRadius 同一份，不旁路注册 raw）；
+            // off=0 走 entry.maskCornerRadius（非 swipe 恒 0 → 直角全视口兜底）。
             val effMaskCornerRadius = if (geo.offsetX > 0f || geo.offsetY > 0f) {
-                if (entry.maskCornerRadius > 0f) entry.maskCornerRadius else cornerRadius
+                cornerRadius
             } else {
                 entry.maskCornerRadius
             }
@@ -12895,7 +12892,7 @@ object BlurDrawHook {
             val mbHasBridge = false  // 2026-10-14: 恒 false = 恒用 mask 裁扩张区（幽灵修复）
             val maskCornerRadius = if (geo.bodyRect != null) {
                 if (mbHasBridge) 0f else cornerRadius
-            } else if (isMaskRedundant(geo, entry, effMaskCornerRadius)) 0f else effMaskCornerRadius
+            } else if (isMaskRedundant(geo, entry, effMaskCornerRadius, cornerRadius)) 0f else effMaskCornerRadius
             // [2026-08-13 用户决定·角形状恒 CONIC] 本体角 CONIC 分支恒保持，cornerConicBlend 恒 1
             //（shader 恒 CONIC，对齐系统 spec/12）。非 CONIC 元素（uCornerIsConic=0）blend 忽略。
             val effectiveCornerIsConic = entry.cornerIsConic
@@ -13052,13 +13049,10 @@ object BlurDrawHook {
             entry, if (entry.cornerRadius > 0f) entry.cornerRadius else 0f,
             id, viewport.width(), viewport.height(),
         )
-        // [任务 A] 真实大小掩码圆角：仅当检测到扩张（geo.offset>0）时，掩码才需要圆角匹配 body 几何
-        //（swipe 用 entry.maskCornerRadius raw 值，shader 侧 CONIC ×1.5；通知卡等扩张元素用
-        //  regionCornerRadius，与本体 CONIC 同值 → 掩码与 body 几何一致，不切边）。
-        // 无扩张 → entry.maskCornerRadius（非 swipe 恒 0 → 掩码直角全视口，零变化，防回归）。
-        // [doc/spec/101] 回退值用**统一后**半径（关/不在作用域时恒等 → 零变化）。
+        // 掩码圆角与本体同源：off>0 恒取渲染 resolve 输出（与 uCornerRadius 同一份，不旁路注册 raw）；
+        // off=0 走 entry.maskCornerRadius（非 swipe 恒 0 → 直角全视口兜底）。
         val effMaskCornerRadius = if (geo.offsetX > 0f || geo.offsetY > 0f) {
-            if (entry.maskCornerRadius > 0f) entry.maskCornerRadius else regionCornerRadius
+            regionCornerRadius
         } else {
             entry.maskCornerRadius
         }
@@ -13069,7 +13063,7 @@ object BlurDrawHook {
         val hasMbBridge = false  // 2026-10-14: 恒 false = 恒用 mask 裁扩张区（幽灵修复）
         val maskCornerRadius = if (geo.bodyRect != null) {
             if (hasMbBridge) 0f else regionCornerRadius
-        } else if (isMaskRedundant(geo, entry, effMaskCornerRadius)) 0f else effMaskCornerRadius
+        } else if (isMaskRedundant(geo, entry, effMaskCornerRadius, regionCornerRadius)) 0f else effMaskCornerRadius
         // [2026-08-13 用户决定·角形状恒 CONIC] 本体角 CONIC 分支恒保持，cornerConicBlend 恒 1
         //（shader 恒 CONIC；滑动降级 + 过渡动画已废弃——两种角切换 = 边缘闪根因，只保留一种即不闪）
         val effectiveCornerIsConic = entry.cornerIsConic
@@ -13711,17 +13705,22 @@ object BlurDrawHook {
      * [spec/24 遮罩/本体 CONIC 贝塞尔滞后·修复方向 1] 判定掩码是否冗余（掩码与本体几何全等）。
      *
      * 通知卡（MetaBall 扩张元素）：掩码 rect = 真实卡区 = 本体几何区域（同尺寸同位置），掩码 CONIC 角
-     * == 本体 CONIC 角（effMaskCornerRadius 此时 = entry.cornerRadius）→ `sdMask ≡ sdRaw`，同一贝塞尔
-     * 每像素算 2 遍。冗余时传 maskCornerRadius=0 → shader 掩码走 O(1) 直角路径（sdMask 在卡片区内
-     * 恒 ≤0 → mask≈1 不裁剪），圆角外裁剪已由 shapeAlpha 兜底 → **零视觉变化，CONIC 成本减半**。
+     * == 本体 CONIC 角 → `sdMask ≡ sdRaw`，同一贝塞尔每像素算 2 遍。冗余时传 maskCornerRadius=0 →
+     * shader 掩码走 O(1) 直角路径（sdMask 在卡片区内恒 ≤0 → mask≈1 不裁剪），圆角外裁剪已由
+     * shapeAlpha 兜底 → **零视觉变化，CONIC 成本减半**。
      *
      * 判定（全过才算冗余，最保守）：
      * 1. 掩码矩形 == 本体几何区域（同尺寸同位置；本体经 uMaskOffset 平移占据 raw coord 空间
      *    [offsetX, offsetX+realW]×[offsetY, offsetY+realH]，掩码 rect 即此区域）；
      * 2. 本体是 CONIC（cornerIsConic=true）——圆弧本体 + CONIC 掩码 = swipe 的必要裁剪（spec/12），不删；
-     * 3. 掩码 CONIC 角 == 本体 CONIC 角（raw 值相等，shader 侧各 ×1.5）。
+     * 3. 掩码 CONIC 角 == 本体 CONIC 角（比渲染 resolve 输出，shader 侧各 ×1.5）。
      */
-    private fun isMaskRedundant(geo: RealGeometry, entry: RegionEntry, effMaskCornerRadius: Float): Boolean {
+    private fun isMaskRedundant(
+        geo: RealGeometry,
+        entry: RegionEntry,
+        effMaskCornerRadius: Float,
+        bodyCornerRadius: Float,
+    ): Boolean {
         val mr = geo.maskRect ?: return false
         if (mr.width() <= 0f || mr.height() <= 0f) return false
         // 1. 同尺寸同位置（eps 0.5px 容忍浮点折算误差）
@@ -13729,8 +13728,8 @@ object BlurDrawHook {
         if (abs(mr.left - geo.offsetX) > 0.5f || abs(mr.top - geo.offsetY) > 0.5f) return false
         // 2. 本体必须 CONIC（"同一贝塞尔算 2 遍"才构成冗余）
         if (!entry.cornerIsConic) return false
-        // 3. 掩码 CONIC 角 == 本体 CONIC 角（raw 相等 → shader 侧 ×1.5 后 cc 相等）
-        return abs(effMaskCornerRadius - entry.cornerRadius) < 0.5f
+        // 3. 掩码 CONIC 角 == 本体 CONIC 角（渲染值相等 → shader 侧 ×1.5 后 cc 相等）
+        return abs(effMaskCornerRadius - bodyCornerRadius) < 0.5f
     }
 
     /** buildLiquidShader 返回值：液态玻璃 shader + region.id（appliedUniformsMap 键）。 */
@@ -13865,7 +13864,8 @@ object BlurDrawHook {
                 if (nowMs - prevAuditMs >= AUDIT_PER_ID_INTERVAL_MS) {
                     if (presetBlurAudit.size > 512) presetBlurAudit.clear()
                     presetBlurAudit[elementId] = nowMs
-                    Lg.i(TAG, "preset-blur: id=$elementId ovBlur=${ov?.get(Prefs.KEY_BLUR_RADIUS)} global=${m.blurRadius}")
+                    Lg.i(TAG, "preset-blur: id=$elementId ovBlur=${ov?.get(Prefs.KEY_BLUR_RADIUS)} global=${m.blurRadius} " +
+                        "ovHl=${ov?.get(Prefs.KEY_HIGHLIGHT)} globalHl=${m.highlight}")
                 }
             }
             fun pick(key: String, base: Float): Float = ov?.get(key) ?: base
