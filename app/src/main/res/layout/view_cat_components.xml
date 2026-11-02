@@ -153,22 +153,6 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
-        <!-- 点选元素玻璃总闸（默认关） -->
-        <Switch
-            android:id="@+id/switchElementGlass"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/settings_element_glass" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/settings_element_glass_desc"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?android:attr/textColorSecondary" />
-
         <!-- 相册背景采样范围探针（实验，默认关） -->
         <Switch
             android:id="@+id/switchGalleryShaderProbe"

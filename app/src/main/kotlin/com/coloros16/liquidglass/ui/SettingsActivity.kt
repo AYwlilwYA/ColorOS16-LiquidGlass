@@ -1384,7 +1384,6 @@ class SettingsActivity : AppCompatActivity() {
         bindGlassSwitch(view, R.id.switchSmartSidebarGlass, Prefs.KEY_SMART_SIDEBAR_GLASS, Prefs.DEFAULT_SMART_SIDEBAR_GLASS)
         bindGlassSwitch(view, R.id.switchAssistantScreenGlass, Prefs.KEY_ASSISTANT_SCREEN_GLASS, Prefs.DEFAULT_ASSISTANT_SCREEN_GLASS)
         bindGlassSwitch(view, R.id.switchQuickSearchGlass, Prefs.KEY_QUICK_SEARCH_GLASS, Prefs.DEFAULT_QUICK_SEARCH_GLASS)
-        bindGlassSwitch(view, R.id.switchElementGlass, Prefs.KEY_ELEMENT_GLASS_ENABLE, Prefs.DEFAULT_ELEMENT_GLASS_ENABLE)
         bindGlassSwitch(view, R.id.switchGalleryShaderProbe, Prefs.KEY_GALLERY_SHADER_PROBE, Prefs.DEFAULT_GALLERY_SHADER_PROBE)
         bindGlassSwitch(view, R.id.switchClearAllBtnGlass, Prefs.KEY_CLEAR_ALL_BTN_GLASS, Prefs.DEFAULT_CLEAR_ALL_BTN_GLASS)
         bindGlassSwitch(view, R.id.switchEditToolbarGlass, Prefs.KEY_EDIT_TOOLBAR_GLASS, Prefs.DEFAULT_EDIT_TOOLBAR_GLASS)
@@ -1652,8 +1651,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchEngineFullLog.setOnCheckedChangeListener(engineFullLogListener)
         refreshBooleanSwitch(switchEngineFullLog, engineFullLogListener, Prefs.KEY_ENGINE_FULL_LOG, Prefs.DEFAULT_ENGINE_FULL_LOG)
-        // 悬浮球小节：权限行 + 显隐说明（授权与总开关都在这一页）
+        // 悬浮球小节：权限行 + 点选元素玻璃总开关
         bindGlassBallPermissionRow(view)
+        bindGlassSwitch(view, R.id.switchElementGlass, Prefs.KEY_ELEMENT_GLASS_ENABLE, Prefs.DEFAULT_ELEMENT_GLASS_ENABLE)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表
         captureStartRow = view.findViewById(R.id.captureStartRow)
         captureStopRow = view.findViewById(R.id.captureStopRow)
