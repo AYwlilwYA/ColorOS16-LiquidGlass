@@ -46,6 +46,7 @@ import com.coloros16.liquidglass.App
 import com.coloros16.liquidglass.R
 import com.coloros16.liquidglass.config.Prefs
 import com.coloros16.liquidglass.debug.GlobalGlassBall
+import com.coloros16.liquidglass.debug.RootBallLauncher
 import com.coloros16.liquidglass.glass.GlassRegistry
 import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.log.Lg
@@ -1421,8 +1422,41 @@ class SettingsActivity : AppCompatActivity() {
         // 无权限时服务已自停：授权返回 / 页面回前台都要有人重拉，否则球永远起不来
         GlobalGlassBall.startFrom(this)
         if (currentCategory == "log") {
-            contentFrame.getChildAt(0)?.let { refreshGlassBallPermissionRow(it) }
+            contentFrame.getChildAt(0)?.let { view ->
+                refreshGlassBallPermissionRow(view)
+                refreshRootBallStatus(view)
+            }
         }
+    }
+
+    // ------------------------------------------------------------ [root 悬浮球] ---------------------------------------------------------------
+
+    private var rootBallStatusRow: TextView? = null
+
+    /** root 悬浮球三件：启动/停止点击 + 状态行。 */
+    private fun bindRootBall(view: View) {
+        rootBallStatusRow = view.findViewById(R.id.rootBallStatusRow)
+        view.findViewById<View>(R.id.rootBallStartRow)?.setOnClickListener { v ->
+            v.isEnabled = false
+            rootBallStatusRow?.setText(R.string.settings_root_ball_starting)
+            RootBallLauncher.start() { msg ->
+                v.isEnabled = true
+                rootBallStatusRow?.text = msg
+            }
+        }
+        view.findViewById<View>(R.id.rootBallStopRow)?.setOnClickListener { v ->
+            v.isEnabled = false
+            RootBallLauncher.stop { msg ->
+                v.isEnabled = true
+                rootBallStatusRow?.text = msg
+            }
+        }
+    }
+
+    private fun refreshRootBallStatus(view: View) {
+        val row = view.findViewById<TextView>(R.id.rootBallStatusRow) ?: return
+        rootBallStatusRow = row
+        RootBallLauncher.status { row.text = it }
     }
 
     /** 组件级玻璃开关绑定（写 Prefs + 按权威值刷新；hook 端 TTL 500ms 重读，改动即时生效）。 */
@@ -1654,6 +1688,8 @@ class SettingsActivity : AppCompatActivity() {
         // 悬浮球小节：权限行 + 点选元素玻璃总开关
         bindGlassBallPermissionRow(view)
         bindGlassSwitch(view, R.id.switchElementGlass, Prefs.KEY_ELEMENT_GLASS_ENABLE, Prefs.DEFAULT_ELEMENT_GLASS_ENABLE)
+        // root 悬浮球：独立进程，启动/停止/状态回显
+        bindRootBall(view)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表
         captureStartRow = view.findViewById(R.id.captureStartRow)
         captureStopRow = view.findViewById(R.id.captureStopRow)

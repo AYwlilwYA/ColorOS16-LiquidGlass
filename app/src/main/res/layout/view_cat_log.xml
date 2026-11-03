@@ -89,6 +89,37 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- root 悬浮球：独立进程，盖在一切界面最上层 -->
+        <TextView
+            android:id="@+id/rootBallStartRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="?attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="@string/settings_root_ball_start"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/rootBallStopRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="?attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="@string/settings_root_ball_stop"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/rootBallStatusRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:padding="12dp"
+            android:text="@string/settings_root_ball_idle"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <Switch
             android:id="@+id/switchCaptureAll"
             android:layout_width="match_parent"
