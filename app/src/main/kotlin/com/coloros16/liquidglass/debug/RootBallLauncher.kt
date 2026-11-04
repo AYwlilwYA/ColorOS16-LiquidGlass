@@ -38,6 +38,7 @@ object RootBallLauncher {
                     s.outputStream.flush()
                     val reply = s.inputStream.bufferedReader().readLine() ?: ""
                     Lg.i(TAG, "$cmd -> ${reply.ifBlank { "(空)" }}")
+                    syncBridge(cmd, reply)
                     humanize(reply)
                 }
             }.getOrElse { t ->
@@ -46,6 +47,19 @@ object RootBallLauncher {
                 "连不上球服务（$why）；若服务未起：root 执行 $BIN_DEV daemon &"
             }
             main.post { onDone(msg) }
+        }
+    }
+
+    /** 球活桥才活：正答拉起点选桥，停球成功收桥（状态查询为正答也拉起，恢复进程被杀后的桥）。 */
+    private fun syncBridge(cmd: String, reply: String) {
+        val ballAlive = reply.startsWith("OK pid=") ||
+            reply.startsWith("OK running pid=") ||
+            reply.startsWith("ERR running pid=")
+        val ballStopped = reply.startsWith("OK stopped pid=") || reply == "OK not-running"
+        when {
+            cmd == "STOP" && ballStopped -> PickBridge.shutdown()
+            ballAlive -> PickBridge.ensureRunning()
+            cmd == "STOP" -> Lg.i(TAG, "stop not confirmed, keep bridge pid-reply=$reply")
         }
     }
 

@@ -602,7 +602,7 @@ object PageGlassEngine {
      * 页卡圆角解析链：①条目 overrides ②outline 实测 ③背景 drawable 圆角 ④兜底 28dp。
      * 返回 (值, 来源标记)，来源进挂载日志对照。
      */
-    private fun resolveCorner(view: View, entry: GlassElementEntry): Pair<Float, String> {
+    internal fun resolveCorner(view: View, entry: GlassElementEntry): Pair<Float, String> {
         entry.overrides["cornerRadius"]?.let { return it to "overrides" }
         entry.overrides["cornerRadiusDp"]?.let { return it * view.resources.displayMetrics.density to "overrides" }
         try {

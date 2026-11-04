@@ -25,10 +25,13 @@ import com.coloros16.liquidglass.debug.ACTION_TOOL_LIST_REQUEST
 import com.coloros16.liquidglass.debug.ACTION_TOOL_LIST_RESULT
 import com.coloros16.liquidglass.debug.ACTION_TOOL_TREE_REQUEST
 import com.coloros16.liquidglass.debug.ACTION_TOOL_TREE_RESULT
+import com.coloros16.liquidglass.debug.sendSharingBroadcast
 import com.coloros16.liquidglass.hook.spec.EngineLog
 import com.coloros16.liquidglass.log.Lg
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.ref.WeakReference
@@ -69,9 +72,14 @@ object AppGlassAgent {
 
     private var receiverRegistered = false
     private var resumeHooked = false
+    private var pauseHooked = false
 
     private var currentActivity = WeakReference<Activity>(null)
     private var appContext: Context? = null
+
+    /** 本进程是否有 resumed 的 Activity（点选桥按此挑前台回包）。 */
+    @Volatile
+    private var activityResumed = false
 
     @Volatile
     private var lastScanAtMs = 0L
@@ -87,6 +95,7 @@ object AppGlassAgent {
         EngineLog.attach { Prefs.read(api) }
         EngineLog.log("AppAgent", "started pkg=$packageName")
         hookResume(api)
+        hookPause(api)
         tryRegister()
     }
 
@@ -245,11 +254,13 @@ object AppGlassAgent {
         val ctx = appContext ?: return
         EngineLog.log("AppAgent", "scan-result items=${items.length()} truncated=$truncated")
         try {
-            ctx.sendBroadcast(
+            sendSharingBroadcast(
+                ctx,
                 Intent(ACTION_SCAN_RESULT).setPackage(MODULE_PKG)
                     .putExtra("pkg", ctx.packageName)
                     .putExtra("items", items.toString())
-                    .putExtra("truncated", truncated),
+                    .putExtra("truncated", truncated)
+                    .putExtra("resumed", activityResumed),
             )
         } catch (t: Throwable) {
             Lg.w(TAG, "send scan result failed", t)
@@ -300,7 +311,11 @@ object AppGlassAgent {
             } catch (t: Throwable) {
                 Lg.w(TAG, "rescan failed", t)
             }
-            sendFreezeResult(true, entry.label, "")
+            val geom = collectGeom(hit, entry)
+            if (geom == null) {
+                Lg.w(TAG, "freeze geom unavailable (w/h=0?), declare skipped")
+            }
+            sendFreezeResult(true, entry.label, "", geom)
             Lg.i(
                 TAG,
                 "element-frozen label=${entry.label} cls=${entry.anchorClassName} " +
@@ -388,16 +403,50 @@ object AppGlassAgent {
         )
     }
 
-    private fun sendFreezeResult(ok: Boolean, label: String, reason: String) {
+    /** 冻结命中的屏幕几何（喂 declare.json 的字段面）。 */
+    private class FreezeGeom(
+        val x: Int,
+        val y: Int,
+        val w: Int,
+        val h: Int,
+        val corner: Int,
+        val shape: Int,
+    )
+
+    /** 现场采命中 View 的屏幕矩形 + 圆角（resolveCorner 链）+ 形状档（0 矩 1 胶囊 2 圆）。 */
+    private fun collectGeom(view: View, entry: GlassElementEntry): FreezeGeom? {
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) return null
+        val loc = IntArray(2)
+        view.getLocationOnScreen(loc)
+        val maxC = minOf(w, h) / 2f
+        val corner = PageGlassEngine.resolveCorner(view, entry).first.coerceIn(0f, maxC)
+        val shape = when {
+            corner < maxC - 0.5f -> 0
+            abs(w - h) <= maxOf(w, h) * 0.05 -> 2
+            else -> 1
+        }
+        return FreezeGeom(loc[0], loc[1], w, h, corner.roundToInt(), shape)
+    }
+
+    private fun sendFreezeResult(ok: Boolean, label: String, reason: String, geom: FreezeGeom? = null) {
         val ctx = appContext ?: return
         EngineLog.log("AppAgent", "freeze-result ok=$ok label=$label reason=$reason")
         try {
-            ctx.sendBroadcast(
-                Intent(ACTION_FREEZE_RESULT).setPackage(MODULE_PKG)
-                    .putExtra("ok", ok)
-                    .putExtra("label", label)
-                    .putExtra("reason", reason),
-            )
+            val intent = Intent(ACTION_FREEZE_RESULT).setPackage(MODULE_PKG)
+                .putExtra("ok", ok)
+                .putExtra("label", label)
+                .putExtra("reason", reason)
+            if (geom != null) {
+                intent.putExtra("gx", geom.x)
+                    .putExtra("gy", geom.y)
+                    .putExtra("gw", geom.w)
+                    .putExtra("gh", geom.h)
+                    .putExtra("corner", geom.corner)
+                    .putExtra("shape", geom.shape)
+            }
+            sendSharingBroadcast(ctx, intent)
         } catch (t: Throwable) {
             Lg.w(TAG, "send freeze result failed", t)
         }
@@ -533,7 +582,7 @@ object AppGlassAgent {
                     .putExtra("bw", box[2])
                     .putExtra("bh", box[3])
             }
-            ctx.sendBroadcast(i)
+            sendSharingBroadcast(ctx, i)
         } catch (t: Throwable) {
             Lg.w(TAG, "send tool result failed action=$action", t)
         }
@@ -760,6 +809,8 @@ object AppGlassAgent {
                     try {
                         (chain.getThisObject() as? Activity)?.let { act ->
                             currentActivity = WeakReference(act)
+                            activityResumed = true
+                            Lg.i(TAG, "activityResumed=true act=${act.javaClass.simpleName}")
                             if (!receiverRegistered) mainHandler.post { tryRegister() }
                         }
                     } catch (t: Throwable) {
@@ -770,6 +821,33 @@ object AppGlassAgent {
             Lg.i(TAG, "mounted resume capture: android.app.Activity#onResume")
         } catch (t: Throwable) {
             Lg.w(TAG, "Activity#onResume hook FAILED", t)
+        }
+    }
+
+    /** 挂 Activity#onPause 清前台标志（仅当暂停的就是当前记录的 Activity 才清）。 */
+    private fun hookPause(api: XposedInterface) {
+        if (pauseHooked) return
+        pauseHooked = true
+        try {
+            val onPause = Activity::class.java.getDeclaredMethod("onPause")
+            api.hook(onPause)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val act = chain.getThisObject() as? Activity
+                        if (act != null && act === currentActivity.get()) {
+                            activityResumed = false
+                            Lg.i(TAG, "activityResumed=false act=${act.javaClass.simpleName}")
+                        }
+                    } catch (t: Throwable) {
+                        Lg.w(TAG, "pause flag error", t)
+                    }
+                    result
+                }
+            Lg.i(TAG, "mounted pause flag: android.app.Activity#onPause")
+        } catch (t: Throwable) {
+            Lg.w(TAG, "Activity#onPause hook FAILED", t)
         }
     }
 
