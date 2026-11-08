@@ -107,6 +107,16 @@ object Prefs {
     const val KEY_PARALLAX_X = "parallax_x"
     const val KEY_PARALLAX_Y = "parallax_y"
 
+    // ---------- 裁切旁路（调试三开关，排查元素边缘/圆角/高光被切来自哪一层） ----------
+    /** 遮罩裁切旁路：true = shader 跳过 `glass *= smoothstep(0,-2,sdMask)`。默认 false。 */
+    const val KEY_CLIP_BYPASS_MASK = "clip_bypass_mask"
+    /** 形状裁切旁路：true = shader 跳过 `glass *= shapeAlpha`。默认 false。 */
+    const val KEY_CLIP_BYPASS_SHAPE = "clip_bypass_shape"
+    /** 画布裁切旁路：true = 跳过宿主 clip∩bounds 几何收缩（spec/99 收缩点）。默认 false。 */
+    const val KEY_CLIP_BYPASS_CANVAS = "clip_bypass_canvas"
+    /** 三开关统一默认值（false = 维持现状裁切行为）。 */
+    const val DEFAULT_CLIP_BYPASS = false
+
     // 新管线（2026-08-12 Kyant 分层：清晰内部透镜 + 内侧折射环带 + vibrancy + 高光）默认值
     /** 内部可选轻模糊半径 px（0=清晰透镜；>0 仅作用内部，不糊折射环带）。
      *  [2026-09-16] 0f → 8f：原 0 使每块玻璃成完全清晰透镜（用户反馈「横幅太透、看得见背后文字」）。 */
@@ -772,6 +782,39 @@ object Prefs {
             DEFAULT_GLASS_ENABLE
         }
         glassEnableCache = v
+        return v
+    }
+
+    /** 三个裁切旁路开关的合并读取结果（hook 端进程内共享一份缓存）。 */
+    data class ClipBypass(val mask: Boolean, val shape: Boolean, val canvas: Boolean)
+
+    @Volatile
+    private var clipBypassCache: ClipBypass = ClipBypass(DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS)
+
+    @Volatile
+    private var clipBypassCacheAtMs = 0L
+
+    /** 裁切旁路三开关（500ms TTL 热读：TTL 内零 IPC；任一值变化打一条 `lg-clip-bypass` 状态日志）。 */
+    fun clipBypass(api: XposedInterface?): ClipBypass {
+        if (api == null) return ClipBypass(DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS)
+        val now = SystemClock.uptimeMillis()
+        if (now - clipBypassCacheAtMs < 500L) return clipBypassCache
+        clipBypassCacheAtMs = now
+        val v = try {
+            val p = read(api)
+            ClipBypass(
+                p.getBoolean(KEY_CLIP_BYPASS_MASK, DEFAULT_CLIP_BYPASS),
+                p.getBoolean(KEY_CLIP_BYPASS_SHAPE, DEFAULT_CLIP_BYPASS),
+                p.getBoolean(KEY_CLIP_BYPASS_CANVAS, DEFAULT_CLIP_BYPASS),
+            )
+        } catch (t: Throwable) {
+            Lg.w(TAG, "prefs read clip_bypass failed, default $DEFAULT_CLIP_BYPASS", t)
+            ClipBypass(DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS, DEFAULT_CLIP_BYPASS)
+        }
+        if (v != clipBypassCache) {
+            Lg.i(TAG, "lg-clip-bypass mask=${v.mask} shape=${v.shape} canvas=${v.canvas}")
+        }
+        clipBypassCache = v
         return v
     }
 

@@ -292,6 +292,13 @@
     <string name="settings_quick_search_glass_desc">给全局搜索 App 里长按列表项弹出的菜单和弹窗加玻璃效果（只作用于这类弹窗，不含搜索条本身）。</string>
     <string name="settings_element_glass">点选元素玻璃</string>
     <string name="settings_element_glass_desc">在悬浮球里点选固化的控件变成液态玻璃（负一屏卡片、搜索页应用建议、相册按钮等），固化后立即生效。</string>
+    <string name="settings_clip_bypass_section">裁切旁路</string>
+    <string name="settings_clip_bypass_mask">旁路遮罩裁切</string>
+    <string name="settings_clip_bypass_mask_desc">跳过遮罩形状对玻璃边缘的裁剪，用于排查元素边缘被切问题；平时保持关闭。</string>
+    <string name="settings_clip_bypass_shape">旁路形状裁切</string>
+    <string name="settings_clip_bypass_shape_desc">跳过圆角形状对玻璃的裁剪，用于排查圆角被切、高光缺失问题；平时保持关闭。</string>
+    <string name="settings_clip_bypass_canvas">旁路画布裁切</string>
+    <string name="settings_clip_bypass_canvas_desc">跳过宿主画布的局部裁剪区域，用于排查玻璃被宿主窗口切掉的问题；平时保持关闭。</string>
     <string name="settings_glass_ball_permission">悬浮球权限</string>
     <string name="settings_glass_ball_permission_granted">已授权。打开「点选元素玻璃」开关后，悬浮球会出现在屏幕最上层。</string>
     <string name="settings_glass_ball_permission_missing">未授权。点击这里去系统设置开启，悬浮球需要显示在其他应用上层。</string>

@@ -1688,6 +1688,10 @@ class SettingsActivity : AppCompatActivity() {
         // 悬浮球小节：权限行 + 点选元素玻璃总开关
         bindGlassBallPermissionRow(view)
         bindGlassSwitch(view, R.id.switchElementGlass, Prefs.KEY_ELEMENT_GLASS_ENABLE, Prefs.DEFAULT_ELEMENT_GLASS_ENABLE)
+        // 裁切旁路三开关（默认关；写 remote Prefs + 回显，hook 端 500ms TTL 重读）
+        bindGlassSwitch(view, R.id.switchClipBypassMask, Prefs.KEY_CLIP_BYPASS_MASK, Prefs.DEFAULT_CLIP_BYPASS)
+        bindGlassSwitch(view, R.id.switchClipBypassShape, Prefs.KEY_CLIP_BYPASS_SHAPE, Prefs.DEFAULT_CLIP_BYPASS)
+        bindGlassSwitch(view, R.id.switchClipBypassCanvas, Prefs.KEY_CLIP_BYPASS_CANVAS, Prefs.DEFAULT_CLIP_BYPASS)
         // root 悬浮球：独立进程，启动/停止/状态回显
         bindRootBall(view)
         // 流式抓取：开始/停止 + 含全部开关 + 已抓文件列表

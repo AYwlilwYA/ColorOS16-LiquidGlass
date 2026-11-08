@@ -9178,6 +9178,11 @@ object BlurDrawHook {
             sourceSizeX = source.width.toFloat(),
             sourceSizeY = source.height.toFloat(),
         )
+        if (params.clipBypassMask || params.clipBypassShape) {
+            logThrottled("lg-clip-bypass-draw-seedling", Log.DEBUG) {
+                "lg-clip-bypass-draw-seedling: mask=${params.clipBypassMask} shape=${params.clipBypassShape} id=$id"
+            }
+        }
         appliedUniformsMap[id] = AppliedKey(
             frame = 0L, sourceBitmapId = System.identityHashCode(source),
             viewport = viewport, srcRect = srcRect, maskRect = null,
@@ -12647,6 +12652,12 @@ object BlurDrawHook {
             val sigmaViewport = 0.807f * bindParams.blurRadius
             val wantLowResDiv = if (cg.isElementSource && bindBitmap != null) lowResTierOf(sigmaViewport) else 4
             val lowResTierChanged = applied != null && applied.lowResDiv != wantLowResDiv
+            // 旁路开着期间持续节流打一条：证明 mask/shape 旁路值已进本帧绘制参数
+            if (bindParams.clipBypassMask || bindParams.clipBypassShape) {
+                logThrottled("lg-clip-bypass-draw-main", Log.DEBUG) {
+                    "lg-clip-bypass-draw-main: mask=${bindParams.clipBypassMask} shape=${bindParams.clipBypassShape} id=$id"
+                }
+            }
             if (!uniformsChanged && !lowResTierChanged) return true
 
             val sourceShader = if (sourceBitmapChanged && bindBitmap != null) {
@@ -13172,6 +13183,11 @@ object BlurDrawHook {
             sourceSizeX = bindBitmap.width.toFloat(),
             sourceSizeY = bindBitmap.height.toFloat(),
         )
+        if (params.clipBypassMask || params.clipBypassShape) {
+            logThrottled("lg-clip-bypass-draw-build", Log.DEBUG) {
+                "lg-clip-bypass-draw-build: mask=${params.clipBypassMask} shape=${params.clipBypassShape} id=${region.id}"
+            }
+        }
         // 记录已应用状态（R1：后续每帧 refresh 据此判断是否重设 uniform）
         appliedUniformsMap[region.id] = AppliedKey(
             frame = 0L,  // [2026-08-13] 无全局帧概念（BlurService 端全移除）；源变化靠 sourceBitmapId
@@ -13654,6 +13670,13 @@ object BlurDrawHook {
     ): RealGeometry {
         val clip = entry.clipBounds ?: return geo            // ① 未采集 → 现状
         if (clip.width() <= 0 || clip.height() <= 0) return geo
+        // 画布旁路：跳过宿主 clip∩bounds 收缩，几何原样返回（排查玻璃被宿主画布切掉时用）
+        if (Prefs.clipBypass(api).canvas) {
+            logThrottled("lg-clip-bypass-canvas", Log.DEBUG) {
+                "lg-clip-bypass-canvas: skip clip∩bounds host=${entry.hostViewName} bounds=$bounds clip=$clip"
+            }
+            return geo
+        }
         // eff = clip ∩ bounds（父 / 宿主 View 本地空间）
         val effL = clip.left.coerceAtLeast(bounds.left)
         val effT = clip.top.coerceAtLeast(bounds.top)
@@ -13856,6 +13879,8 @@ object BlurDrawHook {
             // 调用本方法时原来每帧 11 次远程 Prefs IPC 读 → 现 ≥MATERIAL_PREFS_CACHE_MS 才重读一次，
             // 动画期 IPC 读降至 ~1 次/s；配置改动 ≤1s 生效（无需重启）。渲染输出不变（同值复用）。
             val m = readMaterialParams()
+            // 裁切旁路：500ms TTL 热读；值变化改 Params.hashCode → materialHash → 全量 setUniforms
+            val cb = Prefs.clipBypass(api)
             // 预设逐键覆盖：该元素类被某个预设接管的键取预设值，其余键仍取全局值
             val ov = GlassRegistry.overridesFor(elementId)
             if (elementId != 0) {
@@ -13907,6 +13932,8 @@ object BlurDrawHook {
                 lightAngleDegrees = pick(Prefs.KEY_LIGHT_ANGLE, m.lightAngleDegrees),
                 parallaxX = pick(Prefs.KEY_PARALLAX_X, m.parallaxX),
                 parallaxY = pick(Prefs.KEY_PARALLAX_Y, m.parallaxY),
+                clipBypassMask = cb.mask,
+                clipBypassShape = cb.shape,
             )
         } catch (t: Throwable) {
             Lg.e(TAG, "buildParams: prefs float read failed, use defaults", t)

@@ -109,6 +109,10 @@ object LiquidGlassShader {
         // z=透视距离 px（Kotlin 侧常量），w=启用（1=开；0=默认 → tiltCoord 恒等返回 = 逐像素零变化）。
         uniform vec4  uTilt;
 
+        // ---------- 裁切旁路（调试开关：排查元素边缘被切来自哪一层裁剪） ----------
+        uniform float uClipBypassMask;  // 1=跳过 glass *= smoothstep(0,-2,sdMask)（遮罩裁切）
+        uniform float uClipBypassShape; // 1=跳过 glass *= shapeAlpha（形状裁切）
+
         // ---------- SDF 圆角矩形（Kyant0 RoundedRectSDF 移植） ----------
         // 元素局部 coord → bitmap 像素坐标（uViewport=元素尺寸；不依赖 BitmapShader localMatrix，
         // AGSL shader.eval 忽略 localMatrix，直接以 coord 为像素索引，故采样坐标须手动折算）
@@ -803,13 +807,17 @@ object LiquidGlassShader {
             if (uMetaballEnable > 0.5) {
                 sdMask = min(sdMask, max(sdRaw, -sdBody));
             }
-            glass *= smoothstep(0.0, -2.0, sdMask);
+            if (uClipBypassMask < 0.5) {
+                glass *= smoothstep(0.0, -2.0, sdMask);
+            }
 
             // [2026-08-13 修复] 圆角外裁剪：对齐系统 `outputCol *= shape`（shape=smoothstep(0,-2,sdf)）——
             // 圆角 SDF 之外（sdRaw>0，正方形角区域）alpha 归 0，消除"圆角外多余直角玻璃边"。
             // 这是所有玻璃元素的通用裁剪（不只侧滑）；maskRect 掩码（侧滑专用）在上一行已乘，
             // 此处再乘 shapeAlpha（两者 alpha 相乘），对侧滑按钮的 MetaBall 扩张区裁切职责不变。
-            glass *= shapeAlpha;
+            if (uClipBypassShape < 0.5) {
+                glass *= shapeAlpha;
+            }
 
             // 4. 定向边缘高光：加在圆角裁剪【之后】，band 中心偏移到圆角内侧 uHighlightWidth×0.5 处——
             //    [2026-08-23 修复] 原实现带中心在边界（abs(sdRaw)），而 shapeAlpha 在边界（sdRaw=0）=0，
@@ -858,6 +866,13 @@ object LiquidGlassShader {
     @Volatile
     private var lastHighlightFloor = 0.4f
 
+    /** 最近一次下发的裁切旁路 uniform 值（增量路径无 params 入参，靠它们补发防残留）。 */
+    @Volatile
+    private var lastClipBypassMask = 0f
+
+    @Volatile
+    private var lastClipBypassShape = 0f
+
     /** 掩码 CONIC 角权重默认值：(8×1.1)/(3×1.1+3) = 1.3968（侧滑按钮 MetaBall weight=1.1 经系统
      *  CornerParamsKt 变换 fMax=(8·w)/(3·w+3)；spec/12 实证）。 */
     private const val DEFAULT_MASK_WEIGHT = (8.0f * 1.1f) / (3.0f * 1.1f + 3.0f)
@@ -895,6 +910,10 @@ object LiquidGlassShader {
         val parallaxY: Float = 0f,
         /** 内侧光 0~1（uInnerGlow；0=关）。放末尾带默认值，既有位置实参不受影响。 */
         val innerGlow: Float = 0f,
+        /** 遮罩裁切旁路（uClipBypassMask；true=跳过 glass *= smoothstep(0,-2,sdMask)）。 */
+        val clipBypassMask: Boolean = false,
+        /** 形状裁切旁路（uClipBypassShape；true=跳过 glass *= shapeAlpha）。 */
+        val clipBypassShape: Boolean = false,
     )
 
     /**
@@ -1089,6 +1108,11 @@ object LiquidGlassShader {
         shader.setFloatUniform("uHighlightFloor", params.highlightFloor)
         shader.setFloatUniform("uHighlightInnerAtt", params.highlightInnerAtt)
         shader.setFloatUniform("uInnerGlow", params.innerGlow)
+        // 裁切旁路：无条件下发（同 uMetaball* 防残留契约）；0 = 与现状逐像素一致
+        lastClipBypassMask = if (params.clipBypassMask) 1f else 0f
+        lastClipBypassShape = if (params.clipBypassShape) 1f else 0f
+        shader.setFloatUniform("uClipBypassMask", lastClipBypassMask)
+        shader.setFloatUniform("uClipBypassShape", lastClipBypassShape)
         // 掩码（侧滑按钮裁剪）：默认全视口 → sdMask<=0 恒成立 → step=1 → 无裁剪（不影响其他控件）
         val mr = maskRect ?: RectF(0f, 0f, max(params.viewportWidth, 1f), max(params.viewportHeight, 1f))
         shader.setFloatUniform("uMaskRect", mr.left, mr.top, mr.width(), mr.height())
@@ -1155,9 +1179,11 @@ object LiquidGlassShader {
     ) {
         shader.setFloatUniform("uSourceRect", sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height())
         shader.setFloatUniform("uSourceLowResRect", lowResSourceRect.left, lowResSourceRect.top, lowResSourceRect.width(), lowResSourceRect.height())
-        // 调试开关 / 弧线高光保底必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
+        // 调试开关 / 弧线高光保底 / 裁切旁路必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
         shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
         shader.setFloatUniform("uHighlightFloor", lastHighlightFloor)
+        shader.setFloatUniform("uClipBypassMask", lastClipBypassMask)
+        shader.setFloatUniform("uClipBypassShape", lastClipBypassShape)
     }
 
     /**
@@ -1188,9 +1214,11 @@ object LiquidGlassShader {
         shader.setFloatUniform("uSourceRect", sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height())
         shader.setFloatUniform("uSourceLowResRect", lowResSourceRect.left, lowResSourceRect.top, lowResSourceRect.width(), lowResSourceRect.height())
         shader.setFloatUniform("uViewport", max(viewport.width(), 1f), max(viewport.height(), 1f))
-        // 调试开关 / 弧线高光保底必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
+        // 调试开关 / 弧线高光保底 / 裁切旁路必须在增量路径也下发（否则 shader 缓存命中时保持 GLSL 默认值）
         shader.setFloatUniform("uDebugHighlight", HL_DEBUG_MODE)
         shader.setFloatUniform("uHighlightFloor", lastHighlightFloor)
+        shader.setFloatUniform("uClipBypassMask", lastClipBypassMask)
+        shader.setFloatUniform("uClipBypassShape", lastClipBypassShape)
         // [2026-08-13 滑动延迟修复] 全视口掩码（maskRect=null，非 swipe/无扩张元素的默认）实际值
         // = viewport（见 setUniforms `maskRect ?: 全视口`）；viewport 随拖动变化时掩码必须同步，
         // 否则 shader 侧 `glass *= smoothstep(0,-2,sdMask)` 会把旧掩码外（新增填充区）的玻璃裁掉。
