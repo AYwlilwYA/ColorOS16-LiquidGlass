@@ -45,6 +45,7 @@ import com.coloros16.liquidglass.liquidglass.LiquidGlassShader
 import com.coloros16.liquidglass.liquidglass.LowResTier
 import com.coloros16.liquidglass.liquidglass.ShaderInstancePool
 import com.coloros16.liquidglass.log.Lg
+import com.coloros16.liquidglass.sf.SfGlassChannel
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.ref.WeakReference
@@ -9122,6 +9123,7 @@ object BlurDrawHook {
         // [spec/85 省电模式] 省电开启 → 不画 canvas 玻璃（覆盖 CardBackgroundView / Simple Banner 等
         // 所有走本函数的注入点）
         if (isPowerSaveGlassOff()) {
+            SfGlassChannel.sessionGlassOff("power-save-seedling")
             logThrottled("seedling-draw-skip", Log.INFO) { "seedling-card: draw skip —— power-save id=$id" }
             return
         }
@@ -9147,6 +9149,18 @@ object BlurDrawHook {
         val cornerRadius = GlassRegistry.glassCornerBaseFor(id, w.toFloat(), h.toFloat())
             ?: entry.cornerRadius.takeIf { it > 0f }
             ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
+        // 渲染模式=SF：卡片交 SF 下发链，模块本帧停画（消费端不在自动回现役四腿）
+        if (SfGlassChannel.renderMode(api) == Prefs.RENDER_MODE_SF &&
+            SfGlassChannel.claimForDraw(
+                id,
+                screenRegion.left, screenRegion.top,
+                screenRegion.width(), screenRegion.height(),
+                cornerRadius,
+            )
+        ) {
+            logThrottled("seedling-sf-skip", Log.INFO) { "seedling-card: hand over to SF id=$id" }
+            return
+        }
         var params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
         // 音量元素（hostViewName="volume-*"：音量条/···按钮）弱化折射与色散：小面积元素强折射会把
         // 快照内容放大成扭曲倒影（验收反馈的黑渐变/棕色带/红色倒影），预设未接管该键时才衰减
@@ -12154,6 +12168,9 @@ object BlurDrawHook {
         val id = System.identityHashCode(drawable)
         GlassRegistry.bind(id, drawable, renderSideCardClass())
 
+        // 渲染模式观察：放在全部 early-return 之前，sf→app 翻转在任何绘制路径都触发撤申报
+        SfGlassChannel.renderMode(api)
+
         // [spec/85 省电模式·关玻璃] 省电开启 → 还原系统 shader 并回退系统绘制（**最优先**：省电下
         // 音量条 tint、背景 scrim 黑 tint 等一切模块绘制都应一并消失）。
         // 关键：模块可能已经把 paint.shader 换成液态玻璃（省电前的帧），若只 return false 不还原，
@@ -12161,6 +12178,7 @@ object BlurDrawHook {
         // 还原取 `DrawableShader.getShaderOrNull()` = 系统此刻自己的 shader（省电下通常为 null），
         // 与系统状态一致；还原后 return false → 调用方回退系统绘制。
         if (isPowerSaveGlassOff()) {
+            SfGlassChannel.sessionGlassOff("power-save")
             restoreSystemShaderIfReplaced(drawable)
             logRenderMode(id, "BLUR", "power-save: glass disabled", drawable)
             return false
@@ -12169,6 +12187,7 @@ object BlurDrawHook {
         // [2026-10-13 玻璃总开关] 关 → 还原模块 shader 并回退系统模糊（与省电同款语义；
         // 倾斜/飞入等非渲染功能不受影响）。500ms TTL，设置里关 ≤0.5s 生效。
         if (!Prefs.glassEnabled(api)) {
+            SfGlassChannel.sessionGlassOff("glass-switch-off")
             restoreSystemShaderIfReplaced(drawable)
             logRenderMode(id, "BLUR", "glass switch off", drawable)
             return false
@@ -12273,6 +12292,29 @@ object BlurDrawHook {
         if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
             logRenderMode(id, "BLUR", "empty bounds", drawable, bounds)
             return false
+        }
+
+        // 渲染模式=SF：本元素交 SF 下发链（屏幕坐标 region；无映射不认领回现役四腿），切走前还原模块 shader
+        if (SfGlassChannel.renderMode(api) == Prefs.RENDER_MODE_SF) {
+            val sfEntry = lookupScreenRegion(id, bounds)
+            if (sfEntry != null) {
+                val sfRegion = sfEntry.region
+                if (sfRegion.width() > 0f && sfRegion.height() > 0f) {
+                    val sfShort = minOf(sfRegion.width(), sfRegion.height()) / 2f
+                    val sfCorner = sfEntry.cornerRadius.coerceIn(0f, sfShort)
+                    val claimed = SfGlassChannel.claimForDraw(
+                        id,
+                        sfRegion.left, sfRegion.top,
+                        sfRegion.width(), sfRegion.height(),
+                        sfCorner,
+                    )
+                    if (claimed) {
+                        restoreSystemShaderIfReplaced(drawable)
+                        logRenderMode(id, "SF", "sf channel claim, hand over", drawable, bounds)
+                        return false
+                    }
+                }
+            }
         }
 
         // [R1 修复] paint.shader 已是本模块缓存的液态玻璃实例 → 不再整体短路：
@@ -12451,6 +12493,11 @@ object BlurDrawHook {
         }
         try {
             RestoreEngine.fire(RestoreEngine.Timing.HOT_RELOAD)
+        } catch (t: Throwable) {
+            // ignore
+        }
+        try {
+            SfGlassChannel.sessionGlassOff("hot-reload")
         } catch (t: Throwable) {
             // ignore
         }

@@ -37,6 +37,16 @@ object Prefs {
     const val KEY_GLASS_ENABLE = "glass_enable"
     const val DEFAULT_GLASS_ENABLE = true
 
+    // ---------- 渲染模式（应用级 / 系统级） ----------
+    /** 渲染模式键：`"app"`=应用级（四腿）/ `"sf"`=系统级（SF 通道），默认 `"app"`。 */
+    const val KEY_RENDER_MODE = "render_mode"
+    /** 渲染模式取值：应用级（四腿）。 */
+    const val RENDER_MODE_APP = "app"
+    /** 渲染模式取值：系统级（SF 通道）。 */
+    const val RENDER_MODE_SF = "sf"
+    /** 渲染模式默认值（应用级 = 默认安全档）。 */
+    const val DEFAULT_RENDER_MODE = RENDER_MODE_APP
+
     // ---------- 玻璃效果预设 ----------
     /** 玻璃预设列表（JSON 数组，元素含 id/name/classes/params，params 逐键覆盖全局值）。 */
     const val KEY_GLASS_PRESETS = "glass_presets"

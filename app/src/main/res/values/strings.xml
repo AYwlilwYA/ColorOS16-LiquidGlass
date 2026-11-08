@@ -13,6 +13,17 @@
     <string name="settings_glass_enable_desc">关闭后改用系统模糊，约半秒生效；倾斜、横幅飞入等效果不受影响。</string>
     <string name="settings_hint">模块默认关闭，开启后才会生效。部分改动需重启系统界面、桌面或锁屏后生效。</string>
 
+    <!-- 渲染模式 / 系统模块 / dalog 测试 -->
+    <string name="settings_render_mode">渲染模式</string>
+    <string name="settings_render_mode_app">应用级</string>
+    <string name="settings_render_mode_sf">系统级</string>
+    <string name="settings_sf_get_module">获取系统模块</string>
+    <string name="settings_sf_install_warning">系统模块具有不稳定性！请谨慎安装！安装前确保你手机有救砖方式/模块！</string>
+    <string name="settings_sf_install_root">root直接安装</string>
+    <string name="settings_sf_install_export">获取模块文件到下载目录手动安装</string>
+    <string name="settings_open_dalog">点击打开dalog</string>
+    <string name="settings_sf_test_box">如果下发没有出现玻璃效果，代表你没有安装模块/不支持！</string>
+
     <!-- 液态玻璃材质 -->
     <string name="settings_material_preview">效果预览（实时）</string>
     <string name="settings_section_material">液态玻璃参数</string>

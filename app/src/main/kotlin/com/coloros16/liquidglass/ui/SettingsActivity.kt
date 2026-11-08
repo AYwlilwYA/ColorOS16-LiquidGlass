@@ -30,6 +30,7 @@ import android.widget.CheckBox
 import android.widget.CompoundButton
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
@@ -458,6 +459,53 @@ class SettingsActivity : AppCompatActivity() {
         }
         switchGlass.setOnCheckedChangeListener(glassListener)
         refreshBooleanSwitch(switchGlass, glassListener, Prefs.KEY_GLASS_ENABLE, Prefs.DEFAULT_GLASS_ENABLE)
+
+        // 注入测试框宿主 Activity（桩弹框需要）
+        SfGlassTest.attach(this)
+
+        // 渲染模式两档：回读 render_mode 并回显，切换即写入
+        val modeGroup = view.findViewById<RadioGroup>(R.id.renderModeGroup)
+        val currentMode = (frameworkPrefs()?.getString(Prefs.KEY_RENDER_MODE, Prefs.DEFAULT_RENDER_MODE)
+            ?: xmlPrefs.getString(Prefs.KEY_RENDER_MODE, Prefs.DEFAULT_RENDER_MODE))
+            ?: Prefs.DEFAULT_RENDER_MODE
+        modeGroup.setOnCheckedChangeListener(null)
+        modeGroup.check(if (currentMode == Prefs.RENDER_MODE_SF) R.id.radioRenderSf else R.id.radioRenderApp)
+        modeGroup.setOnCheckedChangeListener { _, checkedId ->
+            val mode = if (checkedId == R.id.radioRenderSf) Prefs.RENDER_MODE_SF else Prefs.RENDER_MODE_APP
+            Lg.i(TAG, "render mode selected: $mode")
+            writePrefString(Prefs.KEY_RENDER_MODE, mode)
+        }
+
+        // 获取系统模块：警示弹窗两路（root 直装 / 导出到下载目录）
+        view.findViewById<View>(R.id.btnGetSystemModule).setOnClickListener {
+            Lg.i(TAG, "sf module install dialog shown")
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.settings_sf_get_module)
+                .setMessage(R.string.settings_sf_install_warning)
+                .setPositiveButton(R.string.settings_sf_install_root) { _, _ ->
+                    Lg.i(TAG, "sf module install choice: root")
+                    SfModuleInstaller.rootInstall { msg -> onSfInstallDone(msg) }
+                }
+                .setNegativeButton(R.string.settings_sf_install_export) { _, _ ->
+                    Lg.i(TAG, "sf module install choice: export")
+                    SfModuleInstaller.exportToDownloads { msg -> onSfInstallDone(msg) }
+                }
+                .show()
+        }
+
+        // 点击打开dalog：弹 SF 玻璃测试框
+        view.findViewById<View>(R.id.btnOpenDalog).setOnClickListener {
+            Lg.i(TAG, "sf glass test requested")
+            SfGlassTest.show { msg -> Lg.i(TAG, "sf glass test done: $msg") }
+        }
+    }
+
+    /** 系统模块安装回执：弹 Toast + 记日志（回调线程不确定，统一切主线程）。 */
+    private fun onSfInstallDone(msg: String) {
+        Lg.i(TAG, "sf module install done: $msg")
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 液态玻璃材质：内部轻模糊 / 鲜艳度 / 高光衰减 / 折射环带高度 / 折射强度。 */
