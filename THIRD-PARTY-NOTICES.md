@@ -32,6 +32,45 @@
 
 ---
 
+## Dear ImGui
+
+- **来源**：Dear ImGui（本地 vendored：核心取自参考项目 `and-imgui-injert-kuangjia` 的 `jni/`，OpenGL ES 3 后端取自三角洲翼龙归档）
+- **许可证**：MIT License，Copyright (c) 2014-2024 Omar Cornut
+- **许可证副本**：[`tools/lgball/imgui/LICENSE.txt`](tools/lgball/imgui/LICENSE.txt)
+
+**涉及文件**
+
+| 文件 | 说明 |
+|------|------|
+| `tools/lgball/imgui/imgui*.cpp` / `imgui*.h` / `imstb_*.h` / `imgui_internal.h` | Dear ImGui 核心（1.91.5 WIP） |
+| `tools/lgball/imgui/backends/imgui_impl_opengl3.*` | OpenGL ES 3.0 渲染后端 |
+
+**修改说明**
+
+上游源码未作修改，原样 vendored，经 `tools/lgball/build.sh` 以 `IMGUI_IMPL_OPENGL_ES3` 编译链接进 `lgball` 二进制。
+
+---
+
+## Noto Sans SC
+
+- **来源**：Google Noto 字体（SIL Open Font License 1.1 发布）
+- **许可证**：SIL Open Font License 1.1
+- **许可证副本**：[`tools/lgball/imgui/font/OFL-1.1.txt`](tools/lgball/imgui/font/OFL-1.1.txt)
+
+**涉及文件**
+
+| 文件 | 说明 |
+|------|------|
+| `tools/lgball/imgui/font/NotoSansSC-Regular.ttf` | 源字体（仅供本地再生成，不随包分发） |
+| `tools/lgball/imgui/font_data.h` | fontTools 子集化嵌入产物（104 码点 = ASCII + 面板用字，19208 B），链进 `lgball` 二进制 |
+| `tools/lgball/imgui/gen_font.py` | 子集化生成脚本 |
+
+**修改说明**
+
+仅做字符子集化（fontTools subset），字形数据未改动；OFL 1.1 允许子集再分发，二进制内含字体许可常量 `lgball_font_notice`（运行时日志打印，二进制可 grep）。
+
+---
+
 ## 其他依赖
 
 项目通过 Gradle 依赖的第三方库（AndroidX、Material Components、Kotlin 标准库、LibXposed API 等）遵循各自许可证，其声明随依赖产物分发。
