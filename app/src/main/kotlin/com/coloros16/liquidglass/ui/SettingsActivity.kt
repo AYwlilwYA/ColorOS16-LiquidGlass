@@ -460,8 +460,9 @@ class SettingsActivity : AppCompatActivity() {
         switchGlass.setOnCheckedChangeListener(glassListener)
         refreshBooleanSwitch(switchGlass, glassListener, Prefs.KEY_GLASS_ENABLE, Prefs.DEFAULT_GLASS_ENABLE)
 
-        // 注入测试框宿主 Activity（桩弹框需要）
+        // 注入宿主 Activity（测试框弹窗与模块打包需要）
         SfGlassTest.attach(this)
+        SfModuleInstaller.attach(this)
 
         // 渲染模式两档：回读 render_mode 并回显，切换即写入
         val modeGroup = view.findViewById<RadioGroup>(R.id.renderModeGroup)
