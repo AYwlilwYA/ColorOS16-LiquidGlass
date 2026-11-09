@@ -27,13 +27,11 @@ internal object SfModulePacker {
     private const val TRAMPOLINE_DIR = "lg-sf"
     private const val TRAMPOLINE_NAME = "trampoline.so"
     private const val SERVICE_SH_NAME = "service.sh"
-    private const val SEPOLICY_NAME = "sepolicy.rule"
     private const val MODULE_ID = "lg_sf_channel"
     private const val DOWNLOAD_PATH_PREFIX = "/sdcard/Download/"
     private const val REAL_SO_MAX_BYTES = 64L * 1024 * 1024
     private const val MISSING_TRAMPOLINE_MSG = "打包件未就绪（trampoline 通用件未生成）"
     private const val MISSING_SERVICE_MSG = "打包件未就绪（开机服务脚本未生成）"
-    private const val MISSING_SEPOLICY_MSG = "打包件未就绪（系统放行规则未生成）"
 
     /** 打包结果：ok=true 时 path=zip 落盘路径；失败时 message=如实回执文案。 */
     internal data class Result(
@@ -52,14 +50,13 @@ internal object SfModulePacker {
         return try {
             val trampoline = readAsset(context, TRAMPOLINE_NAME, MISSING_TRAMPOLINE_MSG)
             val serviceSh = readAsset(context, SERVICE_SH_NAME, MISSING_SERVICE_MSG)
-            val sepolicy = readAsset(context, SEPOLICY_NAME, MISSING_SEPOLICY_MSG)
             val real = readRealSo()
             val sha256 = sha256Hex(real)
             val fingerprint = Build.FINGERPRINT ?: "unknown"
             val symbols = DynsymParser.parse(real)
             if (symbols.isEmpty()) throw PackError("解析系统库符号失败：动态符号为空")
             val name = zipName(fingerprint)
-            val entries = buildEntries(trampoline, real, sha256, fingerprint, symbols, serviceSh, sepolicy)
+            val entries = buildEntries(trampoline, real, sha256, fingerprint, symbols, serviceSh)
             if (stageDir != null) stageTree(entries, stageDir)
             val size = publish(context, name) { zip -> writeZip(zip, entries) }
             Lg.i(TAG, "pack ok name=$name size=$size symbols=${symbols.size} sha256=$sha256")
@@ -147,7 +144,6 @@ internal object SfModulePacker {
         fingerprint: String,
         symbols: List<DynsymParser.Sym>,
         serviceSh: ByteArray,
-        sepolicy: ByteArray,
     ): List<Pair<String, ByteArray>> {
         val symbolsTxt = buildString {
             append("# lg-sf-channel symbols v1\n")
@@ -170,13 +166,12 @@ internal object SfModulePacker {
             "META-INF/com/google/android/update-binary" to UPDATE_BINARY.toByteArray(Charsets.UTF_8),
             "META-INF/com/google/android/updater-script" to UPDATER_SCRIPT.toByteArray(Charsets.UTF_8),
             "module.prop" to moduleProp().toByteArray(Charsets.UTF_8),
-            "trampoline.so" to trampoline,
-            "libdisplayppex.real.so" to real,
+            "system_ext/lib64/oplusex/libdisplayppex.so" to trampoline,
+            "system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so" to real,
             "symbols.txt" to symbolsTxt.toByteArray(Charsets.UTF_8),
             "fingerprint.txt" to fingerprintTxt.toByteArray(Charsets.UTF_8),
             "service.sh" to serviceSh,
             "post-fs-data.sh" to POST_FS_DATA_SH.toByteArray(Charsets.UTF_8),
-            "sepolicy.rule" to sepolicy,
         )
     }
 
@@ -334,28 +329,65 @@ internal object SfModulePacker {
 
     private val POST_FS_DATA_SH = """
         #!/system/bin/sh
-        # 开机前置：SELinux 放行 + 双 bind 装载（状态机判定归 trampoline 与 service.sh）
-        PATH=/data/adb/magisk:/data/adb/ap/bin:/data/adb/ksu/bin:${'$'}PATH
-        MODDIR=/data/adb/modules/lg_sf_channel
-        LOG=/data/local/tmp/lg_sf_module.log
-        log() { echo "$(date '+%m-%d %H:%M:%S') postfs: $1" >> "${'$'}LOG"; }
-        MP=$(command -v magiskpolicy 2>/dev/null || echo /data/adb/magisk/magiskpolicy)
-        ${'$'}MP --live "allow surfaceflinger shell_data_file file { read open getattr map execute }" >/dev/null 2>&1
-        ${'$'}MP --live "allow surfaceflinger shell_data_file dir { search getattr open read }" >/dev/null 2>&1
-        ${'$'}MP --live "allow surfaceflinger vendor_default_prop file { read open getattr map }" >/dev/null 2>&1
-        if ! grep -q " /system_ext/lib64/oplusex/libdisplayppex.so " /proc/mounts 2>/dev/null; then
-          cp -f "${'$'}MODDIR/trampoline.so" /data/local/tmp/lg_sf_tramp.so && mount --bind /data/local/tmp/lg_sf_tramp.so /system_ext/lib64/oplusex/libdisplayppex.so
-          log "bind trampoline rc=$?"
+        # 开机前置：读模块自家 state 判装载/拒载 → 放行=树内校验交 overlay；拒载=下掉树内两 so 露原厂
+        # 零 bind、零 tmp 接触；日志走 logcat（非持久）
+        PATH=/system/bin:${'$'}PATH
+        MODDIR=${'$'}{LG_MODDIR:-/data/adb/modules/lg_sf_channel}
+        STATE=${'$'}{LG_STATE_FILE:-${'$'}MODDIR/state}
+        TREE=${'$'}MODDIR/system_ext/lib64/oplusex
+        TRAMP=${'$'}TREE/libdisplayppex.so
+        REAL=${'$'}TREE/libOplusDualHeadPhoneEx.so
+        lg_log() { log -p w -t LgSfPostFs "$1"; }
+
+        state=$(head -n1 "${'$'}STATE" 2>/dev/null)
+        status=${'$'}{state%% *}
+        allow=0
+        if [ ! -f "${'$'}STATE" ]; then
+          allow=1
+          lg_log "state 缺失=首装/重置 放行"
         else
-          log "trampoline 槽已挂载"
+          case "${'$'}status" in
+            healthy)
+              allow=1
+              lg_log "state=${'$'}state 放行"
+              ;;
+            disabled)
+              allow=0
+              lg_log "state=disabled 拒载"
+              ;;
+            booting)
+              allow=0
+              echo "disabled $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)" > "${'$'}STATE"
+              lg_log "state=booting 上轮未证稳 → disabled 拒载"
+              ;;
+            *)
+              allow=0
+              echo "disabled $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)" > "${'$'}STATE"
+              lg_log "state 畸形='${'$'}state' → disabled 拒载"
+              ;;
+          esac
         fi
-        if ! grep -q " /system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so " /proc/mounts 2>/dev/null; then
-          cp -f "${'$'}MODDIR/libdisplayppex.real.so" /data/local/tmp/lg_sf_real.so && mount --bind /data/local/tmp/lg_sf_real.so /system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so
-          log "bind real rc=$?"
+
+        if [ "${'$'}allow" = "1" ]; then
+          for f in "${'$'}TRAMP" "${'$'}REAL"; do
+            if [ ! -f "${'$'}f" ] && [ -f "${'$'}f.bak" ]; then
+              mv -f "${'$'}f.bak" "${'$'}f" && lg_log "树内件自 bak 恢复"
+            fi
+          done
+          if [ -f "${'$'}MODDIR/module.prop" ] && [ -f "${'$'}TRAMP" ] && [ -f "${'$'}REAL" ]; then
+            lg_log "树校验通过（module.prop+两 so 在位）交 overlay"
+            exit 0
+          fi
+          mv -f "${'$'}TRAMP" "${'$'}TRAMP.bak" 2>/dev/null
+          mv -f "${'$'}REAL" "${'$'}REAL.bak" 2>/dev/null
+          lg_log "树校验失败 → 回滚拒载安全态"
+          exit 0
         else
-          log "real 槽已挂载"
+          mv -f "${'$'}TRAMP" "${'$'}TRAMP.bak" 2>/dev/null
+          mv -f "${'$'}REAL" "${'$'}REAL.bak" 2>/dev/null
+          lg_log "拒载：树内两 so 下掉，overlay 露原厂"
+          exit 0
         fi
-        exit 0
     """.trimIndent() + "\n"
 
 }

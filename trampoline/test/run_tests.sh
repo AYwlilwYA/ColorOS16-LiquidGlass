@@ -1,5 +1,5 @@
 #!/bin/bash
-# PC 侧单测：装载层转发准入 + 状态机表 + 门禁金丝雀 + 护栏节流；含故意失败的自证门
+# PC 侧单测：装载层转发 + 门禁金丝雀 + 护栏节流 + service/post-fs-data 状态链；含故意失败的自证门
 set -u
 T=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$T/test/out"
@@ -47,5 +47,8 @@ fi
 echo "== service.sh 语法 + 行为单测 =="
 sh -n "$T/service.sh" || { echo "ASSERT-FAIL service.sh syntax"; exit 1; }
 bash "$T/test/test_service_sh.sh" || { echo "UNITTEST service.sh: FAIL"; exit 1; }
+
+echo "== post-fs-data.sh（打包器内嵌）行为单测 =="
+bash "$T/test/test_postfs_sh.sh" || { echo "UNITTEST post-fs-data.sh: FAIL"; exit 1; }
 
 echo "UNITTEST_OK"

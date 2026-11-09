@@ -1,3 +1,0 @@
-# 状态文件读写放行：/data/local/tmp 文件由 service.sh 预创建（chown system 0666），SF 域只读写既有文件
-allow surfaceflinger shell_data_file file { read open getattr write truncate };
-allow surfaceflinger shell_data_file dir { search getattr };

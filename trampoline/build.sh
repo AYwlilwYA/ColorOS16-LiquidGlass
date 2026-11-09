@@ -1,5 +1,5 @@
 #!/bin/bash
-# WSL 构建：挂载槽一致性断言 → PC 单测门禁 → linkstub → trampoline.so(aarch64) → ELF 断言 → 落位 assets
+# WSL 构建：树内槽路径断言 → PC 单测门禁 → linkstub → trampoline.so(aarch64) → ELF 断言 → 落位 assets
 set -e
 NDK=/mnt/f/ikenrel/nh/android-ndk-r27d
 CXX="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++"
@@ -12,18 +12,33 @@ ASSETS="$ROOT/app/src/main/assets/lg-sf"
 PACKER="$ROOT/app/src/main/kotlin/com/coloros16/liquidglass/ui/SfModulePacker.kt"
 mkdir -p "$OUT" "$ASSETS"
 
-echo "== 0/4 挂载槽一致性断言（以打包器真身挂载槽为准） =="
-REAL_SLOT=$(grep 'mount --bind' "$PACKER" | grep 'libdisplayppex\.real\.so' | sed 's/.*mount --bind [^ ]* //' | head -1)
-if [ -z "$REAL_SLOT" ]; then
-    echo "ASSERT-FAIL: 打包器真身挂载槽未解析"
+echo "== 0/4 树内槽路径断言（以打包器 overlay 树条目为准） =="
+TREE_TRAMP=$(sed -n 's/.*"\(system_ext\/lib64\/oplusex\/libdisplayppex\.so\)".*/\1/p' "$PACKER" | head -1)
+TREE_REAL=$(sed -n 's/.*"\(system_ext\/lib64\/oplusex\/libOplusDualHeadPhoneEx\.so\)".*/\1/p' "$PACKER" | head -1)
+if [ -z "$TREE_TRAMP" ] || [ -z "$TREE_REAL" ]; then
+    echo "ASSERT-FAIL: 打包器树内槽条目未解析（tramp='$TREE_TRAMP' real='$TREE_REAL'）"
+    exit 1
+fi
+grep -q '"system_ext/lib64/oplusex/libdisplayppex.so" to trampoline' "$PACKER" || {
+    echo "ASSERT-FAIL: 树内 displayppex 槽未绑定 trampoline 字节"
+    exit 1
+}
+grep -q '"system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so" to real' "$PACKER" || {
+    echo "ASSERT-FAIL: 树内 DualHead 槽未绑定真身字节"
+    exit 1
+}
+if grep -q '"trampoline.so" to trampoline' "$PACKER" || grep -q '"libdisplayppex.real.so" to real' "$PACKER"; then
+    echo "ASSERT-FAIL: 根条目 trampoline.so/libdisplayppex.real.so 应已删（内容进树）"
     exit 1
 fi
 REAL_PATH_CPP=$(sed -n 's/^#define REAL_PATH "\(.*\)"/\1/p' "$T/trampoline.cpp")
-if [ "$REAL_PATH_CPP" != "$REAL_SLOT" ]; then
-    echo "ASSERT-FAIL: trampoline REAL_PATH($REAL_PATH_CPP) != 打包器真身槽($REAL_SLOT)"
+TREE_REAL_ABS="/$TREE_REAL"
+if [ "$REAL_PATH_CPP" != "$TREE_REAL_ABS" ]; then
+    echo "ASSERT-FAIL: trampoline REAL_PATH($REAL_PATH_CPP) != 打包器树内真身槽($TREE_REAL_ABS)"
     exit 1
 fi
-echo "ASSERT-OK 挂载槽一致: $REAL_SLOT"
+echo "ASSERT-OK 树内槽一致: tramp=/$TREE_TRAMP real=$TREE_REAL_ABS"
+REAL_SLOT="$TREE_REAL_ABS"
 
 echo "== 1/4 PC 单测（单测不过不进包） =="
 bash "$T/test/run_tests.sh"
@@ -68,9 +83,8 @@ echo "ASSERT-OK: NEEDED-absolute($REAL_SLOT) + SONAME + zero-export"
 
 cp "$OUT/trampoline.so" "$ASSETS/trampoline.so"
 cp "$T/service.sh" "$ASSETS/service.sh"
-cp "$T/sepolicy.rule" "$ASSETS/sepolicy.rule"
 
 echo "== 产物 =="
 ls -l "$ASSETS"
-sha256sum "$ASSETS/trampoline.so" "$ASSETS/service.sh" "$ASSETS/sepolicy.rule"
+sha256sum "$ASSETS/trampoline.so" "$ASSETS/service.sh"
 echo "BUILD_OK"
