@@ -47,7 +47,7 @@ internal object SfModulePacker {
 
     private class PackError(msg: String) : Exception(msg)
 
-    fun pack(context: Context): Result {
+    fun pack(context: Context, stageDir: File? = null): Result {
         Lg.i(TAG, "pack begin")
         return try {
             val trampoline = readAsset(context, TRAMPOLINE_NAME, MISSING_TRAMPOLINE_MSG)
@@ -60,6 +60,7 @@ internal object SfModulePacker {
             if (symbols.isEmpty()) throw PackError("解析系统库符号失败：动态符号为空")
             val name = zipName(fingerprint)
             val entries = buildEntries(trampoline, real, sha256, fingerprint, symbols, serviceSh, sepolicy)
+            if (stageDir != null) stageTree(entries, stageDir)
             val size = publish(context, name) { zip -> writeZip(zip, entries) }
             Lg.i(TAG, "pack ok name=$name size=$size symbols=${symbols.size} sha256=$sha256")
             Result(true, DOWNLOAD_PATH_PREFIX + name, name, size, symbols.size, "")
@@ -194,6 +195,18 @@ internal object SfModulePacker {
             zip.write(data)
             zip.closeEntry()
         }
+    }
+
+    /** 把 zip 条目解出成模块目录树（跳过安装器头 META-INF），供 root 直装复制。 */
+    private fun stageTree(entries: List<Pair<String, ByteArray>>, dest: File) {
+        dest.deleteRecursively()
+        entries.forEach { (entryName, bytes) ->
+            if (entryName.startsWith("META-INF/")) return@forEach
+            val out = File(dest, entryName)
+            out.parentFile?.mkdirs()
+            out.writeBytes(bytes)
+        }
+        Lg.i(TAG, "stage tree -> ${dest.absolutePath} entries=${entries.size}")
     }
 
     // ---------- 下载目录发布 ----------

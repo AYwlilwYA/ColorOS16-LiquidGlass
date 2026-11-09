@@ -31,7 +31,7 @@ object SfModuleInstaller {
         hostRef = WeakReference(activity)
     }
 
-    /** root 直接安装：本机打包模块 zip → magisk --install-module 官方通道装入。 */
+    /** root 直接安装：本机打包模块 zip → APK 端解出模块树 → root 复制进模块目录（不依赖任何管理器命令）。 */
     fun rootInstall(onDone: (String) -> Unit) {
         io.execute {
             val msg = performRootInstall()
@@ -56,26 +56,37 @@ object SfModuleInstaller {
             Lg.w(TAG, "root install skipped: host activity gone")
             return "安装失败：设置页未就绪，请重新打开设置页再试"
         }
-        val pack = SfModulePacker.pack(host)
+        val stageDir = java.io.File(host.cacheDir, "lg_sf_stage")
+        val pack = SfModulePacker.pack(host, stageDir)
         if (!pack.ok) {
             Lg.w(TAG, "root install aborted: ${pack.message}")
             return pack.message
         }
-        val run = SfGlassChannel.runSu(
-            "if command -v magisk >/dev/null 2>&1; then magisk --install-module '${pack.path}'; " +
-                "elif [ -x /data/adb/magisk/magisk ]; then /data/adb/magisk/magisk --install-module '${pack.path}'; " +
-                "else echo MAGISK_CLI_MISSING; exit 127; fi",
-            timeoutMs = INSTALL_TIMEOUT_MS,
-        )
-        Lg.i(TAG, "magisk install ok=${run.ok} out=${run.out.trim().take(400)} err=${run.err}")
-        val verify = SfGlassChannel.runSu(
-            "test -f /data/adb/modules/lg_sf_channel/module.prop && echo INSTALLED || echo MISSING",
-        )
-        val installed = verify.out.contains("INSTALLED")
+        val script = """
+            MODDIR=/data/adb/modules/lg_sf_channel
+            SRC='${stageDir.absolutePath}'
+            rm -rf "${'$'}MODDIR" || { echo RM_FAIL; exit 1; }
+            mkdir -p "${'$'}MODDIR" || { echo MKDIR_FAIL; exit 1; }
+            cp -rf "${'$'}SRC"/. "${'$'}MODDIR"/ || { echo COPY_FAIL; exit 1; }
+            chown -R root:root "${'$'}MODDIR" 2>/dev/null
+            find "${'$'}MODDIR" -type f -exec chmod 644 {} + 2>/dev/null
+            for f in "${'$'}MODDIR"/*.sh; do [ -f "${'$'}f" ] && chmod 755 "${'$'}f"; done
+            chmod 755 "${'$'}MODDIR"
+            rm -f "${'$'}MODDIR/disable" "${'$'}MODDIR/remove" "${'$'}MODDIR/update"
+            restorecon -R "${'$'}MODDIR" 2>/dev/null
+            test -f "${'$'}MODDIR/module.prop" && echo INSTALLED || echo MISSING
+        """.trimIndent()
+        val run = SfGlassChannel.runSu(script, timeoutMs = INSTALL_TIMEOUT_MS)
+        Lg.i(TAG, "direct copy install ok=${run.ok} out=${run.out.trim().take(400)} err=${run.err}")
+        val installed = run.out.contains("INSTALLED")
         return when {
-            run.ok && installed -> "已通过 Magisk 安装模块，重启手机后生效：${pack.name}"
-            run.out.contains("MAGISK_CLI_MISSING") -> "安装失败：设备上找不到 Magisk 命令"
-            run.ok -> "Magisk 安装返回成功但模块目录未生成，请提供日志排查"
+            run.ok && installed ->
+                "已直接复制模块到 /data/adb/modules/lg_sf_channel（Magisk/APatch/KernelSU 通用，不依赖任何管理器命令），重启手机后生效"
+            run.out.contains("RM_FAIL") || run.out.contains("MKDIR_FAIL") ->
+                "安装失败：模块目录准备被拒（${run.err ?: run.out.trim().take(200)}）"
+            run.out.contains("COPY_FAIL") ->
+                "安装失败：复制模块文件被拒（${run.err ?: run.out.trim().take(200)}）"
+            run.ok -> "复制完成但 module.prop 未生成，请提供日志排查"
             else -> "安装失败：${run.err ?: run.out.trim().take(200).ifBlank { "(无输出)" }}"
         }
     }
@@ -93,7 +104,7 @@ object SfModuleInstaller {
         }
         Lg.i(TAG, "export ok ${pack.path} size=${pack.sizeBytes} symbols=${pack.symbolCount}")
         val kb = pack.sizeBytes / 1024
-        return "已生成模块安装包到下载目录：${pack.name}（$kb KB），用 Magisk 管理器刷入即可安装。"
+        return "已生成模块安装包到下载目录：${pack.name}（$kb KB），用你的模块管理器（Magisk/APatch/KernelSU 均可）刷入即可安装。"
     }
 }
 
