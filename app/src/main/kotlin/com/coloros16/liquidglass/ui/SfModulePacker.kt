@@ -50,13 +50,14 @@ internal object SfModulePacker {
         return try {
             val trampoline = readAsset(context, TRAMPOLINE_NAME, MISSING_TRAMPOLINE_MSG)
             val serviceSh = readAsset(context, SERVICE_SH_NAME, MISSING_SERVICE_MSG)
+            val installSh = installSh().toByteArray(Charsets.UTF_8)
             val real = readRealSo()
             val sha256 = sha256Hex(real)
             val fingerprint = Build.FINGERPRINT ?: "unknown"
             val symbols = DynsymParser.parse(real)
             if (symbols.isEmpty()) throw PackError("解析系统库符号失败：动态符号为空")
             val name = zipName(fingerprint)
-            val entries = buildEntries(trampoline, real, sha256, fingerprint, symbols, serviceSh)
+            val entries = buildEntries(trampoline, real, sha256, fingerprint, symbols, serviceSh, installSh)
             if (stageDir != null) stageTree(entries, stageDir)
             val size = publish(context, name) { zip -> writeZip(zip, entries) }
             Lg.i(TAG, "pack ok name=$name size=$size symbols=${symbols.size} sha256=$sha256")
@@ -96,8 +97,10 @@ internal object SfModulePacker {
             throw PackError("取材路径正被挂载覆盖（调试残留挂载），请先还原挂载再打包")
         }
         val file = File(REAL_SO_PATH)
+        if (!file.isFile) {
+            throw PackError("非 ColorOS 设备，不支持（特征文件 $REAL_SO_PATH 不存在）")
+        }
         val bytes = try {
-            if (!file.isFile) throw PackError("读取系统库失败：文件不存在（$REAL_SO_PATH）")
             if (file.length() > REAL_SO_MAX_BYTES) throw PackError("读取系统库失败：文件异常过大")
             file.readBytes()
         } catch (e: PackError) {
@@ -144,6 +147,7 @@ internal object SfModulePacker {
         fingerprint: String,
         symbols: List<DynsymParser.Sym>,
         serviceSh: ByteArray,
+        installSh: ByteArray,
     ): List<Pair<String, ByteArray>> {
         val symbolsTxt = buildString {
             append("# lg-sf-channel symbols v1\n")
@@ -166,12 +170,13 @@ internal object SfModulePacker {
             "META-INF/com/google/android/update-binary" to UPDATE_BINARY.toByteArray(Charsets.UTF_8),
             "META-INF/com/google/android/updater-script" to UPDATER_SCRIPT.toByteArray(Charsets.UTF_8),
             "module.prop" to moduleProp().toByteArray(Charsets.UTF_8),
-            "system_ext/lib64/oplusex/libdisplayppex.so" to trampoline,
-            "system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so" to real,
+            "system/system_ext/lib64/oplusex/libdisplayppex.so" to trampoline,
+            "system/system_ext/lib64/oplusex/libdisplayppex.real.so" to real,
             "symbols.txt" to symbolsTxt.toByteArray(Charsets.UTF_8),
             "fingerprint.txt" to fingerprintTxt.toByteArray(Charsets.UTF_8),
             "service.sh" to serviceSh,
             "post-fs-data.sh" to POST_FS_DATA_SH.toByteArray(Charsets.UTF_8),
+            "install.sh" to installSh,
         )
     }
 
@@ -182,6 +187,38 @@ internal object SfModulePacker {
         versionCode=1
         author=AYwlilwYA
         description=系统级液态玻璃通道
+    """.trimIndent() + "\n"
+
+    /** 安装脚本（打包时动态生成，唯一源）：root 直装与手动安装（解压 zip 后 sh 执行）同一份。 */
+    private fun installSh(): String = """
+        #!/system/bin/sh
+        # 复制模块树到模块目录：ColorOS 校验 → 自拷贝守卫 → 复制 → 权限 → 清安装标志
+        # 手动安装：解压 zip 后 root 执行 sh <解压目录>/install.sh
+        SRC=${'$'}(cd "${'$'}(dirname "${'$'}0")" && pwd)
+        MODDIR=${'$'}{LG_MODDIR:-/data/adb/modules/$MODULE_ID}
+        FEATURE=${'$'}{LG_FEATURE_PATH:-$REAL_SO_PATH}
+
+        if [ ! -f "${'$'}SRC/module.prop" ] || [ ! -f "${'$'}SRC/system/system_ext/lib64/oplusex/libdisplayppex.so" ]; then
+          echo "SRC_BAD"
+          exit 1
+        fi
+        if [ ! -f "${'$'}FEATURE" ]; then
+          echo "NOT_COLOROS"
+          exit 1
+        fi
+        case "${'$'}SRC" in
+          "${'$'}MODDIR"|"${'$'}MODDIR"/*) echo "SELF_COPY"; exit 1 ;;
+        esac
+
+        rm -rf "${'$'}MODDIR" || { echo RM_FAIL; exit 1; }
+        mkdir -p "${'$'}MODDIR" || { echo MKDIR_FAIL; exit 1; }
+        cp -rf "${'$'}SRC"/. "${'$'}MODDIR"/ || { echo COPY_FAIL; exit 1; }
+        chown -R root:root "${'$'}MODDIR" 2>/dev/null
+        find "${'$'}MODDIR" -type f -exec chmod 644 {} + 2>/dev/null
+        for f in "${'$'}MODDIR"/*.sh; do [ -f "${'$'}f" ] && chmod 755 "${'$'}f"; done
+        chmod 755 "${'$'}MODDIR"
+        rm -f "${'$'}MODDIR/disable" "${'$'}MODDIR/remove" "${'$'}MODDIR/update"
+        test -f "${'$'}MODDIR/module.prop" && echo INSTALLED || echo MISSING
     """.trimIndent() + "\n"
 
     private fun writeZip(zip: ZipOutputStream, entries: List<Pair<String, ByteArray>>) {
@@ -330,43 +367,49 @@ internal object SfModulePacker {
     private val POST_FS_DATA_SH = """
         #!/system/bin/sh
         # 开机前置：读模块自家 state 判装载/拒载 → 放行=树内校验交 overlay；拒载=下掉树内两 so 露原厂
-        # 零 bind、零 tmp 接触；日志走 logcat（非持久）
+        # 只读不写 state（唯一拒载条件=disabled；单次意外永不关门）；零 bind、零 tmp 接触；日志走 logcat（非持久）
+        # 树根=system/ 前缀（APatch 挂载只以 system/ 为根）；真身槽=自造名 libdisplayppex.real.so（原厂无此名，三台通吃）
+        # 非 ColorOS 拒载第一关：原厂特征路径不存在=不是 ColorOS 系（判据=特征文件，禁用 brand——nabu brand=Xiaomi 也跑 ColorOS）
         PATH=/system/bin:${'$'}PATH
         MODDIR=${'$'}{LG_MODDIR:-/data/adb/modules/lg_sf_channel}
         STATE=${'$'}{LG_STATE_FILE:-${'$'}MODDIR/state}
-        TREE=${'$'}MODDIR/system_ext/lib64/oplusex
+        TREE=${'$'}MODDIR/system/system_ext/lib64/oplusex
         TRAMP=${'$'}TREE/libdisplayppex.so
-        REAL=${'$'}TREE/libOplusDualHeadPhoneEx.so
+        REAL=${'$'}TREE/libdisplayppex.real.so
+        FEATURE=${'$'}{LG_FEATURE_PATH:-/system_ext/lib64/oplusex/libdisplayppex.so}
         lg_log() { log -p w -t LgSfPostFs "$1"; }
+
+        if [ ! -f "${'$'}FEATURE" ]; then
+          lg_log "非 ColorOS（特征缺失 ${'$'}FEATURE）→ 拒载"
+          mv -f "${'$'}TRAMP" "${'$'}TRAMP.bak" 2>/dev/null
+          mv -f "${'$'}REAL" "${'$'}REAL.bak" 2>/dev/null
+          exit 0
+        fi
 
         state=$(head -n1 "${'$'}STATE" 2>/dev/null)
         status=${'$'}{state%% *}
-        allow=0
-        if [ ! -f "${'$'}STATE" ]; then
-          allow=1
-          lg_log "state 缺失=首装/重置 放行"
-        else
-          case "${'$'}status" in
-            healthy)
-              allow=1
-              lg_log "state=${'$'}state 放行"
-              ;;
-            disabled)
-              allow=0
-              lg_log "state=disabled 拒载"
-              ;;
-            booting)
-              allow=0
-              echo "disabled $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)" > "${'$'}STATE"
-              lg_log "state=booting 上轮未证稳 → disabled 拒载"
-              ;;
-            *)
-              allow=0
-              echo "disabled $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)" > "${'$'}STATE"
-              lg_log "state 畸形='${'$'}state' → disabled 拒载"
-              ;;
-          esac
-        fi
+        allow=1
+        case "${'$'}status" in
+          disabled)
+            allow=0
+            lg_log "state=disabled 拒载"
+            ;;
+          healthy)
+            lg_log "state=${'$'}state 放行"
+            ;;
+          suspect)
+            lg_log "state=suspect 放行（单次意外不关门，本轮见真章）"
+            ;;
+          booting)
+            lg_log "state=booting 放行（残留兜底）"
+            ;;
+          "")
+            lg_log "state 缺失=首装/重置 放行"
+            ;;
+          *)
+            lg_log "state 畸形='${'$'}state' 放行（不关门）"
+            ;;
+        esac
 
         if [ "${'$'}allow" = "1" ]; then
           for f in "${'$'}TRAMP" "${'$'}REAL"; do

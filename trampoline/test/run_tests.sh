@@ -51,4 +51,7 @@ bash "$T/test/test_service_sh.sh" || { echo "UNITTEST service.sh: FAIL"; exit 1;
 echo "== post-fs-data.sh（打包器内嵌）行为单测 =="
 bash "$T/test/test_postfs_sh.sh" || { echo "UNITTEST post-fs-data.sh: FAIL"; exit 1; }
 
+echo "== install.sh（打包器动态生成模板）行为单测 =="
+bash "$T/test/test_install_sh.sh" || { echo "UNITTEST install.sh: FAIL"; exit 1; }
+
 echo "UNITTEST_OK"

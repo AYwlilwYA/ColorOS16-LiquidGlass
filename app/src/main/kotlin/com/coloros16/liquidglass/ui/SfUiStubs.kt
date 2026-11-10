@@ -62,26 +62,17 @@ object SfModuleInstaller {
             Lg.w(TAG, "root install aborted: ${pack.message}")
             return pack.message
         }
-        val script = """
-            MODDIR=/data/adb/modules/lg_sf_channel
-            SRC='${stageDir.absolutePath}'
-            rm -rf "${'$'}MODDIR" || { echo RM_FAIL; exit 1; }
-            mkdir -p "${'$'}MODDIR" || { echo MKDIR_FAIL; exit 1; }
-            cp -rf "${'$'}SRC"/. "${'$'}MODDIR"/ || { echo COPY_FAIL; exit 1; }
-            chown -R root:root "${'$'}MODDIR" 2>/dev/null
-            find "${'$'}MODDIR" -type f -exec chmod 644 {} + 2>/dev/null
-            for f in "${'$'}MODDIR"/*.sh; do [ -f "${'$'}f" ] && chmod 755 "${'$'}f"; done
-            chmod 755 "${'$'}MODDIR"
-            rm -f "${'$'}MODDIR/disable" "${'$'}MODDIR/remove" "${'$'}MODDIR/update"
-            restorecon -R "${'$'}MODDIR" 2>/dev/null
-            test -f "${'$'}MODDIR/module.prop" && echo INSTALLED || echo MISSING
-        """.trimIndent()
+        val script = "sh '${stageDir.absolutePath}/install.sh'"
         val run = SfGlassChannel.runSu(script, timeoutMs = INSTALL_TIMEOUT_MS)
         Lg.i(TAG, "direct copy install ok=${run.ok} out=${run.out.trim().take(400)} err=${run.err}")
         val installed = run.out.contains("INSTALLED")
         return when {
             run.ok && installed ->
                 "已直接复制模块到 /data/adb/modules/lg_sf_channel（Magisk/APatch/KernelSU 通用，不依赖任何管理器命令），重启手机后生效"
+            run.out.contains("SRC_BAD") || run.out.contains("SELF_COPY") ->
+                "安装失败：模块树不完整或在原地执行，请提供日志排查"
+            run.out.contains("NOT_COLOROS") ->
+                "安装失败：非 ColorOS 设备，不支持"
             run.out.contains("RM_FAIL") || run.out.contains("MKDIR_FAIL") ->
                 "安装失败：模块目录准备被拒（${run.err ?: run.out.trim().take(200)}）"
             run.out.contains("COPY_FAIL") ->

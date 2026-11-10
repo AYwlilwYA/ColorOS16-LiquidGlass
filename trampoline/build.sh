@@ -12,32 +12,37 @@ ASSETS="$ROOT/app/src/main/assets/lg-sf"
 PACKER="$ROOT/app/src/main/kotlin/com/coloros16/liquidglass/ui/SfModulePacker.kt"
 mkdir -p "$OUT" "$ASSETS"
 
-echo "== 0/4 树内槽路径断言（以打包器 overlay 树条目为准） =="
-TREE_TRAMP=$(sed -n 's/.*"\(system_ext\/lib64\/oplusex\/libdisplayppex\.so\)".*/\1/p' "$PACKER" | head -1)
-TREE_REAL=$(sed -n 's/.*"\(system_ext\/lib64\/oplusex\/libOplusDualHeadPhoneEx\.so\)".*/\1/p' "$PACKER" | head -1)
+echo "== 0/4 树内槽路径断言（以打包器 overlay 树条目为准，树根 system/ → 设备绝对路径） =="
+TREE_TRAMP=$(sed -n 's/.*"\(system\/system_ext\/lib64\/oplusex\/libdisplayppex\.so\)".*/\1/p' "$PACKER" | head -1)
+TREE_REAL=$(sed -n 's/.*"\(system\/system_ext\/lib64\/oplusex\/libdisplayppex\.real\.so\)".*/\1/p' "$PACKER" | head -1)
 if [ -z "$TREE_TRAMP" ] || [ -z "$TREE_REAL" ]; then
     echo "ASSERT-FAIL: 打包器树内槽条目未解析（tramp='$TREE_TRAMP' real='$TREE_REAL'）"
     exit 1
 fi
-grep -q '"system_ext/lib64/oplusex/libdisplayppex.so" to trampoline' "$PACKER" || {
+grep -q '"system/system_ext/lib64/oplusex/libdisplayppex.so" to trampoline' "$PACKER" || {
     echo "ASSERT-FAIL: 树内 displayppex 槽未绑定 trampoline 字节"
     exit 1
 }
-grep -q '"system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so" to real' "$PACKER" || {
-    echo "ASSERT-FAIL: 树内 DualHead 槽未绑定真身字节"
+grep -q '"system/system_ext/lib64/oplusex/libdisplayppex.real.so" to real' "$PACKER" || {
+    echo "ASSERT-FAIL: 树内自造真身槽未绑定真身字节"
     exit 1
 }
+if grep -q '"system/system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so"' "$PACKER"; then
+    echo "ASSERT-FAIL: 借 DualHead 槽已废（nabu 无此文件且会顶原厂耳机件），树内不得再有该条目"
+    exit 1
+fi
 if grep -q '"trampoline.so" to trampoline' "$PACKER" || grep -q '"libdisplayppex.real.so" to real' "$PACKER"; then
     echo "ASSERT-FAIL: 根条目 trampoline.so/libdisplayppex.real.so 应已删（内容进树）"
     exit 1
 fi
+TREE_TRAMP_ABS="/${TREE_TRAMP#system/}"
+TREE_REAL_ABS="/${TREE_REAL#system/}"
 REAL_PATH_CPP=$(sed -n 's/^#define REAL_PATH "\(.*\)"/\1/p' "$T/trampoline.cpp")
-TREE_REAL_ABS="/$TREE_REAL"
 if [ "$REAL_PATH_CPP" != "$TREE_REAL_ABS" ]; then
-    echo "ASSERT-FAIL: trampoline REAL_PATH($REAL_PATH_CPP) != 打包器树内真身槽($TREE_REAL_ABS)"
+    echo "ASSERT-FAIL: trampoline REAL_PATH($REAL_PATH_CPP) != 打包器树内真身槽设备路径($TREE_REAL_ABS)"
     exit 1
 fi
-echo "ASSERT-OK 树内槽一致: tramp=/$TREE_TRAMP real=$TREE_REAL_ABS"
+echo "ASSERT-OK 树内槽一致: tree-root=system/ tramp=$TREE_TRAMP real=$TREE_REAL → dev $TREE_REAL_ABS"
 REAL_SLOT="$TREE_REAL_ABS"
 
 echo "== 1/4 PC 单测（单测不过不进包） =="

@@ -1,10 +1,15 @@
 #!/bin/bash
-# service.sh 行为单测：宿主 sh 执行 + pidof/log 桩，覆盖 disabled 保持/SF 缺席/pid 稳定写 healthy/pid 变化留 booting/装载件缺失留 booting
+# service.sh 行为单测：宿主 sh + pidof/log 桩
+# 表：稳→healthy / 单崩→suspect / 双崩→disabled / 树不在位留原状 / SF 没等到留原状 / disabled 不布防 / suspect 恢复→healthy
 set -u
 T=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$T/test/out"
 mkdir -p "$OUT/bin"
+total=0
 fails=0
+
+ok() { total=$((total + 1)); echo "PASS $1"; }
+ng() { total=$((total + 1)); fails=$((fails + 1)); echo "FAIL $1 got=[$2]"; }
 
 cat > "$OUT/bin/pidof" <<'EOF'
 #!/bin/bash
@@ -30,64 +35,72 @@ export LG_TEST_OUT="$OUT"
 
 echo "BID-TEST" > "$OUT/boot_id"
 MOD="$OUT/moddir"
-mkdir -p "$MOD"
-touch "$MOD/trampoline.so"
+TREE="$MOD/system/system_ext/lib64/oplusex"
+
+seed_tree() {
+    rm -rf "$MOD"
+    mkdir -p "$TREE"
+    echo TRAMP > "$TREE/libdisplayppex.so"
+    echo REAL > "$TREE/libdisplayppex.real.so"
+    echo "id=lg_sf_channel" > "$MOD/module.prop"
+}
 
 run_svc() {
-    # $1=state file $2=pidof mode $3=moddir
-    LG_STATE_FILE="$1" LG_MODDIR="$3" LG_STABLE_SEC=0 LG_SF_WAIT_SEC=2 \
+    # $1=state file $2=pidof mode
+    LG_STATE_FILE="$1" LG_MODDIR="$MOD" LG_STABLE_SEC=0 LG_SF_WAIT_SEC=2 \
       LG_BOOT_ID_FILE="$OUT/boot_id" LG_PIDOF_MODE="$2" sh "$T/service.sh" >/dev/null 2>&1
 }
 
-ok() { echo "PASS $1"; }
-ng() { echo "FAIL $1 got=[$2]"; fails=$((fails + 1)); }
-
-# A 首轮（state 缺失）+ pid 稳定 + 装载件在位 → healthy
+# A 稳 + 树在位 + 首轮（state 缺失）→ healthy
+seed_tree
 rm -f "$OUT/st_a" "$OUT/pidof_count"
-run_svc "$OUT/st_a" always "$MOD"
-c=$(cat "$OUT/st_a" 2>/dev/null)
-[ "$c" = "healthy BID-TEST" ] && ok "svc-fresh-healthy" || ng "svc-fresh-healthy" "$c"
+run_svc "$OUT/st_a" always
+[ "$(cat "$OUT/st_a" 2>/dev/null)" = "healthy BID-TEST" ] && ok "svc-stable-fresh-healthy" || ng "svc-stable-fresh-healthy" "$(cat "$OUT/st_a" 2>/dev/null)"
 
-# B disabled 残留：原样保留不改写、不布防
-printf 'disabled BID-B\n' >"$OUT/st_b"
+# B 单轮崩溃（pid 变）+ prev≠suspect → suspect
+seed_tree
+echo "booting BID-B" > "$OUT/st_b"
 rm -f "$OUT/pidof_count"
-run_svc "$OUT/st_b" always "$MOD"
-c=$(cat "$OUT/st_b" 2>/dev/null)
-[ "$c" = "disabled BID-B" ] && ok "svc-disabled-untouched" || ng "svc-disabled-untouched" "$c"
+run_svc "$OUT/st_b" change
+[ "$(cat "$OUT/st_b" 2>/dev/null)" = "suspect BID-TEST" ] && ok "svc-crash-once-suspect" || ng "svc-crash-once-suspect" "$(cat "$OUT/st_b" 2>/dev/null)"
 
-# C 上轮 booting 残留 + pid 稳定 → 升 healthy
-printf 'booting BID-C\n' >"$OUT/st_c"
+# C 连续两轮崩溃（prev=suspect + pid 变）→ disabled
+seed_tree
+echo "suspect BID-C" > "$OUT/st_c"
 rm -f "$OUT/pidof_count"
-run_svc "$OUT/st_c" always "$MOD"
-c=$(cat "$OUT/st_c" 2>/dev/null)
-[ "$c" = "healthy BID-TEST" ] && ok "svc-booting-promotes" || ng "svc-booting-promotes" "$c"
+run_svc "$OUT/st_c" change
+[ "$(cat "$OUT/st_c" 2>/dev/null)" = "disabled BID-TEST" ] && ok "svc-crash-twice-disabled" || ng "svc-crash-twice-disabled" "$(cat "$OUT/st_c" 2>/dev/null)"
 
-# D SF 缺席：不写状态
-printf 'booting BID-D\n' >"$OUT/st_d"
-rm -f "$OUT/pidof_count"
-run_svc "$OUT/st_d" never "$MOD"
-c=$(cat "$OUT/st_d" 2>/dev/null)
-[ "$c" = "booting BID-D" ] && ok "svc-sf-absent-untouched" || ng "svc-sf-absent-untouched" "$c"
-
-# E 稳定窗内 pid 变化（init 秒拉新）：留 booting 不写 healthy
-rm -f "$OUT/st_e" "$OUT/pidof_count"
-run_svc "$OUT/st_e" change "$MOD"
-c=$(cat "$OUT/st_e" 2>/dev/null)
-case "$c" in
-    booting\ *) ok "svc-pid-changed-keeps-booting" ;;
-    *) ng "svc-pid-changed-keeps-booting" "$c" ;;
+# D 树不在位 + pid 稳 → 写了 booting 后不升级，留 booting（不误标）
+seed_tree
+rm -f "$TREE/libdisplayppex.so"
+rm -f "$OUT/st_d" "$OUT/pidof_count"
+run_svc "$OUT/st_d" always
+case "$(cat "$OUT/st_d" 2>/dev/null)" in
+    booting\ *) ok "svc-tree-missing-keeps-booting" ;;
+    *) ng "svc-tree-missing-keeps-booting" "$(cat "$OUT/st_d" 2>/dev/null)" ;;
 esac
 
-# F 装载件不在位（拒载轮）：留 booting 不写 healthy
-MOD_EMPTY="$OUT/moddir_empty"
-mkdir -p "$MOD_EMPTY"
-rm -f "$OUT/st_f" "$OUT/pidof_count"
-run_svc "$OUT/st_f" always "$MOD_EMPTY"
-c=$(cat "$OUT/st_f" 2>/dev/null)
-case "$c" in
-    booting\ *) ok "svc-so-missing-keeps-booting" ;;
-    *) ng "svc-so-missing-keeps-booting" "$c" ;;
-esac
+# E SF 没等到（≤2s）→ 留原状（不写 booting 不改值）
+seed_tree
+echo "healthy BID-E" > "$OUT/st_e"
+rm -f "$OUT/pidof_count"
+run_svc "$OUT/st_e" never
+[ "$(cat "$OUT/st_e" 2>/dev/null)" = "healthy BID-E" ] && ok "svc-sf-absent-untouched" || ng "svc-sf-absent-untouched" "$(cat "$OUT/st_e" 2>/dev/null)"
 
-echo "SERVICE_RESULT: pass=$((6 - fails)) fail=$fails"
+# F disabled → 不布防不改写
+seed_tree
+echo "disabled BID-F" > "$OUT/st_f"
+rm -f "$OUT/pidof_count"
+run_svc "$OUT/st_f" always
+[ "$(cat "$OUT/st_f" 2>/dev/null)" = "disabled BID-F" ] && ok "svc-disabled-untouched" || ng "svc-disabled-untouched" "$(cat "$OUT/st_f" 2>/dev/null)"
+
+# G 上轮 suspect + 本轮稳 → healthy（自愈）
+seed_tree
+echo "suspect BID-G" > "$OUT/st_g"
+rm -f "$OUT/pidof_count"
+run_svc "$OUT/st_g" always
+[ "$(cat "$OUT/st_g" 2>/dev/null)" = "healthy BID-TEST" ] && ok "svc-suspect-recovers" || ng "svc-suspect-recovers" "$(cat "$OUT/st_g" 2>/dev/null)"
+
+echo "SERVICE_RESULT: pass=$((total - fails)) fail=$fails"
 [ "$fails" -eq 0 ]

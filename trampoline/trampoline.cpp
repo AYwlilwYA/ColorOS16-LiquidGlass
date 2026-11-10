@@ -19,7 +19,7 @@
 #define LG_TRAMP_VER "1"
 #define TAG "LG-TRAMPOLINE"
 
-#define REAL_PATH "/system_ext/lib64/oplusex/libOplusDualHeadPhoneEx.so"
+#define REAL_PATH "/system_ext/lib64/oplusex/libdisplayppex.real.so"
 
 #define LG_ERR_TRIP 20         /* 引擎单会话错误数熔断阈值 */
 #define LG_LOG_WINDOW_MS 60000 /* 同 key 节流窗口 */
