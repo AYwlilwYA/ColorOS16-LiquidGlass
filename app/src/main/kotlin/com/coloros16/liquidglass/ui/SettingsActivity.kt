@@ -1980,7 +1980,7 @@ class SettingsActivity : AppCompatActivity() {
         val githubRow = view.findViewById<View>(R.id.aboutGithubRow)
         githubRow.setOnClickListener {
             try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AYwlilwYA/ColorOS16-LiquidGlass")))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AYwlilwYA/What-Color-OS")))
             } catch (t: Throwable) {
                 Lg.w(TAG, "about open github failed, fallback copy", t)
                 bindCopyRow(githubRow, getString(R.string.about_github))

@@ -1,4 +1,4 @@
-# ColorOS16 Liquid Glass
+# What Color OS
 
 为 **ColorOS 16** 的通知中心 / 控制中心实现 **iOS 26 风格液态玻璃（Liquid Glass）** 动效的 LSPosed 模块。
 
