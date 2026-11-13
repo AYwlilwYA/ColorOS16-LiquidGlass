@@ -131,6 +131,11 @@
       "sha256Lf": "a6293e8e62e760e22acc5dd167f6680c60e0beb890e3971db2b81c5d829e5052"
     },
     {
+      "path": "shared/NotificationBackdropIsolationPolicy.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/NotificationBackdropIsolationPolicy.kt",
+      "sha256Lf": "3e62f77d4bd109473ddbb98d66acb58c07cc1e021ac76cd4bb911ab486ee7b61"
+    },
+    {
       "path": "shared/OverlayFrameEpochs.kt",
       "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/OverlayFrameEpochs.kt",
       "sha256Lf": "ae802896ed0ee4194843990d17b556e3e0d1f933f619212c3296c4b72b6d19eb"
@@ -139,6 +144,11 @@
       "path": "shared/RuntimeWorkPolicy.kt",
       "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/RuntimeWorkPolicy.kt",
       "sha256Lf": "c2f1ac8e154f4b77c56b284b3e20371da0492ee1ea64f3c8fced5c7e819f8160"
+    },
+    {
+      "path": "shared/SnapshotFingerprint.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/SnapshotFingerprint.kt",
+      "sha256Lf": "71bfb4cc2602cf60875576b3ff99e84e43f79dd79e480099d4685e992c3c1d6c"
     },
     {
       "path": "shared/VisibleCaptureSession.kt",
