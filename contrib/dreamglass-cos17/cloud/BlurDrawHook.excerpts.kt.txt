@@ -1,0 +1,1204 @@
+// Reference excerpts, NOT a standalone Kotlin file or directly applicable patch.
+// Original package: com.coloros16.liquidglass.hook
+// GPL-3.0; upstream authors and DreamGlass contributors.
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:2077-2097 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun seedlingRuntimeAllowed(): Boolean {
+        val allowed = runCatching {
+            val activeApi = api ?: return@runCatching false
+            if (!Prefs.memberAllowed(activeApi)) return@runCatching false
+            Prefs.read(activeApi).getBoolean(Prefs.KEY_SEEDLING_CARD_GLASS_ENABLE, false)
+        }.getOrDefault(false)
+        if (allowed) seedlingRuntimeWasAllowed = true
+        else if (seedlingRuntimeWasAllowed) {
+            seedlingRuntimeWasAllowed = false
+            val host = cardBackgroundActiveHost?.get()
+            cardBackgroundActiveHost = null // Existing bounded worker exits its next active check.
+            for ((id, entry) in screenRegionMap) {
+                if (entry.hostViewName.startsWith("seedling-")) {
+                    screenRegionMap.remove(id, entry);appliedUniformsMap.remove(id)
+                }
+            }
+            host?.postInvalidate() // Re-record native background instead of retaining old glass.
+        }
+        return allowed
+    }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:827-835 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private class ElementBackground(
+        val bitmap: Bitmap,
+        val region: RectF,
+    )
+
+    /** [spec/21] 文字反转取色 per-TextView 缓存条目：命中条件 = 快照实例不变 + 屏幕位置不变 + 原色不变。
+     *  命中时直接复用 [injectedColor]（O(1)，非每帧采样）。injectedColor == originalColor 表示无需反转。
+     *  [2026-08-13 修复] lastCheckMs = 上次实际检查时间戳（onDraw 节流重采样用；快照/位置/原色变化才重采样）。
+     *  x/y 用 Int.MIN_VALUE 表示「登记时位置未知」（未 attach），onDraw 首次检查时会取真实位置。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:846-855 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private class RenderSource(
+        val source: Bitmap,
+        val srcRect: RectF,
+        val screenRect: RectF,
+        /** true=整屏快照源（0.5 降采样）；false=全局 onBlurReady 原图（已移除，恒 true） */
+        val isSnapshotSource: Boolean,
+    )
+
+    /** 整屏快照（@Volatile：worker 线程写入，渲染线程读取；内容变化时重抓，静止不抓） */
+    @Volatile
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:2356-2369 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun bindQualityBackdrop(id: Int, source: Bitmap, screen: RectF, sourceRect: RectF,
+        sourceIsSnapshot: Boolean, params: LiquidGlassShader.Params): ButtonBackdropBinding.Bound {
+        if (isKeyguardLockedNow() || !screenInteractive) {
+            // Wallpaper is already GPU blurred once per generation. Do not enqueue screenshot
+            // work or independently dim the common keyguard/notification container.
+            return ButtonBackdropBinding.Bound(source, sourceRect,
+                params.copy(blurRadius = 0f, sourcePreblurred = true))
+        }
+        val panelRadius = if (ccBlurOnButtonsEnabled() && isButtonBlurRegion(id) && observedPanelBlurRadius > 0)
+            ButtonBackdropBlur.radius(observedPanelBlurRadius, ccBlurStrength()) else null
+        return ButtonBackdropBinding.resolve(buttonBackdropWorker, source, screen, sourceRect,
+            sourceIsSnapshot, params, panelRadius)
+    }
+    /** BlurConfig.blurRadius public 字段（模糊力度调整反射写） */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:7343-7444 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun renderSeedlingCardGlass(canvas: Canvas, container: View) {
+        // Revocation removes expanded glass, while the collapsed pill keeps the
+        // native black rule below. It must never become a transparent leftover.
+        seedlingRuntimeAllowed()
+        // [spec/85 省电模式] 省电开启 → 不注入胶囊玻璃（直接让系统原样绘制）
+        if (isPowerSaveGlassOff()) return
+        val containerView = container as? android.view.ViewGroup ?: return
+        val containerHeight = containerView.height
+        if (containerHeight <= 0) {
+            if (moduleLogEnabled) Lg.i(TAG, "seedling-card: skip container height=$containerHeight ${container.javaClass.name}")
+            return
+        }
+        if (moduleLogEnabled) {
+            Lg.i(TAG, "seedling-card: dispatch container=${container.javaClass.name} " +
+                "w=${containerView.width} h=$containerHeight childCount=${containerView.childCount}")
+        }
+        // Collapsed CapsuleView always uses black; expanded cards have a separate renderer.
+        // [2026-09-16] 目标 = **CapsuleView（胶囊本体）**，不是 CapsuleContainer（外框）：
+        // `CapsuleContainer.onMeasure`(:445-449) 宽度 = 子宽 + padding，`CapsuleContainer.q()`(:506-516)
+        // 把 CapsuleView **居中**摆放 —— 拿外框当本体玻璃必然画大、超出胶囊（用户反馈「玻璃比岛大」）。
+        val capsules = ArrayList<View>(4)
+        collectCapsuleViews(containerView, capsules)
+        if (capsules.isEmpty()) {
+            // [2026-09-16 用户需求] 胶囊 ↔ 展开大卡片互转期间插件会把 CapsuleView 从容器移除
+            // （真机实证），此时**玻璃不显示**——用户明确要求「动画期间干脆不显示」，不做补绘。
+            lastIslandW = -1
+            lastIslandH = -1
+            return
+        }
+        val containerLoc = IntArray(2)
+        try {
+            containerView.getLocationOnScreen(containerLoc)
+        } catch (t: Throwable) {
+            return
+        }
+        for (capsule in capsules) {
+            // 不可见的不画（插件动画期间会短暂置 INVISIBLE）。
+            if (capsule.visibility != View.VISIBLE) {
+                logThrottled("seedling-invis", Log.WARN, 500L) {
+                    "seedling-card: skip invisible CapsuleView vis=${capsule.visibility}"
+                }
+                continue
+            }
+            // CapsuleView 由 setLeftTopRightBottom 摆放，getWidth() 偶为 0（布局未完成）→ 退回 measured
+            val cvW = if (capsule.width > 0) capsule.width else capsule.measuredWidth
+            val cvH = if (capsule.height > 0) capsule.height else capsule.measuredHeight
+            if (cvW <= 0 || cvH <= 0) {
+                logThrottled("seedling-zero", Log.WARN, 500L) {
+                    "seedling-card: ABORT zero size cv=${capsule.width}x${capsule.height} " +
+                        "measured=${capsule.measuredWidth}x${capsule.measuredHeight} vis=${capsule.visibility}"
+                }
+                continue
+            }
+            // ★ 可见胶囊宽度 = `CapsuleView.capsuleDrawableWidth`：背景/前景 Drawable 的 bounds 被限制在
+            //   这个宽度内并**水平居中**（CapsuleView.setCapsuleDrawableWidth:249-255），
+            //   高度取 CapsuleView 全高（bounds 用的就是 getMeasuredHeight()）。
+            //   该字段由动画逐帧更新 → 玻璃尺寸天然跟随小岛动效。
+            // 可见宽度直接用 CapsuleView 自身宽度。**不要读 Drawable bounds**：
+            // 真机实测 background 被本函数置空后读不到，foreground 的 bounds 是 3x3（无关小图），
+            // 拿它当宽度会让玻璃宽度在 402 与 3 之间跳 → 动画期间玻璃几乎不可见（实测）。
+            // 402 为用户确认「平齐」的尺寸。
+            val drawW = cvW
+            // ★ **不能用 CapsuleView.getLocationOnScreen()**：真机实测返回 (720,80) = 屏幕中心
+            //   （玻璃画在岛中心，用户反馈"岛偏了"）。原因在插件里——`CapsuleContainer.q()`
+            //   计算居中位置时 CapsuleView 尚未测量（measuredWidth=0 → (1440-0)/2=720），
+            //   之后测量完成但位置**不再更新** → 该值陈旧。
+            //   改为按容器几何直接算居中：系统布局中胶囊水平/垂直居中于容器
+            //   （CapsuleContainer 自身也居中于 CapsulePluginContainer，真机 432@504 = (1440-432)/2）。
+            val left = containerLoc[0] + (containerView.width - drawW) / 2f
+            val top = containerLoc[1] + (containerHeight - cvH) / 2f
+            val region = RectF(left, top, left + drawW, top + cvH)
+            if (region.width() <= 0f || region.height() <= 0f) {
+                logThrottled("seedling-badregion", Log.WARN, 500L) {
+                    "seedling-card: ABORT bad region=$region draw=${drawW}x$cvH"
+                }
+                continue
+            }
+            // Match the capsule's actual native pill bounds, leaving its children untouched.
+            val black = capsule.background as? android.graphics.drawable.GradientDrawable
+            if(black!=null) black.setColor(android.graphics.Color.BLACK)
+            else capsule.background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.BLACK);cornerRadius=cvH/2f
+            }
+            screenRegionMap.remove(System.identityHashCode(capsule))
+            RuntimeDiagnostics.mark("seedling-collapsed","收起胶囊强制黑底；展开卡片继续使用独立玻璃路径")
+        }
+    }
+
+    /**
+     * [2026-09-16 小岛玻璃化] 递归收集容器内所有 `CapsuleView`（胶囊本体）。
+     *
+     * View 层级（真机 dump + 插件反编译实证）：
+     * ```
+     * CapsulePluginContainer            w=1440 h=160   ← 本 hook 的容器
+     *  └─ CapsuleContainerRoot          w=1440 h=160   ← 撑满状态栏
+     *      └─ CapsuleContainer          w=432  h=160   ← 外框（onMeasure 宽 = 子宽 + padding）
+     *          └─ CapsuleView           ← ★ 胶囊本体（CapsuleContainer.q() 把它居中摆放）
+     *              └─ FrameLayout ...   ← 内容
+     * ```
+     * 插件 View 在独立 classloader → 用**字符串类名**比较（同 [mountCardBackgroundGlass]）。
+     * 命中即停止下钻（CapsuleView 内部是内容 View，不是胶囊本体）。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8496-8603 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun drawSeedlingGlassOnCanvas(
+        canvas: Canvas,
+        host: View,
+        id: Int,
+        w: Int,
+        h: Int,
+        screenRegion: RectF,
+        offsetX: Float = host.left.toFloat(),
+        offsetY: Float = host.top.toFloat(),
+    ):Boolean {
+        if (host.javaClass.name == CLASS_CARD_BACKGROUND_VIEW && !seedlingRuntimeAllowed()) return false
+        // [spec/85 省电模式] 省电开启 → 不画 canvas 玻璃（覆盖 CardBackgroundView / Simple Banner 等
+        // 所有走本函数的注入点）
+        if (isPowerSaveGlassOff()) return false
+        if (w <= 0 || h <= 0) return false
+        GlassRegistry.bind(id, host)
+        val entry = screenRegionMap[id] ?: run {
+            logThrottled("seedling-nomap", Log.WARN, 500L) { "seedling-card: ABORT no region map id=$id" }
+            return false
+        }
+        val renderSource = resolveRenderSource(id, screenRegion) ?: run {
+            logThrottled("seedling-nosrc", Log.WARN, 500L) {
+                "seedling-card: ABORT no render source id=$id region=$screenRegion"
+            }
+            return false
+        }
+        var srcRect = renderSource.srcRect
+        var source = renderSource.source
+        val requiredEpoch = when {
+            host.javaClass.name == CLASS_CARD_BACKGROUND_VIEW -> cloudRequiredCaptureEpoch
+            entry.hostViewName.startsWith("simple-banner:") -> bannerRequiredCaptureEpoch
+            else -> Long.MIN_VALUE
+        }
+        if (!isKeyguardLockedNow() && captureMode() != Prefs.BG_CAPTURE_MODE_STATIC &&
+            !overlayFrameEpochs.accepts(source, requiredEpoch)) return false
+        val viewport = RectF(0f, 0f, w.toFloat(), h.toFloat())
+        val cornerRadius = GlassRegistry.cornerOverrideFor(id)?.coerceAtMost(minOf(w, h) / 2f)
+            ?: entry.cornerRadius.takeIf { it > 0f }
+            ?: (Math.min(w, h).toFloat() * seedlingCardCornerRatio)
+        var params = buildParams(w.toFloat(), h.toFloat(), cornerRadius, entry.cornerIsConic, entry.cornerWeight, elementId = id)
+        // 音量元素（hostViewName="volume-*"：音量条/···按钮）弱化折射与色散：小面积元素强折射会把
+        // 快照内容放大成扭曲倒影（验收反馈的黑渐变/棕色带/红色倒影），预设未接管该键时才衰减
+        if (entry.hostViewName.startsWith("volume-")) {
+            val ov = GlassRegistry.overridesFor(id)
+            if (ov?.get(Prefs.KEY_REFRACTION_AMOUNT) == null) {
+                params = params.copy(refractionAmount = params.refractionAmount * VOLUME_REFRACTION_DAMP)
+            }
+            if (ov?.get(Prefs.KEY_DISPERSION) == null) {
+                params = params.copy(dispersion = params.dispersion * VOLUME_DISPERSION_DAMP)
+            }
+        }
+        // Use the same bounded GPU backdrop binding as shade cards. This path used
+        // to bypass it entirely after capture became demand-driven, leaving sparse
+        // raw sampling and the ROM's heavy dark blur as the apparent material.
+        val binding = bindQualityBackdrop(id, source, renderSource.screenRect, srcRect,
+            renderSource.isSnapshotSource, params)
+        source=binding.bitmap;srcRect=binding.sourceRect;params=binding.params
+        val shader = obtainShader(id, metaball = entry.metaBall != null)
+        val sourceShader = LiquidGlassShader.createSourceBitmapShader(source)
+        // σ 分档三档源：命中绑档位 shader + 折算 rect，miss 回退现状源（本函数每帧全量重绑，无轻量分支）
+        val seedlingWantDiv = lowResTierOf(0.807f * params.blurRadius)
+        val seedlingTier = if (params.sourcePreblurred) null else buildLowResTierShader(source, srcRect, seedlingWantDiv)
+        LiquidGlassShader.setUniforms(
+            shader, params, sourceShader, seedlingTier?.shader ?: sourceShader,
+            sourceRect = srcRect,
+            lowResSourceRect = seedlingTier?.lowResSrcRect ?: srcRect,
+            debugCoord = 0f,
+            maskRect = null,
+            maskCornerRadius = 0f,
+            cornerConicBlend = 1f,
+            maskOffsetX = 0f,
+            maskOffsetY = 0f,
+            maskAlpha = 0f,  // 桌面流体云无 shade 遮罩（遮罩仅作用于 SystemUI 下拉）
+        )
+        appliedUniformsMap[id] = AppliedKey(
+            frame = 0L, sourceBitmapId = System.identityHashCode(source),
+            viewport = viewport, srcRect = srcRect, maskRect = null,
+            cornerIsConic = entry.cornerIsConic, cornerWeight = entry.cornerWeight,
+            cornerRadius = cornerRadius, cornerConicBlend = 1f, maskAlpha = 0f,
+            lowResDiv = if (seedlingTier != null) seedlingWantDiv else 4,
+        )
+        canvas.save()
+        var drawn=false
+        try {
+            canvas.translate(offsetX, offsetY)
+            seedlingGlassPaint.shader = shader
+            val path = android.graphics.Path().apply {
+                val r = cornerRadius
+                addRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), r, r, android.graphics.Path.Direction.CW)
+            }
+            canvas.drawPath(path, seedlingGlassPaint)
+            drawn=true
+        } catch (t: Throwable) {
+            Lg.e(TAG, "seedling-card: draw glass on canvas failed id=$id", t)
+        } finally {
+            // 清理 paint.shader（防止残留到下一帧其他绘制）；canvas.restore 还原 translate
+            seedlingGlassPaint.shader = null
+            canvas.restore()
+        }
+        return drawn
+    }
+
+    // ------------------------------------------------------------ [spec/44c] 流体云展开卡片玻璃化（CardBackgroundView 宿主）
+
+    /** COS17's plugin owns draw()/native BackgroundBlurDrawable, but inherits the empty
+     * View.onDraw(). Replace the actual background paint instead of relying on that
+     * inlinable callback or stacking glass over the native 540px dark material.
+     * Match the runtime class name because the plugin is loaded lazily in its own loader. */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8604-8645 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun mountCardBackgroundGlass(api: XposedInterface, classLoader: ClassLoader) {
+        if (!seedlingCardGlassEnabled || cardBgGlassMounted) return
+        try {
+            val setter = View::class.java.getDeclaredMethod("setBackgroundDrawable", Drawable::class.java)
+            api.hook(setter).setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val host = chain.getThisObject() as? View
+                val background = chain.getArg(0) as? Drawable
+                if (host?.javaClass?.name == CLASS_CARD_BACKGROUND_VIEW && background != null &&
+                    background !is ExpandedCloudGlassDrawable && seedlingRuntimeAllowed()) {
+                    val replacement = runCatching { expandedCloudBackground(host, background) }.getOrNull()
+                    if (replacement != null) {
+                        val args = chain.getArgs().toTypedArray()
+                        args[0] = replacement
+                        chain.proceed(args)
+                    } else chain.proceed()
+                } else chain.proceed()
+            }
+            // Native CardBackgroundView.draw updates its animation bounds before calling
+            // super.draw. This nonempty entry also repairs an inlined/replaced setter.
+            val draw = View::class.java.getDeclaredMethod("draw", Canvas::class.java)
+            api.hook(draw).setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val host = chain.getThisObject() as? View
+                if (host?.javaClass?.name == CLASS_CARD_BACKGROUND_VIEW && seedlingRuntimeAllowed()) {
+                    runCatching {
+                        val original = host.background
+                        if (original !is ExpandedCloudGlassDrawable) {
+                            host.background = expandedCloudBackground(host, original)
+                        }
+                        cardBackgroundActiveHost = WeakReference(host)
+                        if (!cardBackgroundContinuousRunning) startCardBackgroundContinuousCapture()
+                    }.onFailure { Lg.e(TAG, "seedling-cardview: background attachment failed", it) }
+                }
+                chain.proceed()
+            }
+            runCatching { api.deoptimize(View::class.java.getDeclaredMethod("setBackground", Drawable::class.java)) }
+            cardBgGlassMounted = true
+            Lg.i(TAG, "Seedling card glass mounted at native background paint")
+        } catch (error: Throwable) {
+            Lg.e(TAG, "Seedling card background hook mount failed", error)
+        }
+    }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8646-8653 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun expandedCloudBackground(host: View, original: Drawable?): ExpandedCloudGlassDrawable =
+        ExpandedCloudGlassDrawable(host, original).also {
+            // Native entrance/exit animates background alpha, independently of the View.
+            it.alpha = original?.alpha ?: 255
+            it.state = original?.state ?: host.drawableState
+            it.level = original?.level ?: 0
+        }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8654-8672 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private class ExpandedCloudGlassDrawable(host: View, original: Drawable?) :
+        BoundedGlassDrawable(host, original,
+            enabled = { seedlingRuntimeAllowed() && Prefs.glassEnabled(api) && !isPowerSaveGlassOff() },
+            render = { canvas, target, _ ->
+                cardBackgroundActiveHost = WeakReference(target)
+                if (!cardBackgroundContinuousRunning) startCardBackgroundContinuousCapture()
+                renderCardBackgroundGlass(canvas, target)
+            },
+            rendered = { RuntimeDiagnostics.mark("seedling_card_paint", "展开流体云已在原生背景出口绘制液态玻璃，未叠加系统深色模糊") },
+            failure = { Lg.e(TAG, "seedling-cardview: glass failed; retain native background", it) },
+            forwardNativeCallbacks = true, hideNativeBlurOnGlass = true)
+
+    /**
+     * [spec/44c] CardBackgroundView「容器即元素」玻璃绘制路径：背景 View 自身 bounds 登记 + 画玻璃。
+     * onDraw canvas 原点 = view 左上角 → drawSeedlingGlassOnCanvas offsetX/Y=0（不平移，防玻璃整体
+     * 下移/右移被裁掉）。新元素首现 registerSeedlingCardRegion 内部 triggerBackgroundCapture。
+     * [2026-08-15] 圆角 = 运行时读资源 dimen `round_corner_radius_fluid_cloud`（20dp，SystemUIPlugin.apk
+     * 资源），一次解析缓存（[roundCornerFluidCloudPx]），失败兜底 20dp×density；不是启发式 min(w,h)×ratio。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8673-8712 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun renderCardBackgroundGlass(canvas: Canvas, bgView: View): Boolean {
+        if (!seedlingRuntimeAllowed()) return false
+        val w = bgView.width
+        val h = bgView.height
+        if (w <= 0 || h <= 0 || bgView.visibility != View.VISIBLE) return false
+        val loc = IntArray(2)
+        try {
+            bgView.getLocationOnScreen(loc)
+        } catch (t: Throwable) {
+            return false
+        }
+        val screenRegion = RectF(
+            loc[0].toFloat(), loc[1].toFloat(),
+            (loc[0] + w).toFloat(), (loc[1] + h).toFloat(),
+        )
+        val id = System.identityHashCode(bgView)
+        // 圆角：一次解析并缓存（避免每帧 getIdentifier）；SystemUIPlugin.apk 资源，包 com.oplus.systemui.plugins
+        if (roundCornerFluidCloudPx <= 0f) {
+            roundCornerFluidCloudPx = try {
+                val resId = bgView.resources.getIdentifier(
+                    "round_corner_radius_fluid_cloud", "dimen", "com.oplus.systemui.plugins",
+                )
+                if (resId != 0) {
+                    bgView.resources.getDimensionPixelSize(resId).toFloat()
+                } else {
+                    20f * bgView.resources.displayMetrics.density
+                }
+            } catch (t: Throwable) {
+                20f * bgView.resources.displayMetrics.density
+            }
+        }
+        registerSeedlingCardRegion(id, screenRegion, Rect(0, 0, w, h), bgView, "seedling-cardview", roundCornerFluidCloudPx)
+        return drawSeedlingGlassOnCanvas(canvas, bgView, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
+    }
+
+    /** [2026-08-15 持续抓屏对齐 heads-up] CardBackgroundView 活跃判定：活跃宿主存在且仍 attach、可见
+     *  （展开大卡收起/窗口销毁 → detach 或不可见 → false）。供持续抓屏 worker 判断停止（不后台耗电）。
+     *  流体云展开大卡是**持续显示窗口**（非 heads-up/banner 瞬态几秒），卡片收起后 worker 必须可靠
+     *  停止否则 120Hz 空转耗电——收起由系统销毁窗口/隐藏宿主驱动（collapse 后 CardBackgroundView
+     *  detach 或不可见，实测确认）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8713-8729 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun isCardBackgroundHostActive(): Boolean {
+        if (!seedlingRuntimeAllowed()) return false
+        val host = cardBackgroundActiveHost?.get() ?: return false
+        return try {
+            visibleCaptureHost(host)
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * [2026-08-15 持续抓屏对齐 heads-up] 流体云展开大卡显示期间主动持续抓屏 worker：命中期间以
+     * [continuousCaptureIntervalMs]（[panelCaptureHz] 速率：运动 120Hz / 静止 60Hz）循环
+     * [scheduleElementCaptures](force=true) → 入队主 worker 队列（captureDisplay 主 worker 串行，
+     * 本线程零阻塞；pending 去重单通道）。停止：卡片收起/窗口销毁（[isCardBackgroundHostActive] false）
+     * → 退出（零后台耗电）；锁屏期间不启动/退出。与 heads-up / simple-banner 持续源独立。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8730-8730 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private val cardCaptureSession = VisibleCaptureSession()
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8731-8731 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private val bannerCaptureSession = VisibleCaptureSession()
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8732-8735 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun startCardBackgroundContinuousCapture() = startVisibleOverlayCapture(false)
+
+    /** Expanded clouds and visible banners refresh even in CHANGE mode, then stop on hide.
+     * No contentEpoch bump on each tick: static backgrounds reuse prepared GPU blur outputs. */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8736-8784 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun startVisibleOverlayCapture(banner: Boolean) {
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC || !captureDemandActive() || isKeyguardLockedNow()) return
+        val host = (if (banner) simpleBannerActiveHost else cardBackgroundActiveHost)?.get() ?: return
+        if (!(if (banner) isSimpleBannerHostActive() else isCardBackgroundHostActive())) return
+        val session = if (banner) bannerCaptureSession else cardCaptureSession
+        val token = session.begin(host) ?: return
+        if (banner) simpleBannerContinuousRunning = true else cardBackgroundContinuousRunning = true
+        // Require a fresh scene for this overlay, without blanking other visible glass.
+        // Publication is atomic from the renderer's perspective: only a frame stamped
+        // after this reveal can replace its native fallback. Never recycle a previous app.
+        val revealEpoch = ++captureEpoch
+        noteCaptureReveal()
+        if (banner) bannerRequiredCaptureEpoch = revealEpoch else cloudRequiredCaptureEpoch = revealEpoch
+        lastSnapshotFingerprint=0;lastRegionSnapshotFingerprint=0
+        triggerBackgroundCapture(contentChange=true)
+        try {
+            safeThread {
+                try {
+                    while (session.current(token) && captureMode() != Prefs.BG_CAPTURE_MODE_STATIC &&
+                        captureDemandActive() && Prefs.glassEnabled(api) && !isPowerSaveGlassOff()) {
+                        val current=(if (banner) simpleBannerActiveHost else cardBackgroundActiveHost)?.get()
+                        if (current !== host || !(if (banner) isSimpleBannerHostActive() else isCardBackgroundHostActive()) ||
+                            isKeyguardLockedNow()) break
+                        scheduleElementCaptures()
+                        Thread.sleep(continuousCaptureIntervalMs())
+                    }
+                } catch (_:InterruptedException) {
+                    Thread.currentThread().interrupt()
+                } finally {
+                    if (session.finish(token)) {
+                        if (banner) simpleBannerContinuousRunning=false else cardBackgroundContinuousRunning=false
+                        // A replacement can have arrived without another native draw.
+                        val next=(if (banner) simpleBannerActiveHost else cardBackgroundActiveHost)?.get()
+                        if (next !== host && visibleCaptureHost(next)) next?.postInvalidateOnAnimation()
+                    }
+                }
+            }.start()
+        } catch (error:Throwable) {
+            session.finish(token)
+            if (banner) simpleBannerContinuousRunning=false else cardBackgroundContinuousRunning=false
+            Lg.e(TAG,"visible overlay capture worker failed",error)
+        }
+    }
+
+    /** [2026-08-15 持续抓屏对齐 heads-up] 流体云展开大卡窗口根 sfc：取活跃宿主 [cardBackgroundActiveHost]
+     *  的 rootView 反射取 sfc（宿主即窗口内 View，rootView=seed card 窗口根）。仿 [resolveHeadsUpSfc]
+     *  思路但直接用宿主定位（不需类名/标题判定）；宿主 null/未 attach 返回 null（不 exclude，无害——半透明
+     *  玻璃自采样仅轻微糊化）。@Synchronized 防与 registerHostView 并发。 */
+    @Synchronized
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8785-8799 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun resolveCardBackgroundSfc(): SurfaceControl? {
+        val host = cardBackgroundActiveHost?.get() ?: return null
+        if (!host.isAttachedToWindow) return null
+        return try {
+            reflectViewRootSurfaceControl(host.rootView)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    // ------------------------------------------------------------ [2026-08-15 轻打扰折叠横幅玻璃化 方案 B] Simple Banner dispatchDraw 画玻璃
+
+    /** Light-interruption notifications use basic glass independently of Fluid Cloud.
+     * Replace only their native background paint; content and original blur fallback
+     * remain owned by the notification window. */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8800-8802 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun simpleBannerGlassAllowed(): Boolean =
+        Prefs.glassEnabled(api) && !isPowerSaveGlassOff()
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8803-8846 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun mountSimpleBannerGlass(api: XposedInterface, classLoader: ClassLoader) {
+        // Ordinary incoming banners are a basic notification feature, independent of
+        // the optional/member-only expanded Fluid Cloud preference.
+        if (simpleBannerGlassMounted) return
+        try {
+            val setter = View::class.java.getDeclaredMethod("setBackgroundDrawable", Drawable::class.java)
+            api.hook(setter).setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val host = chain.getThisObject() as? View
+                val background = chain.getArg(0) as? Drawable
+                val replacement = if (host?.javaClass?.name == CLASS_FULL_SCREEN_BANNER &&
+                    background != null && background !is SimpleBannerGlassDrawable && simpleBannerGlassAllowed())
+                    runCatching { simpleBannerBackground(host, background) }.getOrNull() else null
+                if (replacement != null) {
+                    val args = chain.getArgs().toTypedArray(); args[0] = replacement
+                    chain.proceed(args)
+                } else chain.proceed()
+            }
+            // ViewGroup.dispatchDraw can bypass a base-class hook on optimized ROMs.
+            // Own only the actual background paint, leaving native content untouched.
+            val draw = View::class.java.getDeclaredMethod("draw", Canvas::class.java)
+            api.hook(draw).setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val host = chain.getThisObject() as? View
+                if (host?.javaClass?.name == CLASS_FULL_SCREEN_BANNER && simpleBannerGlassAllowed()) {
+                    runCatching {
+                        val original = host.background
+                        if (original !is SimpleBannerGlassDrawable)
+                            host.background = simpleBannerBackground(host, original)
+                        if (simpleBannerActiveHost?.get() !== host) {
+                            simpleBannerActiveHost = WeakReference(host)
+                            simpleBannerContinuousRunning = false
+                        }
+                        if (!simpleBannerContinuousRunning) startSimpleBannerContinuousCapture()
+                    }.onFailure { Lg.e(TAG, "simple-banner: background attachment failed", it) }
+                }
+                chain.proceed()
+            }
+            runCatching { api.deoptimize(View::class.java.getDeclaredMethod("setBackground", Drawable::class.java)) }
+            simpleBannerGlassMounted = true
+            Lg.i(TAG, "Simple banner glass mounted at native background paint (basic notification)")
+        } catch (error: Throwable) {
+            Lg.e(TAG, "Simple banner background hook mount failed", error)
+        }
+    }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8847-8853 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun simpleBannerBackground(host: View, original: Drawable?): SimpleBannerGlassDrawable =
+        SimpleBannerGlassDrawable(host, original).also {
+            it.alpha = original?.alpha ?: 255
+            it.state = original?.state ?: host.drawableState
+            it.level = original?.level ?: 0
+        }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8854-8869 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private class SimpleBannerGlassDrawable(host: View, original: Drawable?) :
+        BoundedGlassDrawable(host, original,
+            enabled = { simpleBannerGlassAllowed() },
+            render = { canvas, target, _ ->
+                if (simpleBannerActiveHost?.get() !== target) {
+                    simpleBannerActiveHost = WeakReference(target)
+                    simpleBannerContinuousRunning = false
+                }
+                if (!simpleBannerContinuousRunning) startSimpleBannerContinuousCapture()
+                renderSimpleBannerGlass(canvas, target)
+            },
+            rendered = { RuntimeDiagnostics.mark("simple_banner_paint", "顶部轻打扰通知已在背景出口绘制液态玻璃，不依赖流体云会员开关") },
+            failure = { Lg.e(TAG, "simple-banner: glass failed; retain native background", it) },
+            forwardNativeCallbacks = true, hideNativeBlurOnGlass = true)
+
+    /** Retry after native attachment/layout, then capture only a visible banner. */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8870-8911 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun mountSimpleBannerAttachHook(api: XposedInterface, classLoader: ClassLoader) {
+        if (simpleBannerAttachMounted) return
+        try {
+            val method = View::class.java.getDeclaredMethod(METHOD_ON_ATTACHED_TO_WINDOW).apply { isAccessible = true }
+            api.hook(method).setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val result = chain.proceed()
+                val host = chain.getThisObject() as? View
+                if (host?.javaClass?.name == CLASS_FULL_SCREEN_BANNER && simpleBannerGlassAllowed()) {
+                    // The subclass completes native background setup after its super call.
+                    // Resolve visibility on the next UI turn, never start a hidden capture loop.
+                    val ref = WeakReference(host)
+                    host.post {
+                        val current = ref.get() ?: return@post
+                        if (!simpleBannerGlassAllowed() || !visibleCaptureHost(current)) return@post
+                        runCatching {
+                            if (simpleBannerActiveHost?.get() !== current) {
+                                simpleBannerActiveHost = WeakReference(current)
+                                simpleBannerContinuousRunning = false
+                            }
+                            if (!simpleBannerContinuousRunning) startSimpleBannerContinuousCapture()
+                            current.postInvalidateOnAnimation()
+                        }.onFailure { Lg.e(TAG, "simple-banner: attached capture failed", it) }
+                    }
+                }
+                result
+            }
+            simpleBannerAttachMounted = true
+            Lg.i(TAG, "Simple banner attach hook mounted for basic notification glass")
+        } catch (error: Throwable) {
+            Lg.e(TAG, "Simple banner attach hook mount failed", error)
+        }
+    }
+
+    // ------------------------------------------------------------ [spec/61] 流体云展开大卡 attach 持续抓屏 + 系统模糊力度 ------------------------------------------------------------
+
+    /**
+     * [spec/61 2026-08-23] 流体云展开大卡 attach 强制启动持续抓屏（仿 Simple Banner attach hook）：
+     * CardBackgroundView attach 窗口即触发——比 onDraw 绘制命中可靠（attach 是必然事件，绘制稳定后
+     * onDraw 可能不再触发 → 依赖它的持续抓屏 worker 启动慢/不启动）。命中 → 登记活跃宿主 +
+     * 强制启动持续抓屏（[startCardBackgroundContinuousCapture]，面板同款速率：运动 120Hz / 静止 60Hz）。
+     * 字符串类名比较快路径（全局高频方法，未命中立即 proceed）；ExceptionMode.PROTECTIVE + try-catch。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:8912-8962 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun mountCardBackgroundAttachHook(api: XposedInterface, classLoader: ClassLoader) {
+        if (!seedlingCardGlassEnabled) {
+            Lg.i(TAG, "seedling-cardview: attach hook skip, glass disabled by prefs")
+            return
+        }
+        if (cardBgAttachMounted) return
+        try {
+            // onAttachedToWindow 是 protected → getDeclaredMethod + setAccessible（同 mountSimpleBannerAttachHook 风格）
+            val method = View::class.java.getDeclaredMethod(METHOD_ON_ATTACHED_TO_WINDOW).apply { isAccessible = true }
+            api.hook(method)
+                .setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val result = chain.proceed()
+                    val host = chain.getThisObject() as? View
+                    if (host?.javaClass?.name == CLASS_CARD_BACKGROUND_VIEW) {
+                        // Native subclass installs ViewRootManager/background *after* super
+                        // attach. Wait until that work and layout finish before registering
+                        // demand. Never run an invisible pre-layout capture worker.
+                        host.post { safeModuleTask {
+                            if (!host.isAttachedToWindow || !seedlingRuntimeAllowed()) return@safeModuleTask
+                            val ready = {
+                                if (visibleCaptureHost(host)) {
+                                    val original = host.background
+                                    if (original !is ExpandedCloudGlassDrawable)
+                                        host.background = expandedCloudBackground(host, original)
+                                    cardBackgroundActiveHost = WeakReference(host)
+                                    registerHostView(host)
+                                    if (!cardBackgroundContinuousRunning) startCardBackgroundContinuousCapture()
+                                    host.postInvalidateOnAnimation()
+                                }
+                            }
+                            if (host.width > 0 && host.height > 0) ready()
+                            else host.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                                override fun onLayoutChange(v:View,l:Int,t:Int,r:Int,b:Int,ol:Int,ot:Int,or:Int,ob:Int) {
+                                    if (r <= l || b <= t) return
+                                    v.removeOnLayoutChangeListener(this)
+                                    safeModuleTask {ready()}
+                                }
+                            })
+                        } }
+                    }
+                    result
+                }
+            cardBgAttachMounted = true
+            Lg.i(TAG, "Seedling card attach hook mounted: View#$METHOD_ON_ATTACHED_TO_WINDOW")
+        } catch (t: Throwable) {
+            Lg.e(TAG, "Seedling card attach hook mount FAILED: View#$METHOD_ON_ATTACHED_TO_WINDOW", t)
+        }
+    }
+
+    /** [spec/61 2026-08-23] 系统控制中心模糊力度（%）：100 = 系统原值；改动 ≤1s 生效（IPC 节流缓存）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:9349-9367 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun renderSimpleBannerGlass(canvas: Canvas, banner: View): Boolean {
+        if (!simpleBannerGlassAllowed()) return false
+        val w = banner.width
+        val h = banner.height
+        if (w <= 0 || h <= 0 || !visibleCaptureHost(banner)) return false
+        val loc = IntArray(2)
+        try { banner.getLocationOnScreen(loc) } catch (_: Throwable) { return false }
+        val screenRegion = RectF(
+            loc[0].toFloat(), loc[1].toFloat(),
+            (loc[0] + w).toFloat(), (loc[1] + h).toFloat(),
+        )
+        val id = System.identityHashCode(banner)
+        // Registration precedes capture, so the banner's own window is excluded.
+        // GPU source arrival invalidates this host; never block UI on screen capture.
+        if (!registerSeedlingCardRegion(id, screenRegion, Rect(0, 0, w, h), banner, "simple-banner")) return false
+        return drawSeedlingGlassOnCanvas(canvas, banner, id, w, h, screenRegion, offsetX = 0f, offsetY = 0f)
+    }
+
+    /** The active window, not an optional membership preference, admits banner capture. */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:9368-9384 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun isSimpleBannerHostActive(): Boolean {
+        if (!simpleBannerGlassAllowed()) return false
+        val host = simpleBannerActiveHost?.get() ?: return false
+        return try {
+            visibleCaptureHost(host)
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * [2026-08-15 轻打扰折叠横幅] 横幅显示期间主动持续抓屏 worker：命中期间以 [continuousCaptureIntervalMs]
+     *  （[panelCaptureHz] 速率：运动 120Hz / 静止 60Hz）循环 [scheduleElementCaptures](force=true) →
+     *  入队主 worker 队列（captureDisplay 主 worker 串行，本线程零阻塞；pending 去重单通道）。
+     *  停止：横幅消失（detach/回 shade）→ [isSimpleBannerHostActive] false → 退出（零后台耗电）；
+     *  锁屏期间不启动/退出（被动事件触发不受影响）。与 heads-up 持续源独立。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:9385-9423 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun startSimpleBannerContinuousCapture(force: Boolean = false) {
+        // force never bypasses visibility/lockscreen safety. Attach is only a wake-up event.
+        startVisibleOverlayCapture(true)
+    }
+
+    // ------------------------------------------------------------ [spec/44b 停用区] 流体云展开卡片玻璃化（OplusCustomRow 宿主，真机实证上错位置停用）
+
+    /*
+     * [spec/44b 已停用 2026-08-15 真机实证上错位置] 展开流体云大卡真实 View = SystemUIPlugin.apk 的
+     * CardContainer → CardView → CardBackgroundView（反编译实锤，tools/dump/SystemUIPlugin/sources/...）；
+     * OplusCustomRow 是锁屏流体云宿主（锁屏走 com.oplus.seedling.pluginapp 不同包），本套 hook 命中
+     * 锁屏（"上错位置上到锁屏""遮住文字"）。以下 6 个函数保留注释停用（不删除，同 mountSeedlingCardContainer
+     * 风格），新方向见下方 [spec/44c] mountCardBackgroundGlass。
+     */
+    /*
+    /**
+     * [spec/44b 2026-08-15] hook `OplusCustomRow`（流体云展开大卡容器，extends ExpandableOutlineView →
+     * ViewGroup，inflate notification_custom_container）玻璃化。
+     *
+     * 真机实证（spec/44 暂停 CapsulePluginContainer 方向时记录）：流体云展开大卡片 = NotificationShade
+     * 通知面板里的 OplusCustomRow（宿主卡片背景 = mBackgroundNormal NotificationBackgroundView，
+     * updateResource:738-758 对 custombackgroundNormal 调 setCustomBackground(custom_material_bg) + setTint）。
+     * 插件内容经 `seedlingPlugin.onCreateView(2, getCustomRow())` → `setNewSeedlingView(View)` 挂入
+     * （OplusNotificationSectionsManagerExImpl.onPluginAdded:271-281 实证）。
+     *
+     * 玻璃化策略：hook 基类 ViewGroup.dispatchDraw(Canvas)，拦截体判定 this 是 OplusCustomRow 实例
+     * （防全 ViewGroup 性能/安全影响）→ **先 chain.proceed() 画插件子 View，再画玻璃**（玻璃在子 View
+     * 之上，spec/44 根因 1 修好的约定）→ [renderSeedlingCardGlassOnRow] 按容器自身 bounds 登记 + 画玻璃。
+     * OplusCustomRow 本身就是展开大卡容器 → **不需要**高度阈值判定（缩小胶囊不经此容器）。
+     *
+     * 配套：
+     * - 背景透明 [applyOplusCustomRowTransparentBg]（用户硬需求默认开：Prefs.KEY_SEEDLING_CARD_FORCE_TRANSPARENT_BG
+     *   默认 true，Prefs 注释已说明；反射替换 NotificationBackgroundView.mBackground 字段为透明 drawable）。
+     * - 插件内容更新驱动 [hookOplusCustomRowSetNewSeedlingView]（hookAfter → invalidate + triggerBackgroundCapture）。
+     * 总开关 [seedlingCardGlassEnabled]（KEY_SEEDLING_CARD_GLASS_ENABLE，默认 false，用户手动开）。
+     *
+     * 挂载失败独立 try-catch（不影响其他 hook）。dispatchDraw / updateResource / setNewSeedlingView
+     * 各自独立 try-catch：任一失败只影响对应能力，玻璃仍能画。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:12994-13024 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun sceneBackdrop(id: Int? = null, region: RectF? = null): ElementBackground? {
+        if (isKeyguardLockedNow()) {
+            val ctx = systemUiContext() ?: return null
+            val bitmap = LockWallpaperBackdrop.get(ctx) ?: return null
+            val config = ctx.resources.configuration
+            val configKey = 31 * config.orientation + 31 * config.screenWidthDp + config.screenHeightDp
+            val cached = lockWallpaperSnapshot
+            if (cached?.bitmap === bitmap && lockWallpaperConfiguration == configKey) return cached
+            val dm = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            val display = (ctx.getSystemService(android.content.Context.WINDOW_SERVICE) as? android.view.WindowManager)?.defaultDisplay
+            @Suppress("DEPRECATION")
+            if (display != null) display.getRealMetrics(dm) else dm.setTo(ctx.resources.displayMetrics)
+            val cover = LockWallpaperGeometry.cover(bitmap.width, bitmap.height, dm.widthPixels, dm.heightPixels)
+                ?: return null
+            return ElementBackground(bitmap, RectF(cover[0], cover[1], cover[2], cover[3])).also {
+                lockWallpaperConfiguration = configKey
+                lockWallpaperSnapshot = it
+            }
+        }
+        if (!captureDemandActive()) return null
+        val requiredEpoch = if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) Long.MIN_VALUE else when {
+            id == null -> Long.MIN_VALUE
+            screenRegionMap[id]?.hostViewName?.startsWith(SEEDLING_CARDVIEW_TAG) == true -> cloudRequiredCaptureEpoch
+            screenRegionMap[id]?.hostViewName?.startsWith(SIMPLE_BANNER_TAG) == true -> bannerRequiredCaptureEpoch
+            else -> Long.MIN_VALUE
+        }
+        val regional = if (id != null && region != null) regionRenderSourceSnapshot(id, region) else null
+        return overlayFrameEpochs.select(regional, requestScreenSnapshotAsync(requiredEpoch), requiredEpoch) {it.bitmap}
+    }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:13025-13052 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun resolveRenderSource(id: Int, screenRegion: RectF): RenderSource? {
+        // 区域模式命中（瞬态元素 + 区域快照覆盖）→ 采样区域快照；否则整屏快照（srcRect 折算公式一致）
+        if (!isKeyguardLockedNow() && !captureDemandActive()) return null
+        val snap = sceneBackdrop(id, screenRegion)
+        if (snap != null && snap.bitmap.width > 0 && snap.bitmap.height > 0 && snap.region.width() > 0f) {
+            // srcRect = 元素当前区域折算到快照坐标（按降采样比例缩放，坐标空间一致不错位）
+            val scaleX = snap.bitmap.width.toFloat() / snap.region.width()
+            val scaleY = snap.bitmap.height.toFloat() / snap.region.height()
+            val srcRect = RectF(
+                (screenRegion.left - snap.region.left) * scaleX,
+                (screenRegion.top - snap.region.top) * scaleY,
+                (screenRegion.right - snap.region.left) * scaleX,
+                (screenRegion.bottom - snap.region.top) * scaleY,
+            )
+            // MetaBall 扩张/动画中 region 可能含屏外负偏移 → srcRect 可能越界；AGSL BitmapShader CLAMP 兜底
+            return RenderSource(snap.bitmap, srcRect, RectF(snap.region), isSnapshotSource = true)
+        }
+        return null
+    }
+
+    /**
+     * [2026-08-14 spec/56 更新 + 2026-08-15 恢复 worker] 渲染触发整屏快照请求：**异步**（不阻塞渲染线程/主线程
+     * ——原「渲染线程同步 captureDisplay」是 ANR 冻结根因，已废弃）。快照缺失 → **[2026-08-15 恢复 worker]
+     * 直接入队 worker 异步抓屏**（[enqueueElementCapture] + [kickElementCaptureWorker]；渲染线程零
+     * captureDisplay + 零主线程 post 开销，入队即返回；spec/56 的「post 主线程直接抓屏」随 worker 恢复回退）。
+     * 本帧返回最近快照（缺失 → null → 回退系统模糊，worker 抓屏完成 postInvalidateHosts 后一帧恢复玻璃）。
+     * 防竞争：失败冷却 [elementCaptureQuitAt] → 冷却期内不重抓；[captureInFlightIds] + [pendingCaptureIds]
+     * 防重复入队（worker 抓屏中或队列已待抓不重复加）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:13053-13077 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun requestScreenSnapshotAsync(requiredEpoch: Long = Long.MIN_VALUE): ElementBackground? {
+        if (!captureDemandActive()) return null
+        // 省电开启 → 不入队抓屏、直接返回 null（渲染侧本就回退系统绘制）
+        if (isPowerSaveGlassOff()) return null
+        val snap = screenSnapshot
+        val valid = snap != null && !snap.bitmap.isRecycled && snap.bitmap.width > 0 && snap.bitmap.height > 0 &&
+            overlayFrameEpochs.accepts(snap.bitmap, requiredEpoch)
+        if (valid) return snap
+        // 静态模式 → 不入队（零抓屏）：返回最近快照（可为 null → 回退系统模糊）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return snap
+        // 快照缺失 → 直接入队 worker 异步抓屏（不阻塞渲染线程）；失败冷却期内不重抓
+        val now = SystemClock.uptimeMillis()
+        // [2026-08-14 用户要求·去冷却] 移除失败冷却检查（不再设置冷却）
+        if (!captureInFlightIds.contains(SNAPSHOT_ID) && enqueueElementCapture(SNAPSHOT_ID)) {
+            kickElementCaptureWorker()
+            Lg.d(TAG, "bg-element: render-trigger async snapshot capture queued (render non-blocking, one-frame delay)")
+        }
+        return null
+    }
+
+    /**
+     * screenRegionMap 查表 + 命中率观测。
+     * 主键（drawable identityHashCode）命中优先；主键 miss 时按 bounds 宽高兜底匹配
+     * （宽高差总和 ≤ 4px 视为同尺寸元素，取最接近者）。返回 miss 时回退系统模糊。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:2319-2327 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun captureDemandActive(): Boolean = CaptureDemandPolicy.allowed(
+        screenInteractive, isKeyguardLockedNow(),
+        panelExpansionActive && visibleCaptureHost(shadeRootViewCache),
+        isHeadsUpHostActive(), isCardBackgroundHostActive(), isSimpleBannerHostActive(),
+        visibleCaptureHost(captureMenuHost?.get()),
+    )
+
+    @Volatile private var captureRetryAtMs = 0L
+    @Volatile private var captureEpoch = 0L
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:10809-10812 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun continuousCaptureIntervalMs(): Long = backgroundCadence.admittedIntervalMs(
+        SystemClock.uptimeMillis(), panelCaptureHz(), isMotionActive,
+        captureMode() == Prefs.BG_CAPTURE_MODE_IMMEDIATE)
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:10813-10820 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun noteCaptureReveal() {
+        synchronized(captureWake) {
+            backgroundCadence.reveal(SystemClock.uptimeMillis())
+            // A reveal can shorten an idle deadline while the serial worker is waiting.
+            captureWake.notifyAll()
+        }
+    }
+
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:10821-10834 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun awaitCaptureSlot(): Boolean = synchronized(captureWake) {
+        while (screenInteractive && captureDemandActive() && captureMode() != Prefs.BG_CAPTURE_MODE_STATIC) {
+            val wait = CaptureDemandPolicy.waitMs(SystemClock.uptimeMillis(), lastCaptureStartMs,
+                continuousCaptureIntervalMs())
+            if (wait == 0L) return@synchronized true
+            captureWake.wait(wait)
+        }
+        false
+    }
+
+
+    /** 抓屏降采样比例（KEY_BG_CAPTURE_SCALE，clamp 0.25~1.0，默认 0.5f）
+     *  [2026-08-13 captureDisplay 开始延迟优化] 远程 Prefs 时间节流缓存（≥CAPTURE_PREFS_CACHE_MS 才重读，
+     *  配置改动 ≤1s 生效；captureElementBackground 每次抓屏原读一次 IPC = captureDisplay 开始前一次非必要延迟） */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:13771-13808 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun triggerBackgroundCapture(contentChange: Boolean = true) {
+        if (!captureDemandActive()) return
+        // 省电开启 → 不入队抓屏（玻璃已关，快照无消费者）
+        if (isPowerSaveGlassOff()) return
+        // 静态模式 → 零抓屏（快照冻结为现有值）
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        // [spec/55 诊断日志] 触发时间戳（t2）——「hook 触发 → 抓屏请求」延迟（hook 可靠否）；contentChange 附带调用来源
+        diagCapLog("enqueue", if (contentChange) " contentChange=true" else " contentChange=false")
+        if (contentChange) { markContentChanged();backgroundCadence.event(SystemClock.uptimeMillis()) }
+        // 存量变化节流（KEY_BG_CAPTURE_MIN_INTERVAL_MS，0=不节流）：仅内容变化路径生效，周期/强制路径不过此门
+        if (contentChange) {
+            val minInterval = bgCaptureMinIntervalMs()
+            if (minInterval > 0) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastCaptureTime < minInterval) return
+                lastCaptureTime = now
+            }
+        }
+        // 触发抓屏入队 → worker 消费（异步，主线程零阻塞；captureDisplay 由 worker
+        // 线程同步执行 [captureSnapshotImmediate]；失败重试重新入队）。
+        scheduleElementCaptures()
+    }
+
+    /**
+     * [doc/spec/50 + spec/51 2026-08-13 + 2026-08-14 spec/56 + 2026-08-15 恢复 worker] 刚下拉首帧抓屏触发。
+     * **2026-08-13 回退：主线程不再同步 captureDisplay**（用户对照实验实证：8920762 worker 异步抓屏跟手无延迟；
+     * 主线程同步 captureDisplay Binder 20-50ms 阻塞 setExpansionHeight/渲染回调 100-200ms → 玻璃背景延迟）。
+     * **2026-08-14 spec/56 反转 → 2026-08-15 恢复 worker（用户决定）**：spec/56 曾把触发抓屏改主线程直接执行
+     * （worker 卡死 → 完全不抓屏根因），现 worker 队列恢复（根因 A 孤儿竞态 + 根因 B 失败快速路径已修复）——
+     * 当前语义 = **首帧立即入队 worker（异步抓屏，主线程零阻塞）+ 连抓 worker 后台补帧
+     * （连抓 5~6 帧，45ms 间隔覆盖入场动画）**。
+     *
+     * 方法名保留（[mountPanelExpansion] 首帧分支调用点不动）。首帧仍走 sfc 解析（spec/45
+     * [resolveShadeSfcOrFallback] 兜底）+ 排除逻辑（captureElementBackground 内 exclude shade + heads-up sfc）。
+     *
+     * 文字亮度/重采样（updateQsBrightness/resampleAllTextContrast，540×1200 IntArray 2.6MB 全图扫描）
+     * 由 [runTextContrastScanAsync] 后台单飞完成（worker 抓屏时不内联做，防卡）。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:13829-13869 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun triggerFirstFrameCaptureWithBurst(
+        burstStop: () -> Boolean,
+        logTag: String,
+        pauseDuringPanelExpansion: Boolean,
+    ) {
+        if (!screenInteractive || captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        markContentChanged()
+        noteCaptureReveal()
+        triggerBackgroundCapture()
+        scheduleHeadsUpBurstWorker(
+            HEADS_UP_BURST_TOTAL_FRAMES, burstStop, logTag, pauseDuringPanelExpansion,
+        )
+    }
+
+    // ---- [spec/51 2026-08-13] 通知（heads-up）首帧主线程抓屏 + 连抓 5~6 帧 + 持续期间兜底抓屏 ----
+
+    /**
+     * [doc/spec/51 2026-08-13] 通知（heads-up 横幅）出现：主线程立即抓首帧 + 连抓 5~6 帧（与下拉首帧
+     * **共用 [triggerFirstFrameCaptureWithBurst] 统一逻辑**），覆盖入场动画背景实时跟上；通知持续期间
+     * 持续兜底抓屏；消失自动停止。
+     *
+     * 用户硬约束：「横幅通知弹出时立马抓，宁可高负载不拖」+「通知出现时多抓几帧 5~6 帧」+
+     * 「通知持续期间必须一直抓屏」。
+     *
+     * 触发点：[recordNotificationCardRegion] 新卡（previous==null）且 bgView 属 heads-up 窗口，
+     * 或 shade 卡转入 heads-up 窗口（映射已存在但刚变 heads-up）。
+     *
+     * **主线程零阻塞（2026-08-13 回退）**：不再主线程同步 captureDisplay（对照实验：8920762 worker
+     * 异步抓屏跟手无延迟；主线程同步首帧阻塞 100-200ms → 玻璃延迟）——触发 = 入队 worker 立即抓 +
+     * 连抓节拍器周期性入队（帧间隔 45ms，覆盖入场动画窗口 ~300ms）+ [startHeadsUpContinuousCapture]
+     * 持续不间断节拍器（覆盖持续期间每一帧变化）。
+     *
+     * **[2026-08-13 通知抓屏单通道收敛] 首帧/连抓/持续三路全部收敛为「入队主 worker 队列」单通道**：
+     * 连抓/持续 worker 仅作为节拍器周期性 [scheduleElementCaptures] 入队（SNAPSHOT_ID 同一队列，
+     * pending 去重 + 单 worker 串行 = 同刻至多一路 captureDisplay），杜绝通知出现时三路并发锤
+     * captureDisplay → SF 串行排队卡顿。captureDisplay 执行、写 screenSnapshot、postInvalidateHosts
+     * 全在主 worker 一路完成；首帧立即性不变（triggerBackgroundCapture 首帧即入队）。
+     *
+     * 停止：通知消失（bgView detach / rootView 不再 heads-up）→ 连抓节拍器与持续节拍器各自
+     * 检测 [isHeadsUpHostActive] 停止，不后台耗电。
+     */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:14110-14121 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun scheduleElementCaptures() {
+        if (!captureDemandActive()) return
+        if (!screenInteractive || !Prefs.glassEnabled(api) || isPowerSaveGlassOff()) return
+        if (captureMode() == Prefs.BG_CAPTURE_MODE_STATIC) return
+        // 入队 → kick 起 worker 消费（异步，主线程零阻塞）。无论 enqueue 是否实际
+        // 入队都 kick（pending 去重命中 = 队列已有任务待消费或 worker 正在抓，kick 内部 running>0 / 队列空
+        // 早退无副作用；孤儿残留场景也能经 kick 的「队列非空 + running=0 → 重新起 worker」恢复）。
+        enqueueElementCapture(SNAPSHOT_ID)
+        kickElementCaptureWorker()
+    }
+
+    /** [2026-09-17 需求变更·检查变化] 上一帧整屏快照的内容指纹（0 = 尚无 / 位图不可读）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:14152-14286 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun captureSnapshotImmediate(source: String, regionMode: Boolean = false) {
+        if (!captureDemandActive()) return
+        if (!screenInteractive || !Prefs.glassEnabled(api) || SystemClock.uptimeMillis() < captureRetryAtMs) return
+        // [spec/85 省电模式] 省电开启 → 真正的 captureDisplay 也不执行（省电下玻璃已关，零抓屏）
+        if (isPowerSaveGlassOff()) {
+            logThrottled("power-save-skip-capture", Log.INFO) {
+                "power-save: skip captureSnapshotImmediate ($source)"
+            }
+            return
+        }
+        // The serial worker has already admitted this capture; no second throttle here.
+        lastCaptureStartMs = SystemClock.uptimeMillis()
+        val epochAtStart = captureEpoch
+        // 区域模式：先算活跃瞬态 region 并集；拿不到就清区域快照并退出（整屏快照保持原样）
+        val regionBBox = if (regionMode) {
+            val bbox = transientRegionBBox()
+            if (bbox == null) {
+                regionSnapshot = null
+                lastRegionSnapshotFingerprint = 0
+                return
+            }
+            bbox
+        } else {
+            null
+        }
+        // [spec/58 追加 2026-08-15 诊断日志] 主线程同步首帧链路判定：source 以 `-main-thread` 结尾 =
+        // 下拉/通知首帧主线程同步路径（worker 路径 source="worker" 不打 lg-first，防刷屏）
+        val mainThreadSync = source.endsWith("-main-thread")
+        if (mainThreadSync) diagFirstLog("sfc-start", " source=$source")
+        // [2026-09-17 修复·强制抓被「让路」逻辑吃掉] **区分「真 shade」与「fallback 兜底层」**：
+        // resolveShadeSfcOrFallback 在真 shade 解析不到时，会用 fallback（heads-up / simple-banner 等
+        // 玻璃窗口）顶替。若拿它去更新 lastValidSfcCaptureMs，则 isShadeRenderingNow() 会在
+        // **面板其实已收起**时恒为 true → periodicCaptureRunnable 的三种场景强制抓被
+        // 「if (!isShadeRenderingNow())」全部吃掉（真机实证：lg-scene 打出 force=true 但
+        // shadeRendering=true，横幅活跃期间一次都没抓）。
+        // 故先探真 shade，只有**真 shade** 有效才算「shade 在渲染」。
+        val realShade = resolveShadeSfc()
+        val realShadeValid = realShade != null && realShade.isValid
+        // No screenshot without the exclusion layer while the shade is visible:
+        // otherwise its global dim is baked into each independent notification.
+        if (!NotificationBackdropIsolationPolicy.mayCaptureIndependentBackdrop(
+                panelExpansionActive && visibleCaptureHost(shadeRootViewCache), realShadeValid)) return
+        val shade = if (realShadeValid) realShade else resolveShadeSfcOrFallback()
+        if (mainThreadSync) diagFirstLog("sfc-done", if (shade != null && shade.isValid) " valid" else " null/invalid")
+        // [2026-08-14 用户要求·sfc 拿不到强制抓全屏] shade 可空传入 captureScreenSnapshot：有效 → exclude shade
+        // 抓（防自采样）；null/invalid（shade 不在渲染）→ 无 exclude 强制抓全屏——快照天然不含 shade（干净），
+        // 不再重试/冷却/静默放弃。shade 在渲染但 sfc 短暂 invalid 时轻微自采样，sfc 恢复后 exclude 抓屏覆盖。
+        // 区域模式 → crop 换成活跃瞬态 region 并集 bbox，其余排除/降采样逻辑共用
+        val bg = if (regionBBox != null) {
+            captureElementBackground(shade, regionBBox)
+        } else {
+            captureScreenSnapshot(shade)
+        }
+        if (bg != null) {
+            if (!captureDemandActive() || epochAtStart != captureEpoch) { bg.bitmap.recycle(); return }
+            if (regionBBox != null) {
+                // 区域快照用独立指纹比对：内容未变丢弃本帧，不驱动重绘
+                val regionFp = snapshotContentFingerprint(bg.bitmap)
+                backgroundCadence.observe(SystemClock.uptimeMillis(), regionFp==0 || regionFp!=lastRegionSnapshotFingerprint)
+                if (regionFp != 0 && regionFp == lastRegionSnapshotFingerprint) {
+                    logThrottled("region-snapshot-unchanged", Log.DEBUG) {
+                        "bg-element: region snapshot unchanged, frame dropped"
+                    }
+                    bg.bitmap.recycle()
+                    return
+                }
+                lastRegionSnapshotFingerprint = regionFp
+                // Dense prepared inputs bypass raw multi-scale tiers; build those only for legacy raw paths.
+                overlayFrameEpochs.publish(bg.bitmap, epochAtStart)
+                regionSnapshot = bg
+                logThrottled("region-snapshot-captured", Log.INFO) {
+                    "bg-element: region snapshot captured ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()} (source=$source)"
+                }
+                postInvalidateHosts()
+                return
+            }
+            sfcFailCount = 0
+            elementCaptureRetries[SNAPSHOT_ID] = 0
+            elementCaptureQuitAt.remove(SNAPSHOT_ID)
+            // [2026-08-14 CPU 修复] shade sfc 有效 = shade 在渲染（面板展开）→ 记录时刻，持续抓屏据此
+            // 判断是否该停（sfc 长期无效 = 收起 → 停止 120Hz 空转）
+            // [2026-09-17 修复] 只用**真 shade** 更新（fallback 兜底层不算「shade 在渲染」，见上方说明）
+            if (realShadeValid) lastValidSfcCaptureMs = SystemClock.uptimeMillis()
+            // [2026-09-17 需求变更·检查变化] 内容指纹比对：**内容未变 → 丢弃本帧**。
+            // 三种瞬态场景（heads-up / 流体云卡 / simple-banner）走高频强制抓，但其中大量帧内容完全相同
+            //（悬浮玻璃底下没动）—— 若照旧更新快照 + postInvalidateHosts，就会白白驱动
+            // invalidate → 重录 → RenderThread 重绘整条链（火焰图实证 RenderThread 占 45%）。
+            // 用户要求：「改成检查变化」。代价 = 576 次 getPixel（<1ms，worker 线程），
+            // 远小于一次 captureDisplay（20-50ms）。
+            // fp==0 = 位图不可读（硬件位图等）→ 按「有变化」处理，保证不错过更新。
+            val fp = snapshotContentFingerprint(bg.bitmap)
+            backgroundCadence.observe(SystemClock.uptimeMillis(), fp==0 || fp!=lastSnapshotFingerprint)
+            if (fp != 0 && fp == lastSnapshotFingerprint) {
+                logThrottled("snapshot-unchanged", Log.DEBUG) {
+                    "bg-element: snapshot unchanged, frame dropped (no invalidate)"
+                }
+                bg.bitmap.recycle()
+                return
+            }
+            if (!screenInteractive) { bg.bitmap.recycle(); return }
+            lastSnapshotFingerprint = fp
+            // [spec/127 多尺度源] 帧发布链预构建 1/16 降采样档（worker 线程，渲染线程只取引用）
+            // Dense prepared inputs bypass raw multi-scale tiers; build those only for legacy raw paths.
+            overlayFrameEpochs.publish(bg.bitmap, epochAtStart)
+            screenSnapshot = bg
+            RuntimeDiagnostics.mark("source", "成功取得系统背景缓冲")
+            if (mainThreadSync) diagFirstLog("snapshot-replace", " source=$source")
+            if ((textContrastEnabled || qsIconContrastActive()) && !isMotionActive) {
+                runTextContrastScanAsync(bg)
+            }
+            val exclTag = if (shade?.isValid == true) "excl shade" else "force full"
+            logThrottled("snapshot-captured", Log.INFO) { "bg-element: snapshot captured ${bg.bitmap.width}x${bg.bitmap.height} region=${bg.region.toShortString()} ($exclTag, source=$source)" }
+            postInvalidateHosts()
+        } else {
+            // capture 失败 → 「失败重试」开关决定：开=有界重试（320ms×3 后短暂冷却）；关=静默等下次事件。
+            // 区域模式保留上一帧区域快照，下一 tick 自然重试。
+            if (mainThreadSync) diagFirstLog("fail-capture", " source=$source")
+            if (regionBBox != null) {
+                logThrottled("region-capture-fail", Log.DEBUG) { "bg-element: region capture failed, keep previous region snapshot" }
+            } else if (bgCaptureRetryEnabled()) {
+                handleElementCaptureFailure(SNAPSHOT_ID, "capture")
+            } else {
+                logThrottled("capture-fail-skip", Log.DEBUG) { "bg-element: capture failed, skip (retry disabled, wait event)" }
+            }
+        }
+    }
+
+    /** [2026-08-14 spec/56 + 2026-08-15 恢复 worker + 2026-08-15 主动式持续抓屏] 抓屏重试调度（延迟后重新走
+     *  [scheduleElementCaptures] → 入队 worker 消费，[2026-08-15 恢复 worker] 重试重新入队，不再主线程直接
+     *  抓屏；**[2026-08-15 主动式持续抓屏] force=true 绕过失败冷却**——失败快速重试（60ms/320ms）不被
+     *  [elementCaptureQuitAt] 冷却硬拦截，背景不冻结旧帧）：
+     *  - 主线程 → mainHandler().postDelayed 延迟重试（**不 sleep 阻塞主线程**，单飞防重复 post）；
+     *  - 后台线程（worker 内 / 连抓/持续 worker）→ 就地 sleep 后直接 [scheduleElementCaptures]
+     *    （入队 + kick：当前 worker 在 running 时 kick 早退、worker 主循环 poll 到重试任务立即重试；
+     *    worker 已退出时 kick 重新起 worker）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:14401-14463 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun runElementCaptureWorker() {
+        try {
+            while (true) {
+                val id = elementCaptureQueue.poll() ?: break
+                pendingCaptureIds.remove(id)  // 出队即移除：处理中/失败重试均可重新入队
+                if (id != SNAPSHOT_ID && id != REGION_SNAPSHOT_ID) continue  // 仅整屏/区域快照任务
+                // 抓屏中标记（poll 出队 → capture 完成期间）：渲染触发异步请求（requestScreenSnapshotAsync）
+                // 见此 SNAPSHOT_ID 即不重复入队（避免双路 captureDisplay）
+                captureInFlightIds.add(id)
+                try {
+                    // All event/timer channels share this admission limit, so duplicate event
+                    // bursts cannot bypass the change-mode budget. No pixels are downsampled here.
+                    if (awaitCaptureSlot()) {
+                        captureSnapshotImmediate("worker", regionMode = id == REGION_SNAPSHOT_ID)
+                    }
+                } finally {
+                    captureInFlightIds.remove(id)
+                }
+            }
+        } catch (t: Throwable) {
+            captureRetryAtMs = SystemClock.uptimeMillis() + RuntimeWorkPolicy.failureDelayMs(t)
+            synchronized(this) { elementCaptureQueue.clear(); pendingCaptureIds.clear() }
+            if (t is OutOfMemoryError && buttonBackdropWorkerDelegate.isInitialized()) buttonBackdropWorker.clear()
+            Lg.e(TAG, "bg-element: worker error (backoff enabled)", t)
+        } finally {
+            synchronized(this) {
+                if (elementCaptureWorkerRunning > 0) elementCaptureWorkerRunning--
+                if (elementCaptureQueue.isEmpty()) {
+                    // 队列空（正常消费完）→ 清任何残留 pending（防御：极端时序下 poll 出队后、pending.remove
+                    // 前有并发入队又被本 worker 消费，或竞态窗口入队但未入队成功的残留；保证下次入队
+                    // pending.add 成功）。正常路径 pending 应为空，此分支仅日志不误删在途任务。
+                    if (pendingCaptureIds.isNotEmpty()) {
+                        Lg.w(TAG, "bg-element: worker exit, clear orphan pending=$pendingCaptureIds")
+                        pendingCaptureIds.clear()
+                    }
+                    // [spec/59 追加 2026-08-14 诊断] worker 正常退出（队列空）——对比 worker-spawn 看 worker
+                    // 存活时长；「短命 worker」= 消费完即退出，靠下次入队重新 kick（正常）；「长期无 exit」=
+                    // worker 存活/卡住（与 captureDisplay-start 间隔对照判断是否卡 Binder 或 sfc 重试循环）
+                    diagWorkerLog("worker-exit", " queue-empty running=$elementCaptureWorkerRunning")
+                } else {
+                    // 队列仍有未消费任务（poll==null 到 running-- 之间竞态窗口入队 + kick 早退残留）
+                    // → 自续跑新 worker 消费，杜绝「孤儿队列 + pending 残留 + running=0 永久不消费」
+                    elementCaptureWorkerRunning++
+                    diagWorkerLog("worker-respawn", " queue=${elementCaptureQueue.size} running=$elementCaptureWorkerRunning")
+                    try {
+                        captureExecutor.execute {
+                    safeModuleTask { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
+                    safeModuleTask { runElementCaptureWorker() }
+                }
+                    } catch (t: Throwable) {
+                        elementCaptureWorkerRunning--
+                        Lg.e(TAG, "bg-element: respawn worker failed", t)
+                    }
+                }
+            }
+        }
+    }
+
+    /** [spec/45 提取 + 2026-08-14 spec/56 + 2026-08-15 恢复 worker] 抓屏失败重试路径（capture 失败 /
+     *  shade sfc 解析失败共用）：RETRY_LIMIT 次/RETRY_MS 间隔（默认 3 次/320ms），用尽冷却
+     *  [ELEMENT_CAPTURE_COOLDOWN_MS]（[2026-08-15 根因 B 修复] 2000 → 1000ms，不长时间挡住新内容变化触发）。
+     *  重试经 [scheduleCaptureRetry]（主线程 postDelayed 不阻塞 / 后台线程就地 sleep 后）→
+     *  [scheduleElementCaptures] 重新入队 worker（[2026-08-15 恢复 worker]）。 */
+
+// SOURCE app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt:14133-14151 (75c96f36fddccef80d8c7a99c8839201dd125a27)
+    private fun snapshotContentFingerprint(bmp:Bitmap):Int = try {
+        SnapshotFingerprint.hash(bmp.width,bmp.height) { y,row ->
+            bmp.getPixels(row,0,bmp.width,0,y,bmp.width,1)
+        }
+    } catch(_:Throwable) { 0 }
+
+    /** **[2026-08-15 恢复 worker] 整屏快照抓屏执行体**（由抓屏 worker 调用，spec/56 保留逻辑复用）：
+     *  当前线程**同步** resolveShadeSfcOrFallback（spec/45 兜底）→ captureScreenSnapshot（复用
+     *  captureElementBackground 的排除 shade + heads-up 逻辑 + 降采样）→ 立即 screenSnapshot = bg →
+     *  postInvalidateHosts（下帧渲染用新快照）。
+     *
+     *  - **调用线程**：[runElementCaptureWorker] 消费队列时在 worker 线程调用（主线程零阻塞）；
+     *    连抓/持续 worker 入队后也由主 worker 串行执行（单通道，spec/51 收敛语义恢复）。
+     *  - **失败路径（根因 B 修复）**：shade sfc 解析失败 → 60ms 短延迟快速重试（[scheduleCaptureRetry]，
+     *    连续失败达 [bgCaptureRetryLimit] 才走冷却，非 320ms 长 sleep）；capture 失败 →
+     *    [handleElementCaptureFailure]（快速重试 + 冷却，冷却 [ELEMENT_CAPTURE_COOLDOWN_MS] 已缩短至 1s）。
+     *  - **文字亮度/重采样**（updateQsBrightness 2.6MB 全图扫描）：同步做会卡 → 拆后台单飞
+     *    [runTextContrastScanAsync]（不阻塞抓屏线程/主线程/渲染；拖动期 isMotionActive 跳过，spec/49 C 保留）。
+     */

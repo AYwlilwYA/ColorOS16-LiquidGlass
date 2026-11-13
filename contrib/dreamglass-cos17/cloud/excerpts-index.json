@@ -1,0 +1,268 @@
+[
+  {
+    "name": "seedlingRuntimeAllowed",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 2077,
+    "lastLine": 2097,
+    "sha256": "37d133f44bb14570b1e3f2f08a4ff4cd74373cad74d0a6d9784594558c067c14"
+  },
+  {
+    "name": "ElementBackground",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 827,
+    "lastLine": 835,
+    "sha256": "3f91d006232cabb48ed6d6e5072275894d458040c1cb3471c784260d735cc8fb"
+  },
+  {
+    "name": "RenderSource",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 846,
+    "lastLine": 855,
+    "sha256": "25bf551e0b2079cac489e58e8ab6631899bc737b6687169862df523aadc7ad7f"
+  },
+  {
+    "name": "bindQualityBackdrop",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 2356,
+    "lastLine": 2369,
+    "sha256": "ee466ebe6b79a7b9e725d6d71eddcca2c649329df627f70d3e67c84a3b9fcf15"
+  },
+  {
+    "name": "renderSeedlingCardGlass",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 7343,
+    "lastLine": 7444,
+    "sha256": "ba3a6528fabd50f75c33581e52e9c6f06fae1c12465e44e1b3b3633d5bb896a4"
+  },
+  {
+    "name": "drawSeedlingGlassOnCanvas",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8496,
+    "lastLine": 8603,
+    "sha256": "25285e00f10519c74626cca084de7c8c3d9f5337dc4e6e51b7bf728f9ae63ed6"
+  },
+  {
+    "name": "mountCardBackgroundGlass",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8604,
+    "lastLine": 8645,
+    "sha256": "8f1597c75f52866fe99f91baf211adc27ece8fd34c50d077c61b420506f30c10"
+  },
+  {
+    "name": "expandedCloudBackground",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8646,
+    "lastLine": 8653,
+    "sha256": "cb1d730b5eb932f0f39cee77f5465827669b9621ae83c13ee762d375408eeb3a"
+  },
+  {
+    "name": "ExpandedCloudGlassDrawable",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8654,
+    "lastLine": 8672,
+    "sha256": "42e6ed23baadc1935604d81291d24870d947c7799e14ba0aa259c237bd23b4f5"
+  },
+  {
+    "name": "renderCardBackgroundGlass",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8673,
+    "lastLine": 8712,
+    "sha256": "cada04046ca23d8a118271d685e25635afcd67943258d7f1f1928a70da5a9f74"
+  },
+  {
+    "name": "isCardBackgroundHostActive",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8713,
+    "lastLine": 8729,
+    "sha256": "356b4b2809c8f296f4c7a7827ec27e4627ccda352a3290a4f97b03e8913be72b"
+  },
+  {
+    "name": "cardCaptureSession",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8730,
+    "lastLine": 8730,
+    "sha256": "2914b5518c2d290a473bfde34e8e50125641fa92d51247ff4bde18b9382b271d"
+  },
+  {
+    "name": "bannerCaptureSession",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8731,
+    "lastLine": 8731,
+    "sha256": "1134c66617dc1da30690ff9afc69feeb72c25a80a66f430b59cb2510807cc8a9"
+  },
+  {
+    "name": "startCardBackgroundContinuousCapture",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8732,
+    "lastLine": 8735,
+    "sha256": "bf14c9087b1660d68f7c3c4ca64f4465ed106e61a48607cd0d0c7b0391debd94"
+  },
+  {
+    "name": "startVisibleOverlayCapture",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8736,
+    "lastLine": 8784,
+    "sha256": "28036319c3a4ed5b68767647854545f2083366e135b1a38eaee3c857e78e6e85"
+  },
+  {
+    "name": "resolveCardBackgroundSfc",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8785,
+    "lastLine": 8799,
+    "sha256": "a89bfe2bcde7dbc69c7f98c52355f17cf504e0ab96d3c482051aeac5f45685df"
+  },
+  {
+    "name": "simpleBannerGlassAllowed",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8800,
+    "lastLine": 8802,
+    "sha256": "fa2dce0067b406e1ec91660a748701de84856df1249d02bf07eb6feec6541fab"
+  },
+  {
+    "name": "mountSimpleBannerGlass",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8803,
+    "lastLine": 8846,
+    "sha256": "01093802807f63a608c9ede466c120fe8542ca5973978c8752a069a6f6556e57"
+  },
+  {
+    "name": "simpleBannerBackground",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8847,
+    "lastLine": 8853,
+    "sha256": "2253cbf902b4c86f2e431e66a24857ee48c7a23b0bacbfc145e1a60422d0b048"
+  },
+  {
+    "name": "SimpleBannerGlassDrawable",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8854,
+    "lastLine": 8869,
+    "sha256": "45803920708faa702ad4fce655f13e935ab4ac7788570eee5c8cd45e14ee518d"
+  },
+  {
+    "name": "mountSimpleBannerAttachHook",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8870,
+    "lastLine": 8911,
+    "sha256": "ee19dc8d47d6840ae205103e8623443b24e6e440136af3f71b79be99b2ce6be5"
+  },
+  {
+    "name": "mountCardBackgroundAttachHook",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 8912,
+    "lastLine": 8962,
+    "sha256": "9a0e411ee5d46b229323b9793aa63ffcae19e5d0f06c6f730504084ddbef6a88"
+  },
+  {
+    "name": "renderSimpleBannerGlass",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 9349,
+    "lastLine": 9367,
+    "sha256": "989b9ff87ed0d4cae850d8343722e674e0f77633fe917c61214c159e98c26c6d"
+  },
+  {
+    "name": "isSimpleBannerHostActive",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 9368,
+    "lastLine": 9384,
+    "sha256": "6876ac8b2c213dd0b45e3ef50058dc211a87e6e7001861dd1631b8a8633057c5"
+  },
+  {
+    "name": "startSimpleBannerContinuousCapture",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 9385,
+    "lastLine": 9423,
+    "sha256": "cdc29d656b9a66bad985abca44d24de141e339e470fa799fea5fb15da023cfed"
+  },
+  {
+    "name": "sceneBackdrop",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 12994,
+    "lastLine": 13024,
+    "sha256": "9c4587d60ce0b368f9352ec5135d9f647bc914123ec02b28c62fa8ea8e185015"
+  },
+  {
+    "name": "resolveRenderSource",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 13025,
+    "lastLine": 13052,
+    "sha256": "2474a4e555437295ced14671db056bc1a87b18b23fa4abd299c543b70f74da3a"
+  },
+  {
+    "name": "requestScreenSnapshotAsync",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 13053,
+    "lastLine": 13077,
+    "sha256": "ee33a2ec980b85c69fa080a72973a22ae5aa70a1a40aedd4cf26f0bf0f205e25"
+  },
+  {
+    "name": "captureDemandActive",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 2319,
+    "lastLine": 2327,
+    "sha256": "cb63881f700eb8d5a786bd494dfdc951688d3c3e727bd233ab0e4fd41e1c9e1e"
+  },
+  {
+    "name": "continuousCaptureIntervalMs",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 10809,
+    "lastLine": 10812,
+    "sha256": "8d6ff9eba40dd31866eb8dccc2180bd5de1cccc1b66fe08bfdc41116f5f2767d"
+  },
+  {
+    "name": "noteCaptureReveal",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 10813,
+    "lastLine": 10820,
+    "sha256": "ce491d1702bf28619f427367d7333b5fb22288a3e1ab95a4826f882188b68155"
+  },
+  {
+    "name": "awaitCaptureSlot",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 10821,
+    "lastLine": 10834,
+    "sha256": "614c46d644996fdd49a89889fb0ecf4fae85b31d4d6afb8ab92fa844b3e70640"
+  },
+  {
+    "name": "triggerBackgroundCapture",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 13771,
+    "lastLine": 13808,
+    "sha256": "f2c2a4d3250ffc7f8bcb16a5899792a5373da1040b052b96e31967f09261b91c"
+  },
+  {
+    "name": "triggerFirstFrameCaptureWithBurst",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 13829,
+    "lastLine": 13869,
+    "sha256": "8d3cb6eb3fd328bbe1f1a8d7a108cbc45962e45cfac448cd00a4f6172cbfac56"
+  },
+  {
+    "name": "scheduleElementCaptures",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 14110,
+    "lastLine": 14121,
+    "sha256": "97279733b912eb43f1634d78deda13dbb9ab39dce5ca4fab81fa0206cf5374ee"
+  },
+  {
+    "name": "captureSnapshotImmediate",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 14152,
+    "lastLine": 14286,
+    "sha256": "8659d17357c6558ba4a9c1528e55833bbb35fe11074991d6d25c92c53a790ea8"
+  },
+  {
+    "name": "runElementCaptureWorker",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 14401,
+    "lastLine": 14463,
+    "sha256": "90733d8dae5406c7c1ea77aac2d008e960640ad9bf4b21d8bc86ff08ebb33cf2"
+  },
+  {
+    "name": "snapshotContentFingerprint",
+    "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BlurDrawHook.kt",
+    "firstLine": 14133,
+    "lastLine": 14151,
+    "sha256": "2ab9b708ce816fe4aaea9794c54824ec4066edbdb1c394e456ad03bea1fe25b5"
+  }
+]

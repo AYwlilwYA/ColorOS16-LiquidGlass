@@ -1,0 +1,39 @@
+{
+  "candidate": "2.0.1-debug8",
+  "versionCode": 2000008,
+  "apk": "DreamGlass-2.0.1-debug8.apk",
+  "sha256": "96493ea01295d237e0fae69f2faec5983ea3f5be9ecb78580ad747112ed74b96",
+  "signingCertificateSha256": "12db3813c08e0d85d97884f7bf87e337d91c9e376e470a41e086a1f682402a96",
+  "unitTests": {
+    "tests": 343,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "lintRelease": {
+    "Warning": 358,
+    "Error": 0,
+    "Fatal": 0
+  },
+  "androidGpuFallbackContracts": 27,
+  "oldCrashReproducedWithContractFixture": true,
+  "emulatorSerial": "emulator-5580",
+  "vendorBackgroundBlurDrawableExecuted": false,
+  "physicalDeviceOperated": false,
+  "physicalDeviceInstalled": false,
+  "physicalCrashStackCollected": false,
+  "uploaded": false,
+  "powerConsumptionMeasured": false,
+  "latencyGpuProbe": {
+    "physicalDeviceTested": false,
+    "firstTwoMaterialsMs": 472,
+    "bothInitialMaterialsRenderedOnGpu": true,
+    "latestFrameMs": 16,
+    "latestPendingFrameWins": true,
+    "sceneChangeDropsOldPixels": true,
+    "publishedImageRetained": true,
+    "hiddenDemandDoesNotComputeOrInvalidate": true,
+    "passed": true
+  },
+  "physicalLatencyMeasured": false
+}
