@@ -1,0 +1,36 @@
+DreamGlass 1.1.4 — Copyright and attribution notices
+
+Copyright © 2026 DreamGlass contributors. Modifications dated 2026-10-22 through 2026-10-29.
+Combined application distributed under GNU GPL version 3; see LICENSE.
+No warranty is provided. Recipients may modify and redistribute under GPLv3.
+
+Derived code: AYwlilwYA / ColorOS16-LiquidGlass (original UI author credit: AlanYan)
+https://github.com/AYwlilwYA/ColorOS16-LiquidGlass
+Original contributors retain their copyrights. See THIRD-PARTY-NOTICES.md.
+
+Portions of the liquid-glass shader are adapted from AndroidLiquidGlass:
+Copyright 2025 Kyant
+https://github.com/Kyant0/AndroidLiquidGlass
+Licensed under the Apache License, Version 2.0.
+http://www.apache.org/licenses/LICENSE-2.0
+Modified for Android AGSL / ColorOS by upstream and DreamGlass contributors.
+The original Apache license header is retained in the relevant shader files.
+
+Runtime dependencies: AndroidX / Android Open Source Project contributors;
+Material Components / Google contributors; Kotlin / JetBrains s.r.o. and contributors;
+Kotlin Coroutines contributors; LibXposed contributors; Guava contributors;
+Error Prone contributors; JSpecify contributors; JetBrains Annotations contributors.
+These components are distributed under Apache License 2.0.
+Exact components, versions and original embedded license/notice/copyright files:
+licenses/dependency-inventory.json and licenses/third-party/ (source archive),
+or assets/legal/ within the APK.
+
+LibXposed interface/service AAR metadata was modified: minCompileSdk 37 -> 36.
+Classes and resources were not changed. See app/libs/README.md.
+
+This NOTICE supplements and does not replace any original license or notice.
+
+Android accelerated bitmap blur sample sequence
+Source: https://developer.android.com/guide/topics/renderscript/migrate
+Android Developers / Android Open Source Project, documentation code under Apache-2.0.
+DreamGlass adaptation in HardwareBackdropBlur.kt and ParticleDissolveHook.kt, 2026-10-29.

@@ -1,0 +1,214 @@
+{
+  "sourceRepository": "V0idream/DreamGlass",
+  "sourceCommit": "75c96f36fddccef80d8c7a99c8839201dd125a27",
+  "sourceTag": "v2.0.1-debug8",
+  "upstreamBase": "38bd6c5",
+  "runtimeIntegration": false,
+  "files": [
+    {
+      "path": "android-probes/BackdropLatencyProbeActivity.kt",
+      "sourcePath": "app/src/debug/kotlin/com/dreamglass/cos17/BackdropLatencyProbeActivity.kt",
+      "sha256Lf": "3b75de66e66869e15a9dd133ab51d03f351da351c7397d1bbe6368427f13f531"
+    },
+    {
+      "path": "android-probes/KeyguardGlassProbeActivity.kt",
+      "sourcePath": "app/src/debug/kotlin/com/dreamglass/cos17/KeyguardGlassProbeActivity.kt",
+      "sha256Lf": "b64f2b90ae71815d68f689b706db5fdb5e6bb44d7e0685f0f56ccd5b7dd57813"
+    },
+    {
+      "path": "android-probes/LockWallpaperProbeActivity.kt",
+      "sourcePath": "app/src/debug/kotlin/com/dreamglass/cos17/LockWallpaperProbeActivity.kt",
+      "sha256Lf": "c4f86023e4c7fa7a0e2523d9d0eaa11f10e7cc6a859230f30a4c776127f7e583"
+    },
+    {
+      "path": "android-probes/MenuBackgroundProbeActivity.kt",
+      "sourcePath": "app/src/debug/kotlin/com/dreamglass/cos17/MenuBackgroundProbeActivity.kt",
+      "sha256Lf": "42bae6c9fca52656be8d7288b63ebb6231d852cc1e6a488e75c19740b7b31dc2"
+    },
+    {
+      "path": "gpu/LiquidGlassShader.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/liquidglass/LiquidGlassShader.kt",
+      "sha256Lf": "262c42f6d66a07a57cf514a7528de50f5ceb1d851df9ec1f8935f0e43f779120"
+    },
+    {
+      "path": "keyguard/KeyguardGlassAttachment.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardGlassAttachment.kt",
+      "sha256Lf": "e30a357e7c1c5edb22d9478ad04525159aeea540b99cb7a3f226b540ecc1b34c"
+    },
+    {
+      "path": "keyguard/KeyguardGlassHook.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardGlassHook.kt",
+      "sha256Lf": "9a45ae0bc3d1e0ba0b4df03189bb5c5f8d83562252007ae8586d64c7ee57ce52"
+    },
+    {
+      "path": "keyguard/KeyguardGlassMaterial.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardGlassMaterial.kt",
+      "sha256Lf": "184db3944192e1a8f420b6e8c0b3464c6f327c60d6847390bc6db8bd0399673a"
+    },
+    {
+      "path": "keyguard/KeyguardGlassPolicy.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardGlassPolicy.kt",
+      "sha256Lf": "e25709a07aac4533eb766f264c37d64d35c19bb3033be38be35917e148a7967f"
+    },
+    {
+      "path": "keyguard/KeyguardGlyphDraw.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardGlyphDraw.kt",
+      "sha256Lf": "2d8d86ac11e111d1a0baf9567ceec13b1e70af9ac27806166206a490e64d3145"
+    },
+    {
+      "path": "keyguard/KeyguardLayeredShortcut.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardLayeredShortcut.kt",
+      "sha256Lf": "82b662c4fe902db94b4ceb0d7e28c5ec5f207554676a53d66a5b9062ff5d5f54"
+    },
+    {
+      "path": "keyguard/KeyguardNativeMounts.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/KeyguardNativeMounts.kt",
+      "sha256Lf": "e0cef052e7c76f1f496b966712657180672a44b80f768572bad210a5a9d2f970"
+    },
+    {
+      "path": "licenses/LICENSE",
+      "sourcePath": "LICENSE",
+      "sha256Lf": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "licenses/MODIFICATIONS.md",
+      "sourcePath": "MODIFICATIONS.md",
+      "sha256Lf": "03c982b7fa62e9f0359553705647b567a9e1ade456aac7d7a403556d0d040ace"
+    },
+    {
+      "path": "licenses/NOTICE",
+      "sourcePath": "NOTICE",
+      "sha256Lf": "d76ce498d98e1ff13da6fac120e48246d771195acbb1a493649037b17e68959b"
+    },
+    {
+      "path": "licenses/THIRD-PARTY-NOTICES.md",
+      "sourcePath": "THIRD-PARTY-NOTICES.md",
+      "sha256Lf": "80263608b74922297adf76868d0c247db75f4351ef45df147af8e7936a6b4ada"
+    },
+    {
+      "path": "shared/BackdropWorkBudget.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BackdropWorkBudget.kt",
+      "sha256Lf": "dbf641bff1fea1dd49f7d5914cb45ce7e30242fd3ce1270c747b468f2a1529e3"
+    },
+    {
+      "path": "shared/BackgroundCadence.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BackgroundCadence.kt",
+      "sha256Lf": "f5b3a5d53bf8413bfbd1a73c07b0512a3de8d56b414e300b13c279466535603c"
+    },
+    {
+      "path": "shared/BoundedGlassDrawable.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/BoundedGlassDrawable.kt",
+      "sha256Lf": "7e93b19067322c8af657ab7c8390b35a4f3c35ef4c7bdd29708a194dff8dde1e"
+    },
+    {
+      "path": "shared/ButtonBackdropBlur.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/ButtonBackdropBlur.kt",
+      "sha256Lf": "8c64a96022fe50c023ed0361a972139e2732527d5dc72882d8540be5ed7ba717"
+    },
+    {
+      "path": "shared/ButtonBackdropWorker.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/ButtonBackdropWorker.kt",
+      "sha256Lf": "866c62d576aec555c91806ac619b6271570b3c830d6b1ffefed065dbce9a6d63"
+    },
+    {
+      "path": "shared/CaptureDemandPolicy.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/CaptureDemandPolicy.kt",
+      "sha256Lf": "c655427be2fa93a83762847d20629a1a150bac568093b249cac70e3cbd7c242a"
+    },
+    {
+      "path": "shared/HardwareBackdropBlur.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/HardwareBackdropBlur.kt",
+      "sha256Lf": "d91eed40e25cc8a635f2bcfa5909da96de2d55d903d50a983a3396732c90fd56"
+    },
+    {
+      "path": "shared/LockWallpaperBackdrop.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/LockWallpaperBackdrop.kt",
+      "sha256Lf": "85c345ef6aa676cb8279db2aff6e685ebbf8ec3fc94414bbf04249175bb84a47"
+    },
+    {
+      "path": "shared/LockWallpaperGeometry.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/LockWallpaperGeometry.kt",
+      "sha256Lf": "a6293e8e62e760e22acc5dd167f6680c60e0beb890e3971db2b81c5d829e5052"
+    },
+    {
+      "path": "shared/OverlayFrameEpochs.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/OverlayFrameEpochs.kt",
+      "sha256Lf": "ae802896ed0ee4194843990d17b556e3e0d1f933f619212c3296c4b72b6d19eb"
+    },
+    {
+      "path": "shared/RuntimeWorkPolicy.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/RuntimeWorkPolicy.kt",
+      "sha256Lf": "c2f1ac8e154f4b77c56b284b3e20371da0492ee1ea64f3c8fced5c7e819f8160"
+    },
+    {
+      "path": "shared/VisibleCaptureSession.kt",
+      "sourcePath": "app/src/main/kotlin/com/coloros16/liquidglass/hook/VisibleCaptureSession.kt",
+      "sha256Lf": "ff761576cace471a6e449cb81e893c67d423b673fe43cac86a2d4b305cfbe1e2"
+    },
+    {
+      "path": "tests/BackdropLatencyTest.kt",
+      "sourcePath": "app/src/test/kotlin/com/coloros16/liquidglass/BackdropLatencyTest.kt",
+      "sha256Lf": "0fd9c9dcf4c3c995b569073a83e8de06d65af2b553f88f5d91c18f72d954cb77"
+    },
+    {
+      "path": "tests/CaptureDemandPolicyTest.kt",
+      "sourcePath": "app/src/test/kotlin/com/coloros16/liquidglass/CaptureDemandPolicyTest.kt",
+      "sha256Lf": "6c7d2ada458fd4e4419beb165247d1cdef906a289cd8e639888c4cb7caff4f94"
+    },
+    {
+      "path": "tests/KeyguardGlassPolicyTest.java",
+      "sourcePath": "app/src/test/java/com/dreamglass/cos17/KeyguardGlassPolicyTest.java",
+      "sha256Lf": "3accb18cca9ba54347f8b7f891609242cc3bec2fbb27c3fae0fa1128bc763b1f"
+    },
+    {
+      "path": "tests/LockWallpaperGeometryTest.java",
+      "sourcePath": "app/src/test/java/com/dreamglass/cos17/LockWallpaperGeometryTest.java",
+      "sha256Lf": "d2ec9a75588242ca46e09977ef2e38aa4060d9c29a2c0855e48df53c462b1e01"
+    },
+    {
+      "path": "tests/OverlayFrameEpochsTest.kt",
+      "sourcePath": "app/src/test/kotlin/com/coloros16/liquidglass/OverlayFrameEpochsTest.kt",
+      "sha256Lf": "89096948c17fc335854ef21f37d402ccad976de040ab6ac0e4bb6eed599dbea8"
+    },
+    {
+      "path": "tests/VisibleCaptureSessionTest.kt",
+      "sourcePath": "app/src/test/kotlin/com/coloros16/liquidglass/VisibleCaptureSessionTest.kt",
+      "sha256Lf": "ed7b9206c46a173ad8833913388dd1d456ed6056b4a4c63b406c82818196ea47"
+    },
+    {
+      "path": "validation/android-gpu-fallback.json",
+      "sourcePath": "docs/validation/2.0.1-debug8/android-gpu-fallback.json",
+      "sha256Lf": "7ab3834ef2d984bafdbd5779610ba51f987a03de436fd9309eb03be5ba52f3ee"
+    },
+    {
+      "path": "validation/android-gpu-latency.json",
+      "sourcePath": "docs/validation/2.0.1-debug8/android-gpu-latency.json",
+      "sha256Lf": "be7035c92fb8dede685b70980708fb4ee10f9396020e59866dd7db43b45811b0"
+    },
+    {
+      "path": "validation/audit.json",
+      "sourcePath": "docs/validation/2.0.1-debug8/audit.json",
+      "sha256Lf": "a1a3a590bb745947da46139c766a43b62123b38336ba2c6b2c46605436736525"
+    },
+    {
+      "path": "README.md",
+      "sha256Lf": "dee9e5861aa6811c8619cc6b93aa023fc4c743ff934bf802d67bbabc4a678fbb"
+    },
+    {
+      "path": "INTEGRATION.md",
+      "sha256Lf": "db9516407803f0a968d1926e57df261d10420a901c30522966d0141569362412"
+    },
+    {
+      "path": "keyguard/KEYGUARD.md",
+      "sha256Lf": "28f1847bedecf2dc26d0ec9ded680f0f561c89e3add4b341275d9ba38ad34416"
+    },
+    {
+      "path": "cloud/BlurDrawHook.excerpts.kt.txt",
+      "sha256Lf": "85cacf202a917751ba307c1e738d25f62032bf655a14e208fcb24b0f0e28b33f"
+    },
+    {
+      "path": "cloud/excerpts-index.json",
+      "sha256Lf": "e2200da2a08ddeaf4a377cfc98d5c7082d7b6e2261e20566acc125b5e3449487"
+    }
+  ]
+}

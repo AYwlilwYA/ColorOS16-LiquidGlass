@@ -1,0 +1,11 @@
+{
+  "physicalDeviceTested": false,
+  "firstTwoMaterialsMs": 472,
+  "bothInitialMaterialsRenderedOnGpu": true,
+  "latestFrameMs": 16,
+  "latestPendingFrameWins": true,
+  "sceneChangeDropsOldPixels": true,
+  "publishedImageRetained": true,
+  "hiddenDemandDoesNotComputeOrInvalidate": true,
+  "passed": true
+}
